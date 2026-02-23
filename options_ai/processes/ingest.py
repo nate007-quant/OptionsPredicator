@@ -325,7 +325,31 @@ def ingest_snapshot_file(
     else:
         rows = normalize_rows(snapshot)
 
-    spot = float(snapshot.get("spot_price") or snapshot.get("underlyingPrice") or parsed.spot_price)
+    def _coerce_spot(val):
+        # Accept common provider shapes:
+        # - number/string
+        # - list/array where the first element is the spot repeated per row
+        if val is None:
+            return None
+        if isinstance(val, list):
+            for x in val:
+                if x is None:
+                    continue
+                try:
+                    return float(x)
+                except Exception:
+                    continue
+            return None
+        try:
+            return float(val)
+        except Exception:
+            return None
+
+    spot = (
+        _coerce_spot(snapshot.get("spot_price"))
+        or _coerce_spot(snapshot.get("underlyingPrice"))
+        or float(parsed.spot_price)
+    )
     price_series_raw = snapshot.get("ohlcv")
 
     # S2+S3 Signals (includes GEX)
