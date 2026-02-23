@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+from options_ai.config import load_config
+from options_ai.db import db_path_from_url, init_db
+from options_ai.utils.logger import log_daemon_event
+from options_ai.utils.paths import build_paths, ensure_runtime_dirs
+from options_ai.watcher import run_daemon
+
+
+def main() -> None:
+    cfg = load_config()
+    paths = build_paths(cfg.data_root, cfg.ticker)
+    ensure_runtime_dirs(paths)
+
+    db_path = db_path_from_url(cfg.database_url)
+    schema_path = Path(__file__).parent / "db" / "schema.sql"
+    init_db(db_path, schema_sql_path=str(schema_path))
+
+    log_daemon_event(
+        paths.logs_daemon_dir,
+        "info",
+        "daemon_start",
+        ticker=cfg.ticker,
+        data_root=cfg.data_root,
+        replay_mode=cfg.replay_mode,
+    )
+
+    try:
+        run_daemon(cfg, paths, db_path)
+    except KeyboardInterrupt:
+        log_daemon_event(paths.logs_daemon_dir, "info", "daemon_stop_keyboard")
+    except Exception as e:
+        log_daemon_event(paths.logs_daemon_dir, "error", "daemon_crash", error=str(e))
+        time.sleep(0.2)
+        raise
+
+
+if __name__ == "__main__":
+    main()

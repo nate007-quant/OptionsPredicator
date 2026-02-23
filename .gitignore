@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Env
+.env
+
+# Runtime artifacts (must never be committed)
+*.db
+*.sqlite
+*.sqlite3
+logs/
+state/
+processed/
+quarantine/
+
+# OS/editor
+.DS_Store
+.vscode/

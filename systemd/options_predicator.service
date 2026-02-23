@@ -1,0 +1,41 @@
+# OptionsPredicator systemd service (SPX Options AI v1.3)
+#
+# Install:
+#   sudo cp systemd/options_predicator.service /etc/systemd/system/options_predicator.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now options_predicator
+#
+# Logs:
+#   journalctl -u options_predicator -f
+#
+# Notes:
+# - Ensure the venv exists at WORKDIR/.venv and .env is configured.
+# - The daemon writes runtime artifacts under DATA_ROOT (default /mnt/options_ai).
+
+[Unit]
+Description=OptionsPredicator (SPX Options AI) daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Set these two values to match your install location/user
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+
+EnvironmentFile=/opt/OptionsPredicator/.env
+
+# (Optional) helpful defaults
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.main
+Restart=always
+RestartSec=5
+
+# Hardening (keep mild to avoid breaking local file access)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

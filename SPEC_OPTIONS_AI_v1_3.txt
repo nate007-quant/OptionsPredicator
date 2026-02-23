@@ -1,0 +1,535 @@
+OPTIONS AI PREDICTION SYSTEM Full Requirements & Architecture Specification
+Version 1.3 — SPX Only — File-Driven — GPT-5.2-Codex
+
+PROJECT OVERVIEW
+
+1.1 Purpose
+Build a self-improving, AI-powered short-term options prediction system for SPX only.
+
+The system runs locally as a long-running daemon. It continuously watches for new SPX snapshot JSON files. When a new snapshot appears, it:
+- Validates the snapshot file name + JSON content
+- Optionally analyzes a chart image for the same observation timestamp
+- Normalizes the options chain schema
+- Computes deterministic signals locally from snapshot data
+- Generates a structured directional prediction for the next 15 minutes
+- Stores the prediction in a database
+- Later scores that prediction once outcome time has passed
+- Maintains rolling performance summaries for self-calibration
+
+If no new files are present, the system does nothing.
+
+1.2 Out of Scope (v1)
+- No live trade execution
+- No broker API integration
+- No live market data API calls (file snapshots are source of truth)
+- No model fine-tuning
+- No multi-ticker support
+- No dashboard UI
+
+1.3 Instrument Scope (v1)
+SPX only.
+- Snapshot files: SPX only
+- Chart analysis: SPX only
+- Signal extraction: SPX only
+- Scoring: SPX only
+- Historical replay: SPX only
+
+Future expansion must be architecturally possible but is not implemented in v1.
+
+INPUT DATA CONTRACT (FILE-DRIVEN ARCHITECTURE)
+
+2.1 Authoritative Input Mode
+All predictions are driven by local snapshot files.
+
+The system MUST NOT fetch live data from external APIs in v1.
+All market data required for prediction and scoring must be contained in snapshot files (and/or subsequent snapshot files).
+
+2.2 Incoming Snapshot Location
+The daemon watches:
+/mnt/options_ai/incoming/SPX/
+
+Optional chart images are expected under:
+/mnt/options_ai/incoming/SPX/charts/
+
+2.3 Snapshot File Naming (Authoritative)
+Each prediction event is triggered by a single snapshot JSON file.
+
+Required filename format:
+{ticker}-{spotprice}-{ExpirationYear}-{ExpirationMonth}-{ExpirationDay}-{ObservedYYYYMMDD}-{ObservedTimeMilitary}.json
+
+Example:
+SPX-6903.63-2026-02-20-20260220-145520.json
+
+2.3A Filename Parsing Rules
+Daemon MUST parse:
+- ticker: string (must equal "SPX" in v1)
+- spotprice: decimal number (float)
+- expiration_date: YYYY-MM-DD
+- observed_date: YYYYMMDD
+- observed_time: HHMMSS (24-hour “military”)
+- extension: must be ".json"
+
+Observed timestamp construction:
+observed_utc = observed_date + observed_time interpreted as UTC unless snapshot JSON explicitly includes timezone metadata.
+
+If snapshot JSON includes observed_utc, it must match filename-derived observed_utc within +/- 2 seconds tolerance.
+If mismatch exceeds tolerance, log validation error and skip processing.
+
+2.3B Filename Validation Requirements
+Valid only if:
+- ticker == "SPX"
+- spotprice parses as float > 0
+- expiration_date is valid date
+- observed_date is valid YYYYMMDD date
+- observed_time is valid HHMMSS time
+- expiration_date >= observed_date (no past expirations)
+- extension is .json
+- file is stable (size unchanged for FILE_STABLE_SECONDS)
+
+Invalid filenames must be quarantined to:
+/mnt/options_ai/quarantine/invalid_filenames/
+(or logged and left unprocessed if quarantine not implemented yet)
+
+2.3C Required Regex (Reference)
+^(?P<ticker>[A-Z]+)-(?P<spot>\d+(\.\d+)?)-(?P<expY>\d{4})-(?P<expM>\d{2})-(?P<expD>\d{2})-(?P<obsDate>\d{8})-(?P<obsTime>\d{6})\.json$
+
+2.4 Optional Chart Image Naming
+If chart PNG exists for the same observation timestamp, it must be named:
+{ticker}_chart_{ObservedYYYYMMDD}_{ObservedTimeMilitary}.png
+
+Example:
+SPX_chart_20260220_145520.png
+
+Location:
+/mnt/options_ai/incoming/SPX/charts/
+
+If missing, prediction proceeds without chart extraction.
+
+2.5 Atomic File Requirement
+Snapshot files must be written atomically.
+Daemon must ignore:
+- *.tmp files
+- files still changing size
+
+Allowed producer pattern:
+write to temp, rename/move to final name
+
+SNAPSHOT JSON SCHEMA (COLUMNAR ARRAYS)
+
+3.1 Schema Style
+Snapshot JSON uses a columnar format: each key contains an array.
+Each index i across arrays represents one contract row.
+
+Example: optionSymbol[i], side[i], strike[i], bid[i], ask[i], iv[i] are all fields for the same contract.
+
+3.2 Top-Level Required Fields
+Required:
+- s: string (must equal "ok")
+- optionSymbol: array[string] length N
+- underlying: array[string] length N (must resolve to SPX; alias allowed if configured)
+- expiration: array[int] length N (unix epoch seconds; must be identical across rows)
+- side: array[string] length N ("call" or "put")
+- strike: array[number] length N
+- bid: array[number|null] length N
+- ask: array[number|null] length N
+- openInterest: array[int|null] length N
+- volume: array[int|null] length N
+- iv: array[number|null] length N
+- delta: array[number|null] length N
+- gamma: array[number|null] length N
+
+Required via filename and/or JSON:
+- ticker: string must equal "SPX" (may be absent in JSON; then derived from filename)
+- spot_price: number (may be absent in JSON; then derived from filename)
+
+3.3 Recommended Optional Fields Supported if present:
+- mid: array[number|null]
+- updated: array[int]
+- last: array[number|null]
+- bidSize: array[int|null]
+- askSize: array[int|null]
+- inTheMoney: array[bool|null]
+- intrinsicValue: array[number|null]
+- extrinsicValue: array[number|null]
+- underlyingPrice: array[number|null]
+- theta: array[number|null]
+- vega: array[number|null]
+- firstTraded: array[int|null]
+- dte: array[int|null]
+- ohlcv: required for scoring/trend OR a compatible equivalent price-series structure
+
+3.4 Array Alignment Validation (Mandatory)
+Before processing, daemon MUST validate:
+- All required per-contract arrays have equal length N
+- N > 0
+- expiration[] values are all identical
+- underlying[] values are all identical (after alias normalization)
+- side[] values are only "call" or "put"
+
+If validation fails:
+- Log error
+- Quarantine file to: /mnt/options_ai/quarantine/invalid_json/
+- Do not insert DB row
+
+3.5 Null Handling Rules
+If bid or ask is null, mid is null unless computed.
+If iv/delta/gamma is null, that contract row is still kept but excluded from computations requiring that field.
+Signal computation must not crash on nulls.
+
+3.6 Normalization Requirement (Mandatory)
+Daemon MUST convert the columnar schema to an internal row-list:
+rows[i] = {
+  optionSymbol, side, strike, expiration_epoch, bid, ask, mid (computed if needed),
+  openInterest, volume, iv, delta, gamma, ...optional fields...
+}
+
+All downstream computations operate on normalized rows.
+
+3.7 Expiration Date Derivation + Validation
+Daemon must derive expiration_date from expiration epoch (YYYY-MM-DD) and validate it matches the expiration date embedded in filename.
+
+If mismatch:
+- Log validation error
+- Skip processing
+
+AUTHORITATIVE DATA ROOT (RUNTIME OUTPUTS)
+
+/mnt/options_ai
+
+The repository must never contain runtime artifacts.
+
+4.1 Required Runtime Directory Structure
+/mnt/options_ai/
+  incoming/
+    SPX/
+      charts/
+  processed/
+    SPX/
+      snapshots/
+      charts/
+  database/
+    predictions.db
+  logs/
+    predictions/
+    analyzer_reports/
+    daemon/
+  state/
+    seen_files.json
+  quarantine/
+    invalid_filenames/
+    invalid_json/
+  historical/
+    SPX/
+  replay/
+
+The daemon must create missing directories on startup.
+
+AI MODEL ARCHITECTURE (CODEX)
+
+5.1 Model
+Model used: gpt-5.2-codex
+Accessed via OPENAI_API_KEY.
+No external tool calling is used in v1.
+
+5.2 Two-Phase Model Usage
+Phase 1 — Chart Extraction (Only if chart PNG exists)
+Input: SPX chart PNG
+Output: Plain-text chart description
+Rules:
+- Describe only visible data
+- No prediction
+- No speculation
+- No options references
+- Use “not clearly visible” when unsure
+- 4–6 sentences
+
+Phase 2 — Prediction
+Input:
+- Snapshot data (normalized summary; do not dump millions of characters)
+- Deterministic locally-computed signals (section 6)
+- Chart description (if present)
+- Recent predictions
+- Performance summary
+
+Output: Strict JSON (exact schema required)
+The system must validate output schema and retry once if parsing fails.
+
+INTERNAL SIGNAL EXTRACTION (NO EXTERNAL TOOLS)
+
+All signals are computed locally from the normalized snapshot rows and any included price-series data.
+Signal utilities must be deterministic pure functions.
+
+Required computations include:
+- compute_put_call_ratio(rows): put_OI_sum / call_OI_sum (and optionally volume-based ratio)
+- compute_expected_move(rows, spot_price, horizon_minutes=15): derive expected move from IV near ATM using a deterministic formula
+- compute_atm_iv(rows, spot_price): select closest strikes around spot, average IV
+- compute_volume_class(price_series): classify volume of latest bar vs trailing window
+- compute_trend(price_series): classify bullish/bearish/choppy using deterministic rules
+- detect_unusual_activity(rows): flag contracts with abnormal volume vs OI, or top percentile volume/OI
+
+Signals must be bundled as a JSON object and inserted into the prediction prompt.
+
+DATABASE REQUIREMENTS
+
+7.1 Database Location
+/mnt/options_ai/database/predictions.db
+
+.env must include:
+DATABASE_URL=sqlite:////mnt/options_ai/database/predictions.db
+
+7.2 SQLite Requirements
+On initialization:
+- PRAGMA journal_mode=WAL;
+- PRAGMA busy_timeout=5000;
+
+Rules:
+- Short-lived connections
+- Immediate commit after writes
+- No open transactions during model calls
+- Parameterized queries only
+- Timestamps stored in UTC
+- Rows never deleted
+
+DATABASE SCHEMA
+
+8.1 predictions table
+Fields at prediction time:
+- id (INTEGER PRIMARY KEY)
+- timestamp (DATETIME UTC) -- derived from filename observed timestamp (or JSON observed_utc if validated)
+- ticker (TEXT, must equal "SPX")
+- expiration_date (TEXT YYYY-MM-DD) -- from filename + validated with JSON epoch source
+- source_snapshot_file (TEXT)
+- source_snapshot_hash (TEXT UNIQUE) -- sha256 of file contents
+- chart_file (TEXT nullable)
+- spot_price (REAL) -- from filename and/or JSON
+- signals_used (TEXT JSON) -- includes computed signal outputs and any flags
+- chart_description (TEXT nullable)
+- predicted_direction (TEXT)
+- predicted_magnitude (REAL)
+- confidence (REAL 0–1)
+- strategy_suggested (TEXT)
+- reasoning (TEXT)
+- prompt_version (TEXT)
+
+Fields at scoring time:
+- price_at_prediction (REAL)
+- price_at_outcome (REAL)
+- actual_move (REAL)
+- result (TEXT)
+- pnl_simulated (REAL)
+- outcome_notes (TEXT)
+- scored_at (DATETIME UTC)
+
+8.2 performance_summary table
+- id
+- generated_at
+- total_predictions
+- total_scored
+- overall_accuracy
+- summary_json (TEXT JSON)
+
+DAEMON BEHAVIOR (FILE WATCHER)
+
+9.1 Service Behavior
+A single long-running daemon continuously monitors:
+/mnt/options_ai/incoming/SPX/
+
+If no new snapshot files exist, it sleeps and repeats.
+
+Implementation may use:
+- inotify-based watcher (preferred on Linux)
+- OR polling directory scan (acceptable)
+
+9.2 New File Detection Rules
+A snapshot file is ready when:
+- matches required filename regex
+- does not end with .tmp
+- file size is stable for FILE_STABLE_SECONDS
+- sha256 not already present in DB (idempotency)
+
+9.3 On New Snapshot Arrival
+For each ready snapshot file:
+- Parse + validate filename
+- Read JSON
+- Validate JSON schema and array alignment
+- Normalize rows
+- Compute deterministic signals
+- Locate optional chart PNG (by observed timestamp naming)
+- If chart exists: Phase 1 Codex call to produce chart_description
+- Load context: last HISTORY_RECORDS predictions similar-condition subset (optional; recommended) latest performance_summary
+- Phase 2 Codex call to produce prediction JSON
+- Validate strict JSON schema
+- Insert prediction row into DB (atomic)
+- Append to daily log: /mnt/options_ai/logs/predictions/YYYY-MM-DD.json
+- Move processed files:
+  - snapshot -> /mnt/options_ai/processed/SPX/snapshots/
+  - chart (if any) -> /mnt/options_ai/processed/SPX/charts/
+
+On failure:
+- Log error to /mnt/options_ai/logs/daemon/
+- Do not move file
+- Retry later with backoff
+
+9.4 Idempotency
+Compute sha256(file bytes) as source_snapshot_hash.
+If already exists in DB:
+- Skip processing
+- Optionally move to processed/duplicates/
+
+SCORING PROCESS
+
+10.1 Eligibility
+A prediction is eligible to score when:
+- result IS NULL
+- timestamp <= now_utc - OUTCOME_DELAY (default 15 minutes)
+
+10.2 Outcome Price Source (File-Based)
+Scoring must be deterministic and file-driven.
+
+Outcome price must be obtained from:
+- the same snapshot JSON if it includes enough forward price data
+- OR a later snapshot file at/after timestamp+OUTCOME_DELAY
+
+Minimum requirement: The daemon must be able to compute price_at_outcome using available snapshots without external calls.
+
+If outcome cannot be computed yet:
+- Skip scoring and retry later
+
+10.3 Scoring Logic
+FLAT_THRESHOLD = 0.001
+MAGNITUDE_TOLERANCE = 0.002
+
+Compute:
+actual_move = (price_at_outcome - price_at_prediction) / price_at_prediction
+
+Rules:
+- abs(actual_move) < FLAT_THRESHOLD -> inconclusive
+- wrong direction -> wrong_direction
+- correct direction and magnitude within tolerance -> correct
+- else -> correct_direction_wrong_magnitude
+
+10.4 Summary Refresh
+If any predictions are scored:
+- rebuild performance_summary
+- store in performance_summary table
+
+PROMPTS
+
+11.1 Chart Extraction Prompt (Phase 1)
+- Describe only what is visible
+- No prediction
+- No speculation
+- No options references
+- 4–6 sentences
+- “not clearly visible” when uncertain
+
+11.2 Prediction System Prompt (Phase 2)
+Must enforce:
+- Source of truth is snapshot JSON and computed signals
+- Must apply self-calibration rules using history + summary
+- If similar-condition accuracy < 45% and sample >= 5 -> output neutral
+- If confidence < MIN_CONFIDENCE -> strategy_suggested must be empty string
+- Output must be JSON only (no markdown, no extra text)
+
+11.3 Required Output Schema (Strict)
+{
+  "predicted_direction": "bullish" | "bearish" | "neutral",
+  "predicted_magnitude": <decimal>,
+  "confidence": <0-1>,
+  "strategy_suggested": "<string>",
+  "signals_used": ["<signal>"],
+  "reasoning": "<2-3 sentences>"
+}
+
+ENVIRONMENT VARIABLES
+
+Required:
+- OPENAI_API_KEY
+- DATABASE_URL
+- TICKER=SPX
+- DATA_ROOT=/mnt/options_ai
+
+Optional:
+- MIN_CONFIDENCE=0.65
+- OUTCOME_DELAY=15
+- HISTORY_RECORDS=10
+- SIMILAR_CONDITIONS_N=3
+- FILE_STABLE_SECONDS=2
+- WATCH_POLL_SECONDS=1
+- REPLAY_MODE=false
+
+If TICKER != SPX in v1 -> fail fast.
+
+REPLAY MODE
+
+If REPLAY_MODE=true:
+- Do not watch incoming folder
+- Process historical files deterministically from: /mnt/options_ai/historical/SPX/
+- Output written to DB and logs as normal
+
+NON-FUNCTIONAL REQUIREMENTS
+
+- Daemon safe to run 24/7
+- If no new files -> low CPU usage
+- No duplicate processing (idempotent)
+- All timestamps UTC
+- Raw model outputs logged
+- Parse failures logged with offending text
+- Transient errors retried with backoff
+- One bad snapshot must not crash daemon
+
+SUCCESS CRITERIA
+
+After 500 scored predictions:
+- overall_accuracy > 55%
+- High-confidence (>0.75) accuracy > 65%
+- At least 2 condition buckets outperform overall by >10%
+- Summary shows meaningful variance by signal
+
+REPOSITORY STRUCTURE (MANDATORY)
+
+Repo: https://github.com/nate007-quant/OptionsPredicator
+
+Repo must contain (code + spec only):
+- OptionsPredicator/
+- README.md
+- SPEC_OPTIONS_AI_v1_3.txt
+- .gitignore
+- .env.example
+- requirements.txt
+- options_ai/
+  - main.py
+  - watcher.py
+  - config.py
+  - ai/
+    - codex_client.py
+    - prompts.py
+  - processes/
+    - ingest.py
+    - scorer.py
+    - analyzer.py
+  - db/
+    - schema.sql
+  - db.py
+  - queries.py
+  - utils/
+    - logger.py
+    - scoring.py
+    - summarizer.py
+    - paths.py
+    - signals.py
+  - tests/
+    - test_scoring.py
+    - test_idempotency.py
+    - test_schema_validation.py
+
+Repo must NOT contain runtime artifacts:
+- predictions.db
+- chart images
+- logs
+- cache
+- historical data
+
+All runtime artifacts live under /mnt/options_ai.
+
+END OF SPECIFICATION
