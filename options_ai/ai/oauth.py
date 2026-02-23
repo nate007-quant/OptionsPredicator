@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from options_ai.utils.cache import save_json_atomic, load_json
+from options_ai.utils.logger import get_logger
 
 
 class OAuthUnavailable(RuntimeError):
@@ -116,6 +117,12 @@ class OAuthTokenManager:
 
         # Failure: pause model usage for a while
         self._disabled_until = self._now() + float(self.cfg.disable_seconds_after_failure)
+        try:
+            lg = get_logger()
+            if lg:
+                lg.log(level="ERROR", component="OAuth", event="oauth_token_failure", message="token request failed after retries", file_key="errors", details={"error": last_err})
+        except Exception:
+            pass
         self._last_error_ts = self._now()
         raise OAuthUnavailable(f"OAuth token request failed after retries: {last_err}")
 
@@ -137,6 +144,19 @@ class OAuthTokenManager:
             resp = client.post(self.cfg.token_url, data=data)
 
         if resp.status_code >= 400:
+            try:
+                lg = get_logger()
+                if lg:
+                    lg.log(
+                        level="ERROR",
+                        component="OAuth",
+                        event="oauth_http_error",
+                        message="token endpoint returned error",
+                        file_key="errors",
+                        details={"status_code": resp.status_code},
+                    )
+            except Exception:
+                pass
             raise OAuthUnavailable(f"token endpoint HTTP {resp.status_code}")
 
         try:

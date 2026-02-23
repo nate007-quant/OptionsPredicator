@@ -7,7 +7,7 @@ from typing import Any
 
 from options_ai.config import Config
 from options_ai.queries import fetch_eligible_to_score, insert_performance_summary, update_scoring
-from options_ai.utils.logger import log_daemon_event
+from options_ai.utils.logger import get_logger, log_daemon_event, log_scoring
 from options_ai.utils.scoring import score_prediction, simulate_pnl
 from options_ai.utils.summarizer import build_performance_summary, performance_summary_to_row
 
@@ -89,6 +89,7 @@ def score_due_predictions(*, cfg: Config, paths: Any, db_path: str, state: dict[
 
             price_outcome, matched_obs = _find_outcome_price(state, target_ts)
             if price_outcome is None:
+                log_scoring(paths, level="INFO", event="missing_outcome_price", message="outcome not available yet", pred_id=int(p.get("id")))
                 continue
 
             price_pred = float(p.get("spot_price") or 0.0)
@@ -112,7 +113,11 @@ def score_due_predictions(*, cfg: Config, paths: Any, db_path: str, state: dict[
             )
             scored += 1
         except Exception as e:
-            log_daemon_event(paths.logs_daemon_dir, "error", "scoring_error", pred_id=p.get("id"), error=str(e))
+            lg = get_logger()
+            if lg:
+                lg.exception(level="ERROR", component="Scoring", event="scoring_error", message="scoring error", file_key="scoring", exc=e, pred_id=p.get("id"))
+            else:
+                log_daemon_event(paths.logs_daemon_dir, "error", "scoring_error", pred_id=p.get("id"), error=str(e))
 
     if scored:
         ps = build_performance_summary(db_path)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 import re
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
@@ -26,9 +27,12 @@ from options_ai.utils.cache import (
     sha256_file,
 )
 from options_ai.utils.logger import (
+    get_logger,
     log_analyzer_report,
     log_daemon_event,
+    log_model,
     log_prediction_event,
+    log_routing,
 )
 from options_ai.utils.signals import OptionRow, compute_all_signals
 
@@ -364,6 +368,19 @@ def ingest_snapshot_file(
     chart_report: dict[str, Any] | None = None
 
     candidates = router.candidates(bootstrap_mode=bootstrap_mode) if router is not None else []
+    try:
+        log_routing(
+            paths,
+            level="INFO",
+            event="routing_candidates",
+            message="computed routing candidates",
+            snapshot_hash=snapshot_hash,
+            candidates=[{"provider": c.provider, "model_used": c.model_used, "reason": c.routing_reason} for c in candidates],
+            bootstrap_mode=bool(bootstrap_mode),
+        )
+    except Exception:
+        pass
+
 
     # Chart extraction routing + caching (chart is optional; failures should not stop prediction).
     if not bootstrap_mode and chart_path and candidates:
@@ -409,7 +426,34 @@ def ingest_snapshot_file(
                 except Exception:
                     pass
                 break
-            except Exception:
+            except Exception as e:
+                lg = get_logger()
+                if lg:
+                    lg.exception(
+                        level="ERROR",
+                        component="Model",
+                        event="chart_extraction_failed",
+                        message="chart extraction failed",
+                        file_key="model",
+                        snapshot_hash=snapshot_hash,
+                        model_used=c.model_used,
+                        exc=e,
+                        model_provider=c.provider,
+                        routing_reason=c.routing_reason,
+                        error=str(e),
+                    )
+                else:
+                    log_model(
+                        paths,
+                        level="ERROR",
+                        event="chart_extraction_failed",
+                        message="chart extraction failed",
+                        snapshot_hash=snapshot_hash,
+                        model_used=c.model_used,
+                        model_provider=c.provider,
+                        routing_reason=c.routing_reason,
+                        error=str(e),
+                    )
                 continue
 
         if chart_report is not None:
@@ -467,6 +511,10 @@ def ingest_snapshot_file(
                 "routing_reason": c.routing_reason,
             })
             model_used, model_provider, routing_reason = c.model_used, c.provider, c.routing_reason
+            try:
+                log_routing(paths, level="INFO", event="model_selected", message="selected model from cache", snapshot_hash=snapshot_hash, model_used=model_used, model_provider=model_provider, routing_reason=routing_reason)
+            except Exception:
+                pass
             break
 
         try:
@@ -488,6 +536,10 @@ def ingest_snapshot_file(
             pred_report = rep
             model_used, model_provider, routing_reason = mu, mp, rr
             try:
+                log_routing(paths, level="INFO", event="model_selected", message="selected model", snapshot_hash=snapshot_hash, model_used=model_used, model_provider=model_provider, routing_reason=routing_reason)
+            except Exception:
+                pass
+            try:
                 save_model_cache(
                     paths,
                     snapshot_hash,
@@ -500,7 +552,34 @@ def ingest_snapshot_file(
             except Exception:
                 pass
             break
-        except Exception:
+        except Exception as e:
+            lg = get_logger()
+            if lg:
+                lg.exception(
+                    level="ERROR",
+                    component="Model",
+                    event="prediction_failed",
+                    message="prediction failed",
+                    file_key="model",
+                    snapshot_hash=snapshot_hash,
+                    model_used=c.model_used,
+                    exc=e,
+                    model_provider=c.provider,
+                    routing_reason=c.routing_reason,
+                    error=str(e),
+                )
+            else:
+                log_model(
+                    paths,
+                    level="ERROR",
+                    event="prediction_failed",
+                    message="prediction failed",
+                    snapshot_hash=snapshot_hash,
+                    model_used=c.model_used,
+                    model_provider=c.provider,
+                    routing_reason=c.routing_reason,
+                    error=str(e),
+                )
             continue
 
     if pred_obj is None:
@@ -513,7 +592,7 @@ def ingest_snapshot_file(
             "reasoning": "No model provider available; prediction skipped.",
         }
         pred_report = {"cache_hit": False, "model_used": model_used, "model_provider": model_provider, "routing_reason": routing_reason}
-# Local self-calibration enforcement (hard rule, deterministic).
+    # Local self-calibration enforcement (hard rule, deterministic).
     try:
         if perf_summary and perf_summary.get("overall_accuracy") is not None and (perf_summary.get("total_scored") or 0) >= 5:
             if float(perf_summary["overall_accuracy"]) < 0.45:

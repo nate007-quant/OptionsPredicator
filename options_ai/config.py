@@ -53,7 +53,7 @@ class Config:
     local_model_max_retries: int = 2
 
     codex_model: str = "gpt-5.2-codex"
-    prompt_version: str = "v2.2.0"
+    prompt_version: str = "v2.3.0"
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -120,5 +120,5 @@ def load_config() -> Config:
         local_model_timeout_seconds=int(os.getenv("LOCAL_MODEL_TIMEOUT_SECONDS", "60")),
         local_model_max_retries=int(os.getenv("LOCAL_MODEL_MAX_RETRIES", "2")),
         codex_model=os.getenv("CODEX_MODEL", "gpt-5.2-codex").strip(),
-        prompt_version=os.getenv("PROMPT_VERSION", "v2.2.0").strip(),
+        prompt_version=os.getenv("PROMPT_VERSION", "v2.3.0").strip(),
     )

@@ -1,4 +1,4 @@
--- Options AI v2.2 schema
+-- Options AI v2.3 schema
 
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
@@ -35,9 +35,6 @@ CREATE TABLE IF NOT EXISTS predictions (
   scored_at TEXT
 );
 
--- Note: v2.2 unique index is created in db.init_db after migrations to avoid failures
--- when upgrading older DBs that lack model_used.
-
 CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON predictions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_predictions_result_null ON predictions(result);
 
@@ -49,3 +46,19 @@ CREATE TABLE IF NOT EXISTS performance_summary (
   overall_accuracy REAL,
   summary_json TEXT NOT NULL
 );
+
+-- v2.3: store ERROR/CRITICAL system events (for postmortem/debug)
+CREATE TABLE IF NOT EXISTS system_events (
+  id INTEGER PRIMARY KEY,
+  timestamp TEXT NOT NULL,
+  level TEXT NOT NULL,
+  component TEXT NOT NULL,
+  event TEXT NOT NULL,
+  message TEXT NOT NULL,
+  snapshot_hash TEXT,
+  model_used TEXT,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_events_timestamp ON system_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_system_events_level ON system_events(level);

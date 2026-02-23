@@ -14,7 +14,7 @@ from options_ai.processes.ingest import IngestResult, ingest_snapshot_file
 from options_ai.processes.scorer import score_due_predictions
 from options_ai.queries import fetch_total_predictions
 from options_ai.utils.cache import sha256_file
-from options_ai.utils.logger import log_daemon_event
+from options_ai.utils.logger import get_logger, log_bootstrap, log_daemon_event
 
 
 @dataclass
@@ -78,7 +78,7 @@ def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[
     checkpoint = _load_json(checkpoint_path, {"last_file": None})
     last_file = checkpoint.get("last_file")
 
-    log_daemon_event(paths.logs_daemon_dir, "info", "bootstrap_start", total_files=len(files), last_file=last_file)
+    log_bootstrap(paths, level="INFO", event="bootstrap_start", message="bootstrap start", total_files=len(files), last_file=last_file)
 
     for p in files:
         if last_file and p.name <= str(last_file):
@@ -103,10 +103,10 @@ def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[
 
             _save_json_atomic(checkpoint_path, {"last_file": p.name})
         except Exception as e:
-            log_daemon_event(paths.logs_daemon_dir, "error", "bootstrap_file_error", file=str(p), error=str(e))
+            log_bootstrap(paths, level="ERROR", event="bootstrap_file_error", message="bootstrap file error", file=str(p), error=str(e))
 
     _save_json_atomic(completed_path, {"completed_at": time.time()})
-    log_daemon_event(paths.logs_daemon_dir, "info", "bootstrap_complete")
+    log_bootstrap(paths, level="INFO", event="bootstrap_complete", message="bootstrap complete")
 
 
 def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
@@ -199,10 +199,18 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                     delay = min(max(delay * 2, cfg.watch_poll_seconds), 60.0)
                     backoff[str(p) + ":delay"] = delay
                     backoff[str(p)] = time.time() + delay
-                    log_daemon_event(paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
+                    lg = get_logger()
+                    if lg:
+                        lg.exception(level="ERROR", component="Watcher", event="snapshot_process_error", message="snapshot process error", file_key="errors", exc=e, file=str(p), backoff_seconds=delay)
+                    else:
+                        log_daemon_event(paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
 
             time.sleep(cfg.watch_poll_seconds if not processed_any else 0.1)
 
         except Exception as e:
-            log_daemon_event(paths.logs_daemon_dir, "error", "watch_loop_error", error=str(e))
+            lg = get_logger()
+            if lg:
+                lg.exception(level="CRITICAL", component="Watcher", event="watch_loop_error", message="watch loop error", file_key="errors", exc=e)
+            else:
+                log_daemon_event(paths.logs_daemon_dir, "error", "watch_loop_error", error=str(e))
             time.sleep(2.0)
