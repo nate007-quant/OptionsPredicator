@@ -48,7 +48,7 @@ class Config:
 
     local_model_enabled: bool = True
     local_model_endpoint: str = "http://192.168.86.24:11434/v1"
-    local_model_name: str = "deepseek-r1:14b"
+    local_model_name: str = "deepseek-r1:8b"
     local_model_timeout_seconds: int = 60
     local_model_max_retries: int = 2
 
@@ -116,7 +116,7 @@ def load_config() -> Config:
         remote_model_name=os.getenv("REMOTE_MODEL_NAME", "openai-codex/gpt-5.2").strip(),
         local_model_enabled=_get_bool("LOCAL_MODEL_ENABLED", True),
         local_model_endpoint=os.getenv("LOCAL_MODEL_ENDPOINT", "http://192.168.86.24:11434/v1").strip(),
-        local_model_name=os.getenv("LOCAL_MODEL_NAME", "deepseek-r1:14b").strip(),
+        local_model_name=os.getenv("LOCAL_MODEL_NAME", "deepseek-r1:8b").strip(),
         local_model_timeout_seconds=int(os.getenv("LOCAL_MODEL_TIMEOUT_SECONDS", "60")),
         local_model_max_retries=int(os.getenv("LOCAL_MODEL_MAX_RETRIES", "2")),
         codex_model=os.getenv("CODEX_MODEL", "gpt-5.2-codex").strip(),
