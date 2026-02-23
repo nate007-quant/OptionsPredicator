@@ -1,4 +1,4 @@
-# OptionsPredicator systemd service (SPX Options AI v1.3)
+# OptionsPredicator systemd service (SPX Options AI v1.6.0)
 #
 # Install:
 #   sudo cp systemd/options_predicator.service /etc/systemd/system/options_predicator.service
