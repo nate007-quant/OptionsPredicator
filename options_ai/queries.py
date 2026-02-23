@@ -7,13 +7,14 @@ from typing import Any
 from options_ai.db import connect
 
 
-def hash_exists(db_path: str, source_snapshot_hash: str) -> bool:
+def hash_exists(db_path: str, source_snapshot_hash: str, prompt_version: str) -> bool:
     with connect(db_path) as conn:
         cur = conn.execute(
-            "SELECT 1 FROM predictions WHERE source_snapshot_hash = ? LIMIT 1",
-            (source_snapshot_hash,),
+            "SELECT 1 FROM predictions WHERE source_snapshot_hash = ? AND prompt_version = ? LIMIT 1",
+            (source_snapshot_hash, prompt_version),
         )
         return cur.fetchone() is not None
+
 
 
 def insert_prediction(db_path: str, row: dict[str, Any]) -> int:

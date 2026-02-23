@@ -22,8 +22,16 @@ class Config:
     watch_poll_seconds: float = 1.0
     replay_mode: bool = False
 
+    # bootstrap (v1.5+)
+    bootstrap_enable: bool = True
+    bootstrap_max_model_calls_per_min: int = 0  # 0 = unlimited
+    bootstrap_max_model_calls_per_hour: int = 0  # 0 = unlimited
+
+    # caching / reprocessing (v1.6)
+    reprocess_mode: str = "none"  # none|from_model|from_summary|from_signals|full
+   
     codex_model: str = "gpt-5.2-codex"
-    prompt_version: str = "v1.3"
+    prompt_version: str = "v1.6.0"
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -61,6 +69,10 @@ def load_config() -> Config:
         file_stable_seconds=int(os.getenv("FILE_STABLE_SECONDS", "2")),
         watch_poll_seconds=float(os.getenv("WATCH_POLL_SECONDS", "1")),
         replay_mode=_get_bool("REPLAY_MODE", False),
+        bootstrap_enable=_get_bool("BOOTSTRAP_ENABLE", True),
+        bootstrap_max_model_calls_per_min=int(os.getenv("BOOTSTRAP_MAX_MODEL_CALLS_PER_MIN", "0")),
+        bootstrap_max_model_calls_per_hour=int(os.getenv("BOOTSTRAP_MAX_MODEL_CALLS_PER_HOUR", "0")),
+        reprocess_mode=os.getenv("REPROCESS_MODE", "none").strip().lower(),
         codex_model=os.getenv("CODEX_MODEL", "gpt-5.2-codex").strip(),
-        prompt_version=os.getenv("PROMPT_VERSION", "v1.3").strip(),
+        prompt_version=os.getenv("PROMPT_VERSION", "v1.6.0").strip(),
     )

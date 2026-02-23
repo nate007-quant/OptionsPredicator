@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +15,14 @@ from options_ai.queries import (
     fetch_recent_predictions,
     hash_exists,
     insert_prediction,
+)
+from options_ai.utils.cache import (
+    DerivedCache,
+    load_derived_cache,
+    load_model_cache,
+    save_derived_cache,
+    save_model_cache,
+    sha256_file,
 )
 from options_ai.utils.logger import (
     log_analyzer_report,
@@ -209,6 +215,14 @@ def normalize_rows(snapshot: dict[str, Any]) -> list[OptionRow]:
     return rows
 
 
+def _row_to_dict(r: OptionRow) -> dict[str, Any]:
+    return asdict(r)
+
+
+def _dict_to_row(d: dict[str, Any]) -> OptionRow:
+    return OptionRow(**d)
+
+
 def build_snapshot_summary(parsed: ParsedFilename, rows: list[OptionRow], snapshot: dict[str, Any]) -> dict[str, Any]:
     strikes = sorted({r.strike for r in rows})
     return {
@@ -241,24 +255,34 @@ def ingest_snapshot_file(
     snapshot_hash: str,
     codex: CodexClient | None,
     state: dict[str, Any],
+    bootstrap_mode: bool = False,
+    move_files: bool | None = None,
 ) -> IngestResult:
-    # idempotency double-check (watcher also does this)
-    if hash_exists(db_path, snapshot_hash):
-        return IngestResult(processed=False, skipped_reason="duplicate_hash")
+    """Ingest one snapshot JSON file, using caching and prompt-version idempotency (v1.6)."""
+
+    # idempotency: (hash,prompt_version)
+    if hash_exists(db_path, snapshot_hash, cfg.prompt_version):
+        return IngestResult(processed=False, skipped_reason="duplicate_hash_prompt")
+
+    # Default move behavior: move only in live incoming mode.
+    if move_files is None:
+        move_files = (not cfg.replay_mode) and (not bootstrap_mode)
 
     try:
         parsed = parse_snapshot_filename(snapshot_path.name)
     except Exception as e:
         log_daemon_event(paths.logs_daemon_dir, "error", "invalid_filename", file=str(snapshot_path), error=str(e))
-        # quarantine
-        q = Path(paths.quarantine_invalid_filenames_dir) / snapshot_path.name
-        q.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            snapshot_path.replace(q)
-        except Exception:
-            pass
+        # quarantine only for live incoming
+        if move_files:
+            q = Path(paths.quarantine_invalid_filenames_dir) / snapshot_path.name
+            q.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                snapshot_path.replace(q)
+            except Exception:
+                pass
         return IngestResult(processed=False, skipped_reason="invalid_filename")
 
+    # Load + validate JSON
     try:
         raw = snapshot_path.read_text(encoding="utf-8")
         snapshot = json.loads(raw)
@@ -267,30 +291,104 @@ def ingest_snapshot_file(
         validate_snapshot_json(snapshot, parsed)
     except Exception as e:
         log_daemon_event(paths.logs_daemon_dir, "error", "invalid_json", file=str(snapshot_path), error=str(e))
-        q = Path(paths.quarantine_invalid_json_dir) / snapshot_path.name
-        q.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            snapshot_path.replace(q)
-        except Exception:
-            pass
+        if move_files:
+            q = Path(paths.quarantine_invalid_json_dir) / snapshot_path.name
+            q.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                snapshot_path.replace(q)
+            except Exception:
+                pass
         return IngestResult(processed=False, skipped_reason="invalid_json")
 
-    rows = normalize_rows(snapshot)
+    # Stage caching controls
+    mode = (cfg.reprocess_mode or "none").lower()
+    if mode not in {"none", "from_model", "from_summary", "from_signals", "full"}:
+        mode = "none"
+
+    derived: DerivedCache | None = None
+    if mode != "full":
+        derived = load_derived_cache(paths, snapshot_hash)
+
+    # S1 Normalize rows
+    rows: list[OptionRow]
+    if derived is not None and mode in {"none", "from_model", "from_summary", "from_signals"}:
+        try:
+            rows = [_dict_to_row(d) for d in derived.normalized_rows]
+        except Exception:
+            rows = normalize_rows(snapshot)
+    else:
+        rows = normalize_rows(snapshot)
 
     spot = float(snapshot.get("spot_price") or snapshot.get("underlyingPrice") or parsed.spot_price)
     price_series_raw = snapshot.get("ohlcv")
 
-    signals = compute_all_signals(rows, spot, price_series_raw)
-    snapshot_summary = build_snapshot_summary(parsed, rows, snapshot)
+    # S2+S3 Signals (includes GEX)
+    if derived is not None and mode in {"none", "from_model", "from_summary"}:
+        signals = dict(derived.signals)
+    else:
+        signals = compute_all_signals(rows, spot, price_series_raw)
+
+    # S4 Snapshot summary
+    if derived is not None and mode in {"none", "from_model"}:
+        snapshot_summary = dict(derived.snapshot_summary)
+    else:
+        snapshot_summary = build_snapshot_summary(parsed, rows, snapshot)
+
+    # Write derived cache if missing or forced recompute occurred
+    if mode != "from_model":
+        try:
+            save_derived_cache(
+                paths,
+                snapshot_hash,
+                DerivedCache(
+                    normalized_rows=[_row_to_dict(r) for r in rows],
+                    signals=signals,
+                    snapshot_summary=snapshot_summary,
+                ),
+            )
+        except Exception:
+            pass
 
     chart_path = _chart_path_if_exists(paths, parsed)
+    chart_hash: str | None = None
+    if chart_path and Path(chart_path).exists():
+        try:
+            chart_hash = sha256_file(Path(chart_path))
+        except Exception:
+            chart_hash = None
 
-    # Phase 1 (chart extraction)
+    # Phase 1: chart extraction (optional). Disabled by default during bootstrap.
     chart_description: str | None = None
     chart_report: dict[str, Any] | None = None
 
-    if codex is not None:
-        chart_description, chart_report = run_chart_extraction_if_available(codex=codex, chart_png_path=chart_path)
+    if not bootstrap_mode and codex is not None and chart_path:
+        cached = load_model_cache(
+            paths,
+            snapshot_hash,
+            chart_hash=chart_hash,
+            prompt_version=cfg.prompt_version,
+            model_id=cfg.codex_model,
+            kind="chart",
+        )
+        if cached and isinstance(cached.get("chart_description"), str):
+            chart_description = str(cached.get("chart_description"))
+            chart_report = dict(cached.get("report") or {})
+            chart_report["cache_hit"] = True
+        else:
+            chart_description, chart_report = run_chart_extraction_if_available(codex=codex, chart_png_path=chart_path)
+            try:
+                save_model_cache(
+                    paths,
+                    snapshot_hash,
+                    chart_hash=chart_hash,
+                    prompt_version=cfg.prompt_version,
+                    model_id=cfg.codex_model,
+                    kind="chart",
+                    payload={"chart_description": chart_description, "report": chart_report},
+                )
+            except Exception:
+                pass
+
         if chart_report is not None:
             log_analyzer_report(
                 Path(paths.logs_analyzer_reports_dir),
@@ -298,11 +396,11 @@ def ingest_snapshot_file(
                 report={"phase": "chart_extraction", **chart_report},
             )
 
-    # Load context
+    # Context for prediction
     recent_predictions = fetch_recent_predictions(db_path, limit=cfg.history_records)
     perf_summary = fetch_latest_performance_summary(db_path)
 
-    # Phase 2 (prediction)
+    # Phase 2: prediction (cached)
     if codex is None:
         pred_obj = {
             "predicted_direction": "neutral",
@@ -312,21 +410,44 @@ def ingest_snapshot_file(
             "signals_used": ["codex_disabled"],
             "reasoning": "Model calls are disabled (missing OPENAI_API_KEY); defaulting to neutral.",
         }
-        pred_report = {"raw_text": json.dumps(pred_obj), "validated": pred_obj, "attempts": 0}
+        pred_report = {"raw_text": json.dumps(pred_obj), "validated": pred_obj, "attempts": 0, "cache_hit": False}
     else:
-        pred_obj, pred_report = run_prediction(
-            codex=codex,
-            snapshot_summary=snapshot_summary,
-            signals=signals,
-            chart_description=chart_description,
-            recent_predictions=recent_predictions,
-            performance_summary=perf_summary,
-            min_confidence=cfg.min_confidence,
+        cached = load_model_cache(
+            paths,
+            snapshot_hash,
+            chart_hash=chart_hash,
+            prompt_version=cfg.prompt_version,
+            model_id=cfg.codex_model,
+            kind="prediction",
         )
-
+        if cached and isinstance(cached.get("validated"), dict):
+            pred_obj = dict(cached["validated"])
+            pred_report = dict(cached.get("report") or {})
+            pred_report["cache_hit"] = True
+        else:
+            pred_obj, pred_report = run_prediction(
+                codex=codex,
+                snapshot_summary=snapshot_summary,
+                signals=signals,
+                chart_description=chart_description,
+                recent_predictions=recent_predictions,
+                performance_summary=perf_summary,
+                min_confidence=cfg.min_confidence,
+            )
+            try:
+                save_model_cache(
+                    paths,
+                    snapshot_hash,
+                    chart_hash=chart_hash,
+                    prompt_version=cfg.prompt_version,
+                    model_id=cfg.codex_model,
+                    kind="prediction",
+                    payload={"validated": pred_obj, "report": pred_report},
+                )
+            except Exception:
+                pass
 
     # Local self-calibration enforcement (hard rule, deterministic).
-    # If rolling accuracy is poor with enough samples, force neutral output.
     try:
         if perf_summary and perf_summary.get("overall_accuracy") is not None and (perf_summary.get("total_scored") or 0) >= 5:
             if float(perf_summary["overall_accuracy"]) < 0.45:
@@ -335,20 +456,28 @@ def ingest_snapshot_file(
                     "predicted_direction": "neutral",
                     "predicted_magnitude": 0.0,
                     "strategy_suggested": "",
-                    "reasoning": (pred_obj.get("reasoning", "") + " Self-calibration: recent accuracy below threshold; output forced neutral.").strip(),
+                    "reasoning": (
+                        pred_obj.get("reasoning", "")
+                        + " Self-calibration: recent accuracy below threshold; output forced neutral."
+                    ).strip(),
                 }
-                pred_report["postprocess"] = {"forced_neutral": True, "reason": "overall_accuracy_below_0.45_with_sample>=5"}
+                pred_report["postprocess"] = {
+                    "forced_neutral": True,
+                    "reason": "overall_accuracy_below_0.45_with_sample>=5",
+                }
     except Exception:
-        # If summary is malformed, do not crash ingestion.
         pass
+
     log_analyzer_report(
         Path(paths.logs_analyzer_reports_dir),
         observed_ts_compact=parsed.observed_date_compact + parsed.observed_time_compact,
-        report={"phase": "prediction", **pred_report},
+        report={"phase": "prediction", **(pred_report or {})},
     )
 
-    # Store signals_used as JSON payload: computed + model-declared.
-    signals_payload = {"computed": signals, "model_signals_used": pred_obj.get("signals_used")}
+    signals_payload = {
+        "computed": signals,
+        "model_signals_used": pred_obj.get("signals_used"),
+    }
 
     row = {
         "timestamp": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
@@ -397,7 +526,7 @@ def ingest_snapshot_file(
     )
 
     # Move processed files only for live (non-replay) incoming directory
-    if not cfg.replay_mode:
+    if move_files:
         try:
             dest = Path(paths.processed_snapshots_dir) / snapshot_path.name
             dest.parent.mkdir(parents=True, exist_ok=True)

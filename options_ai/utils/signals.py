@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from options_ai.utils.gex import compute_gex_structure, gex_to_signals
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -208,10 +209,14 @@ def detect_unusual_activity(rows: list[OptionRow]) -> dict[str, Any]:
 def compute_all_signals(rows: list[OptionRow], spot_price: float, price_series_raw: Any) -> dict[str, Any]:
     pcr = compute_put_call_ratio(rows)
     em = compute_expected_move(rows, spot_price, horizon_minutes=15)
+    gex = compute_gex_structure(rows, spot_price)
     return {
         **pcr,
         **em,
         "trend": compute_trend(price_series_raw),
         "volume_class": compute_volume_class(price_series_raw),
         **detect_unusual_activity(rows),
+        **gex_to_signals(gex),
+        "gex_net_by_strike": gex.net_gex_by_strike,
+        "gex_abs_by_strike": gex.abs_gex_by_strike,
     }

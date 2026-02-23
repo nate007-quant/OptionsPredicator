@@ -26,6 +26,10 @@ class RuntimePaths:
 
     historical_dir: Path
 
+    cache_dir: Path
+    cache_derived_dir: Path
+    cache_model_dir: Path
+
 
 def build_paths(data_root: str, ticker: str) -> RuntimePaths:
     root = Path(data_root)
@@ -49,6 +53,10 @@ def build_paths(data_root: str, ticker: str) -> RuntimePaths:
 
     historical_dir = root / "historical" / ticker
 
+    cache_dir = root / "cache"
+    cache_derived_dir = cache_dir / "derived"
+    cache_model_dir = cache_dir / "model"
+
     return RuntimePaths(
         data_root=root,
         ticker=ticker,
@@ -64,6 +72,9 @@ def build_paths(data_root: str, ticker: str) -> RuntimePaths:
         quarantine_invalid_filenames_dir=quarantine_invalid_filenames_dir,
         quarantine_invalid_json_dir=quarantine_invalid_json_dir,
         historical_dir=historical_dir,
+        cache_dir=cache_dir,
+        cache_derived_dir=cache_derived_dir,
+        cache_model_dir=cache_model_dir,
     )
 
 
@@ -81,6 +92,9 @@ def ensure_runtime_dirs(paths: RuntimePaths) -> None:
         paths.quarantine_invalid_filenames_dir,
         paths.quarantine_invalid_json_dir,
         paths.historical_dir,
+        paths.cache_dir,
+        paths.cache_derived_dir,
+        paths.cache_model_dir,
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)

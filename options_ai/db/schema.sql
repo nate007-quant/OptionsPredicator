@@ -1,4 +1,4 @@
--- Options AI v1.3 schema
+-- Options AI v1.6 schema
 
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   ticker TEXT NOT NULL,
   expiration_date TEXT NOT NULL,
   source_snapshot_file TEXT NOT NULL,
-  source_snapshot_hash TEXT NOT NULL UNIQUE,
+  source_snapshot_hash TEXT NOT NULL,
   chart_file TEXT,
   spot_price REAL NOT NULL,
   signals_used TEXT NOT NULL,
@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS predictions (
   outcome_notes TEXT,
   scored_at TEXT
 );
+
+-- idempotency is (snapshot_hash, prompt_version)
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt ON predictions(source_snapshot_hash, prompt_version);
 
 CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON predictions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_predictions_result_null ON predictions(result);
