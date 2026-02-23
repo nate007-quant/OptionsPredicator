@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from options_ai.ai.codex_client import CodexClient
+from options_ai.ai.oauth import OAuthConfig, OAuthTokenManager
 from options_ai.ai.throttle import RateLimiter, ThrottledCodexClient
 from options_ai.config import Config
 from options_ai.processes.ingest import IngestResult, ingest_snapshot_file
@@ -55,15 +56,27 @@ def _list_candidate_snapshots(dir_path: Path) -> list[Path]:
 
 
 def _build_codex(cfg: Config, throttled: bool) -> CodexClient | None:
-    if not cfg.openai_api_key:
+    # v2.0: OAuth-only. OPENAI_API_KEY is ignored.
+    oauth_cfg = OAuthConfig(
+        client_id=cfg.oauth_client_id,
+        client_secret=cfg.oauth_client_secret,
+        token_url=cfg.oauth_token_url,
+        scope=cfg.oauth_scope,
+        audience=cfg.oauth_audience or None,
+        refresh_margin_seconds=int(cfg.oauth_refresh_margin_seconds or 60),
+        cache_path=str(cfg.oauth_cache_path),
+    )
+    tm = OAuthTokenManager(oauth_cfg)
+    if not tm.is_configured():
         return None
     if throttled:
         limiter = RateLimiter(
             max_per_minute=int(cfg.bootstrap_max_model_calls_per_min or 0),
             max_per_hour=int(cfg.bootstrap_max_model_calls_per_hour or 0),
         )
-        return ThrottledCodexClient(api_key=cfg.openai_api_key, model=cfg.codex_model, limiter=limiter)
-    return CodexClient(api_key=cfg.openai_api_key, model=cfg.codex_model)
+        # ThrottledCodexClient subclasses CodexClient; same auth plumbing.
+        return ThrottledCodexClient(token_manager=tm, model=cfg.codex_model, limiter=limiter)
+    return CodexClient(token_manager=tm, model=cfg.codex_model)
 
 
 def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[str, Any]) -> None:

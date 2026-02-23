@@ -15,6 +15,11 @@ def main() -> None:
     paths = build_paths(cfg.data_root, cfg.ticker)
     ensure_runtime_dirs(paths)
 
+    # v2.0: API key auth is deprecated; ignore if present.
+    import os
+    if os.getenv("OPENAI_API_KEY"):
+        log_daemon_event(paths.logs_daemon_dir, "warn", "openai_api_key_ignored", message_detail="OPENAI_API_KEY is ignored in v2.0; configure OAuth env vars instead")
+
     db_path = db_path_from_url(cfg.database_url)
     schema_path = Path(__file__).parent / "db" / "schema.sql"
     init_db(db_path, schema_sql_path=str(schema_path))

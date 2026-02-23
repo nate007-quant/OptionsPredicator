@@ -13,7 +13,17 @@ class Config:
     ticker: str
     data_root: str
 
+    # OAuth (v2.0)
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    oauth_token_url: str = ""
+    oauth_scope: str = ""
+    oauth_audience: str = ""
+    oauth_refresh_margin_seconds: int = 60
+    oauth_cache_path: str = "/mnt/options_ai/state/oauth_token.json"
+
     # optional tuning
+
     min_confidence: float = 0.65
     outcome_delay_minutes: int = 15
     history_records: int = 10
@@ -31,7 +41,7 @@ class Config:
     reprocess_mode: str = "none"  # none|from_model|from_summary|from_signals|full
    
     codex_model: str = "gpt-5.2-codex"
-    prompt_version: str = "v1.6.0"
+    prompt_version: str = "v2.0.0"
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -49,6 +59,15 @@ def load_config() -> Config:
     ticker = os.getenv("TICKER", "SPX").strip().upper()
     data_root = os.getenv("DATA_ROOT", "/mnt/options_ai").strip()
 
+    # OAuth (v2.0)
+    oauth_client_id = os.getenv("OAUTH_CLIENT_ID", "").strip()
+    oauth_client_secret = os.getenv("OAUTH_CLIENT_SECRET", "").strip()
+    oauth_token_url = os.getenv("OAUTH_TOKEN_URL", "").strip()
+    oauth_scope = os.getenv("OAUTH_SCOPE", "").strip()
+    oauth_audience = os.getenv("OAUTH_AUDIENCE", "").strip()
+    oauth_refresh_margin_seconds = int(os.getenv("OAUTH_REFRESH_MARGIN_SECONDS", "60"))
+    oauth_cache_path = os.getenv("OAUTH_CACHE_PATH", f"{data_root}/state/oauth_token.json").strip()
+
     if ticker != "SPX":
         raise RuntimeError(f"v1 supports SPX only (TICKER={ticker!r})")
 
@@ -62,6 +81,13 @@ def load_config() -> Config:
         database_url=database_url,
         ticker=ticker,
         data_root=data_root,
+        oauth_client_id=oauth_client_id,
+        oauth_client_secret=oauth_client_secret,
+        oauth_token_url=oauth_token_url,
+        oauth_scope=oauth_scope,
+        oauth_audience=oauth_audience,
+        oauth_refresh_margin_seconds=oauth_refresh_margin_seconds,
+        oauth_cache_path=oauth_cache_path,
         min_confidence=float(os.getenv("MIN_CONFIDENCE", "0.65")),
         outcome_delay_minutes=int(os.getenv("OUTCOME_DELAY", "15")),
         history_records=int(os.getenv("HISTORY_RECORDS", "10")),
@@ -74,5 +100,5 @@ def load_config() -> Config:
         bootstrap_max_model_calls_per_hour=int(os.getenv("BOOTSTRAP_MAX_MODEL_CALLS_PER_HOUR", "0")),
         reprocess_mode=os.getenv("REPROCESS_MODE", "none").strip().lower(),
         codex_model=os.getenv("CODEX_MODEL", "gpt-5.2-codex").strip(),
-        prompt_version=os.getenv("PROMPT_VERSION", "v1.6.0").strip(),
+        prompt_version=os.getenv("PROMPT_VERSION", "v2.0.0").strip(),
     )

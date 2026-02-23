@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from options_ai.ai.codex_client import CodexClient
+from options_ai.ai.oauth import OAuthUnavailable
 from options_ai.config import Config
 from options_ai.processes.analyzer import run_chart_extraction_if_available, run_prediction
 from options_ai.queries import (
@@ -375,7 +376,11 @@ def ingest_snapshot_file(
             chart_report = dict(cached.get("report") or {})
             chart_report["cache_hit"] = True
         else:
-            chart_description, chart_report = run_chart_extraction_if_available(codex=codex, chart_png_path=chart_path)
+            try:
+                chart_description, chart_report = run_chart_extraction_if_available(codex=codex, chart_png_path=chart_path)
+            except OAuthUnavailable as e:
+                chart_description = None
+                chart_report = {"oauth_unavailable": True, "error": str(e)}
             try:
                 save_model_cache(
                     paths,
@@ -408,7 +413,7 @@ def ingest_snapshot_file(
             "confidence": 0.0,
             "strategy_suggested": "",
             "signals_used": ["codex_disabled"],
-            "reasoning": "Model calls are disabled (missing OPENAI_API_KEY); defaulting to neutral.",
+            "reasoning": "Model calls are disabled (OAuth not configured); defaulting to neutral.",
         }
         pred_report = {"raw_text": json.dumps(pred_obj), "validated": pred_obj, "attempts": 0, "cache_hit": False}
     else:
@@ -425,7 +430,8 @@ def ingest_snapshot_file(
             pred_report = dict(cached.get("report") or {})
             pred_report["cache_hit"] = True
         else:
-            pred_obj, pred_report = run_prediction(
+            try:
+                pred_obj, pred_report = run_prediction(
                 codex=codex,
                 snapshot_summary=snapshot_summary,
                 signals=signals,
@@ -434,6 +440,16 @@ def ingest_snapshot_file(
                 performance_summary=perf_summary,
                 min_confidence=cfg.min_confidence,
             )
+            except OAuthUnavailable as e:
+                pred_obj = {
+                    "predicted_direction": "neutral",
+                    "predicted_magnitude": 0.0,
+                    "confidence": 0.0,
+                    "strategy_suggested": "",
+                    "signals_used": ["oauth_unavailable"],
+                    "reasoning": "OAuth token unavailable; model calls skipped.",
+                }
+                pred_report = {"oauth_unavailable": True, "error": str(e), "cache_hit": False}
             try:
                 save_model_cache(
                     paths,

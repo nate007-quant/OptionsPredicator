@@ -48,8 +48,8 @@ class RateLimiter:
 
 
 class ThrottledCodexClient(CodexClient):
-    def __init__(self, *, api_key: str, model: str, limiter: RateLimiter):
-        super().__init__(api_key=api_key, model=model)
+    def __init__(self, *, token_manager, model: str, limiter: RateLimiter):
+        super().__init__(token_manager=token_manager, model=model)
         self._limiter = limiter
 
     def extract_chart_description(self, png_path: str, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any]]:
