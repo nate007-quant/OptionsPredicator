@@ -61,9 +61,9 @@ def test_ingest_is_idempotent_by_hash(tmp_path: Path):
     state: dict = {}
     h = _hash_file(snap_path)
 
-    r1 = ingest_snapshot_file(cfg=cfg, paths=paths, db_path=db_path, snapshot_path=snap_path, snapshot_hash=h, codex=None, state=state)
+    r1 = ingest_snapshot_file(cfg=cfg, paths=paths, db_path=db_path, snapshot_path=snap_path, snapshot_hash=h, router=None, state=state)
     assert r1.processed is True
 
-    r2 = ingest_snapshot_file(cfg=cfg, paths=paths, db_path=db_path, snapshot_path=snap_path, snapshot_hash=h, codex=None, state=state)
+    r2 = ingest_snapshot_file(cfg=cfg, paths=paths, db_path=db_path, snapshot_path=snap_path, snapshot_hash=h, router=None, state=state)
     assert r2.processed is False
-    assert r2.skipped_reason == "duplicate_hash_prompt"
+    assert r2.skipped_reason == "duplicate_hash_prompt_model"

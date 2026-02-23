@@ -8,12 +8,10 @@ from pathlib import Path
 def db_path_from_url(database_url: str) -> str:
     """Parse sqlite DATABASE_URL like sqlite:////mnt/options_ai/database/predictions.db"""
     if database_url.startswith("sqlite:////"):
-        # four slashes indicates absolute path on unix
         return "/" + database_url[len("sqlite:////") :]
     if database_url.startswith("sqlite:///"):
         return "/" + database_url[len("sqlite:///") :]
     if database_url.startswith("sqlite:"):
-        # sqlite:/abs/path OR sqlite:relative
         return database_url[len("sqlite:") :]
     raise ValueError(f"Unsupported DATABASE_URL: {database_url!r}")
 
@@ -32,6 +30,13 @@ def connect(db_path: str):
         conn.close()
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    cols = set()
+    for r in conn.execute(f"PRAGMA table_info({table!r})"):
+        cols.add(str(r[1]))
+    return cols
+
+
 def _index_columns(conn: sqlite3.Connection, index_name: str) -> list[str]:
     cols = []
     for r in conn.execute(f"PRAGMA index_info({index_name!r})"):
@@ -39,34 +44,41 @@ def _index_columns(conn: sqlite3.Connection, index_name: str) -> list[str]:
     return cols
 
 
-def _needs_v160_migration(conn: sqlite3.Connection) -> bool:
-    # If an older schema has UNIQUE(source_snapshot_hash) (as a constraint), SQLite creates
-    # a unique autoindex on that single column. v1.6 requires uniqueness on (hash,prompt_version).
-    try:
-        idx_rows = list(conn.execute("PRAGMA index_list('predictions')"))
-    except Exception:
-        return False
+def _needs_migration_v22(conn: sqlite3.Connection) -> bool:
+    cols = _table_columns(conn, "predictions")
+    needed = {"model_used", "model_provider", "routing_reason"}
+    if not needed.issubset(cols):
+        return True
 
-    has_composite = False
-    has_unique_single_hash = False
+    # ensure correct unique index exists and no conflicting unique index blocks it
+    idx_rows = list(conn.execute("PRAGMA index_list('predictions')"))
+
+    has_v22_unique = False
+    has_old_unique = False
 
     for r in idx_rows:
         name = r[1]
         is_unique = int(r[2]) == 1
-        cols = _index_columns(conn, name)
+        cols_idx = _index_columns(conn, name)
 
-        if name == "uniq_predictions_hash_prompt" and is_unique and cols == ["source_snapshot_hash", "prompt_version"]:
-            has_composite = True
-        if is_unique and cols == ["source_snapshot_hash"]:
-            has_unique_single_hash = True
+        if name == "uniq_predictions_hash_prompt_model" and is_unique and cols_idx == ["source_snapshot_hash", "prompt_version", "model_used"]:
+            has_v22_unique = True
+        # old v1.6 index
+        if is_unique and cols_idx == ["source_snapshot_hash", "prompt_version"]:
+            has_old_unique = True
+        if is_unique and cols_idx == ["source_snapshot_hash"]:
+            has_old_unique = True
 
-    # If we already have composite unique index, but also a unique single-hash constraint,
-    # reprocessing across prompt versions will still be blocked -> migrate.
-    return has_unique_single_hash
+    if not has_v22_unique:
+        return True
+    if has_old_unique:
+        return True
+
+    return False
 
 
-def _migrate_predictions_unique_constraint(conn: sqlite3.Connection) -> None:
-    # Rebuild predictions table without UNIQUE(source_snapshot_hash).
+def _migrate_to_v22(conn: sqlite3.Connection) -> None:
+    # Rebuild predictions table to ensure required columns + correct unique index.
     cols = [
         "id",
         "timestamp",
@@ -84,6 +96,9 @@ def _migrate_predictions_unique_constraint(conn: sqlite3.Connection) -> None:
         "strategy_suggested",
         "reasoning",
         "prompt_version",
+        "model_used",
+        "model_provider",
+        "routing_reason",
         "price_at_prediction",
         "price_at_outcome",
         "actual_move",
@@ -92,6 +107,8 @@ def _migrate_predictions_unique_constraint(conn: sqlite3.Connection) -> None:
         "outcome_notes",
         "scored_at",
     ]
+
+    existing_cols = _table_columns(conn, "predictions")
 
     conn.execute("BEGIN")
     conn.execute(
@@ -114,6 +131,10 @@ def _migrate_predictions_unique_constraint(conn: sqlite3.Connection) -> None:
           reasoning TEXT NOT NULL,
           prompt_version TEXT NOT NULL,
 
+          model_used TEXT NOT NULL,
+          model_provider TEXT NOT NULL,
+          routing_reason TEXT NOT NULL,
+
           price_at_prediction REAL,
           price_at_outcome REAL,
           actual_move REAL,
@@ -125,15 +146,57 @@ def _migrate_predictions_unique_constraint(conn: sqlite3.Connection) -> None:
         """
     )
 
-    col_sql = ",".join(cols)
-    conn.execute(f"INSERT INTO predictions_new ({col_sql}) SELECT {col_sql} FROM predictions")
+    # Build SELECT list with defaults if columns absent
+    def sel(col: str, default_sql: str) -> str:
+        return col if col in existing_cols else default_sql + f" AS {col}"
+
+    select_cols = [
+        sel("id", "NULL"),
+        sel("timestamp", "''"),
+        sel("ticker", "'SPX'"),
+        sel("expiration_date", "''"),
+        sel("source_snapshot_file", "''"),
+        sel("source_snapshot_hash", "''"),
+        sel("chart_file", "NULL"),
+        sel("spot_price", "0"),
+        sel("signals_used", "'{}'"),
+        sel("chart_description", "NULL"),
+        sel("predicted_direction", "'neutral'"),
+        sel("predicted_magnitude", "0"),
+        sel("confidence", "0"),
+        sel("strategy_suggested", "''"),
+        sel("reasoning", "''"),
+        sel("prompt_version", "'unknown'"),
+        sel("model_used", "'unknown'"),
+        sel("model_provider", "'unknown'"),
+        sel("routing_reason", "'migrated'"),
+        sel("price_at_prediction", "NULL"),
+        sel("price_at_outcome", "NULL"),
+        sel("actual_move", "NULL"),
+        sel("result", "NULL"),
+        sel("pnl_simulated", "NULL"),
+        sel("outcome_notes", "NULL"),
+        sel("scored_at", "NULL"),
+    ]
+
+    insert_cols_sql = ",".join(cols)
+    select_cols_sql = ",".join(select_cols)
+    conn.execute(f"INSERT INTO predictions_new ({insert_cols_sql}) SELECT {select_cols_sql} FROM predictions")
 
     conn.execute("DROP TABLE predictions")
     conn.execute("ALTER TABLE predictions_new RENAME TO predictions")
 
-    # Recreate indexes
+    # Drop any leftover indexes that might conflict, then recreate.
+    for r in conn.execute("PRAGMA index_list('predictions')"):
+        name = r[1]
+        if name in {"uniq_predictions_hash_prompt", "uniq_predictions_hash_prompt_model"}:
+            try:
+                conn.execute(f"DROP INDEX IF EXISTS {name}")
+            except Exception:
+                pass
+
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt ON predictions(source_snapshot_hash, prompt_version)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt_model ON predictions(source_snapshot_hash, prompt_version, model_used)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON predictions(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_result_null ON predictions(result)")
@@ -145,10 +208,9 @@ def init_db(db_path: str, schema_sql_path: str) -> None:
     schema_sql = Path(schema_sql_path).read_text(encoding="utf-8")
     with connect(db_path) as conn:
         conn.executescript(schema_sql)
-        # Best-effort migration from v1.3 uniqueness (hash-only) to v1.6 (hash,prompt_version)
+        # Best-effort migration to v2.2
         try:
-            if _needs_v160_migration(conn):
-                _migrate_predictions_unique_constraint(conn)
+            if _needs_migration_v22(conn):
+                _migrate_to_v22(conn)
         except Exception:
-            # Do not crash startup if migration fails; schema.sql already applied.
             pass

@@ -7,16 +7,14 @@ from typing import Any
 
 from openai import OpenAI
 
-from options_ai.ai.oauth import OAuthTokenManager, OAuthUnavailable
+from options_ai.ai.oauth import OAuthTokenManager
 
 
 def _response_text(resp: Any) -> str:
-    # openai-python has changed shapes a few times; try common access patterns.
     if resp is None:
         return ""
     if hasattr(resp, "output_text") and isinstance(resp.output_text, str):
         return resp.output_text
-    # responses API
     try:
         chunks = []
         for item in resp.output:
@@ -27,7 +25,6 @@ def _response_text(resp: Any) -> str:
             return "\n".join(chunks)
     except Exception:
         pass
-    # chat completions fallback
     try:
         return resp.choices[0].message.content
     except Exception:
@@ -35,30 +32,51 @@ def _response_text(resp: Any) -> str:
 
 
 class CodexClient:
-    """OAuth-authenticated Codex client.
+    """OpenAI-compatible client wrapper.
 
-    v2.0: API key auth is not supported; use OAuth bearer tokens.
+    Supports:
+      - Remote OAuth (token_manager provided)
+      - Local OpenAI-compatible endpoints (base_url provided)
+
+    For local endpoints, api_key is a dummy value (no auth).
     """
 
-    def __init__(self, token_manager: OAuthTokenManager, model: str):
-        self.token_manager = token_manager
+    def __init__(
+        self,
+        *,
+        model: str,
+        token_manager: OAuthTokenManager | None = None,
+        base_url: str | None = None,
+        static_api_key: str | None = None,
+        timeout_seconds: int | None = None,
+    ):
         self.model = model
+        self.token_manager = token_manager
+        self.base_url = base_url
+        self.static_api_key = static_api_key
+        self.timeout_seconds = timeout_seconds
 
     def _client(self) -> OpenAI:
-        token = self.token_manager.get_access_token()
-        # openai-python uses Authorization: Bearer <api_key>
-        return OpenAI(api_key=token)
+        api_key = self.static_api_key
+        if self.token_manager is not None:
+            api_key = self.token_manager.get_access_token()
+        if not api_key:
+            # openai lib requires a non-empty key string; for unauth local endpoints use a dummy.
+            api_key = "local"
+
+        kwargs: dict[str, Any] = {"api_key": api_key}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+
+        # openai-python currently takes timeout via httpx internally; keep simple.
+        return OpenAI(**kwargs)
 
     def extract_chart_description(self, png_path: str, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any]]:
         img_bytes = Path(png_path).read_bytes()
         b64 = base64.b64encode(img_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{b64}"
 
-        try:
-            client = self._client()
-        except OAuthUnavailable as e:
-            raise
-
+        client = self._client()
         resp = client.responses.create(
             model=self.model,
             input=[
@@ -91,6 +109,5 @@ class CodexClient:
 
 
 def safe_json_loads(s: str) -> Any:
-    # strict JSON only; no markdown.
     s = s.strip()
     return json.loads(s)

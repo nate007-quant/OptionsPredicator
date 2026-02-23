@@ -7,13 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from options_ai.ai.codex_client import CodexClient
-from options_ai.ai.oauth import OAuthConfig, OAuthTokenManager
-from options_ai.ai.throttle import RateLimiter, ThrottledCodexClient
+from options_ai.ai.router import ModelRouter
+from options_ai.ai.throttle import RateLimiter
 from options_ai.config import Config
 from options_ai.processes.ingest import IngestResult, ingest_snapshot_file
 from options_ai.processes.scorer import score_due_predictions
-from options_ai.queries import fetch_total_predictions, hash_exists
+from options_ai.queries import fetch_total_predictions
 from options_ai.utils.cache import sha256_file
 from options_ai.utils.logger import log_daemon_event
 
@@ -45,7 +44,6 @@ def _load_seen_state(state_path: Path) -> dict[str, Any]:
 
 
 def _sha256_file(path: Path) -> str:
-    # compatibility wrapper
     return sha256_file(path)
 
 
@@ -55,31 +53,7 @@ def _list_candidate_snapshots(dir_path: Path) -> list[Path]:
     return sorted([p for p in dir_path.glob("*.json") if p.is_file() and not p.name.endswith(".tmp")])
 
 
-def _build_codex(cfg: Config, throttled: bool) -> CodexClient | None:
-    # v2.0: OAuth-only. OPENAI_API_KEY is ignored.
-    oauth_cfg = OAuthConfig(
-        client_id=cfg.oauth_client_id,
-        client_secret=cfg.oauth_client_secret,
-        token_url=cfg.oauth_token_url,
-        scope=cfg.oauth_scope,
-        audience=cfg.oauth_audience or None,
-        refresh_margin_seconds=int(cfg.oauth_refresh_margin_seconds or 60),
-        cache_path=str(cfg.oauth_cache_path),
-    )
-    tm = OAuthTokenManager(oauth_cfg)
-    if not tm.is_configured():
-        return None
-    if throttled:
-        limiter = RateLimiter(
-            max_per_minute=int(cfg.bootstrap_max_model_calls_per_min or 0),
-            max_per_hour=int(cfg.bootstrap_max_model_calls_per_hour or 0),
-        )
-        # ThrottledCodexClient subclasses CodexClient; same auth plumbing.
-        return ThrottledCodexClient(token_manager=tm, model=cfg.codex_model, limiter=limiter)
-    return CodexClient(token_manager=tm, model=cfg.codex_model)
-
-
-def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[str, Any]) -> None:
+def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[str, Any], router: ModelRouter) -> None:
     if cfg.replay_mode:
         return
 
@@ -104,8 +78,6 @@ def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[
     checkpoint = _load_json(checkpoint_path, {"last_file": None})
     last_file = checkpoint.get("last_file")
 
-    codex = _build_codex(cfg, throttled=True)
-
     log_daemon_event(paths.logs_daemon_dir, "info", "bootstrap_start", total_files=len(files), last_file=last_file)
 
     for p in files:
@@ -113,9 +85,6 @@ def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[
             continue
         try:
             h = _sha256_file(p)
-            if hash_exists(db_path, h, cfg.prompt_version):
-                _save_json_atomic(checkpoint_path, {"last_file": p.name})
-                continue
 
             ingest_snapshot_file(
                 cfg=cfg,
@@ -123,7 +92,7 @@ def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[
                 db_path=db_path,
                 snapshot_path=p,
                 snapshot_hash=h,
-                codex=codex,
+                router=router,
                 state=state,
                 bootstrap_mode=True,
                 move_files=False,
@@ -135,29 +104,29 @@ def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[
             _save_json_atomic(checkpoint_path, {"last_file": p.name})
         except Exception as e:
             log_daemon_event(paths.logs_daemon_dir, "error", "bootstrap_file_error", file=str(p), error=str(e))
-            # continue; checkpoint keeps progress up to last success
 
     _save_json_atomic(completed_path, {"completed_at": time.time()})
     log_daemon_event(paths.logs_daemon_dir, "info", "bootstrap_complete")
 
 
 def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
-    """Long-running loop. Polling watcher (inotify optional in future)."""
-
     state_path = Path(paths.state_dir) / "seen_files.json"
     state = _load_seen_state(state_path)
 
     file_sizes: dict[str, _FileSeen] = {}
-    backoff: dict[str, float] = {}  # filepath -> next_attempt_ts
+    backoff: dict[str, float] = {}
 
-    codex = _build_codex(cfg, throttled=False)
+    limiter = RateLimiter(
+        max_per_minute=int(cfg.bootstrap_max_model_calls_per_min or 0),
+        max_per_hour=int(cfg.bootstrap_max_model_calls_per_hour or 0),
+    )
+    router = ModelRouter(cfg, bootstrap_rate_limiter=limiter)
 
-    # Bootstrap backtest on first run (empty DB)
-    _run_bootstrap_if_needed(cfg, paths, db_path, state)
+    # Bootstrap backtest on first run
+    _run_bootstrap_if_needed(cfg, paths, db_path, state, router)
 
     while True:
         try:
-            # Attempt scoring periodically, even if no new snapshots.
             score_due_predictions(cfg=cfg, paths=paths, db_path=db_path, state=state)
 
             dirs: list[Path] = []
@@ -177,12 +146,10 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
             for p in sorted(set(candidates)):
                 now = time.time()
 
-                # Backoff per file
                 next_ts = backoff.get(str(p))
                 if next_ts is not None and now < next_ts:
                     continue
 
-                # Only enforce stable-size check for incoming dir.
                 is_incoming = Path(paths.incoming_snapshots_dir) in p.parents
 
                 if is_incoming:
@@ -199,9 +166,24 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
 
                 file_hash = _sha256_file(p)
 
-                if hash_exists(db_path, file_hash, cfg.prompt_version):
-                    # already processed for this prompt_version
-                    if is_incoming:
+                try:
+                    ingest_res: IngestResult = ingest_snapshot_file(
+                        cfg=cfg,
+                        paths=paths,
+                        db_path=db_path,
+                        snapshot_path=p,
+                        snapshot_hash=file_hash,
+                        router=router,
+                        state=state,
+                        bootstrap_mode=False,
+                        move_files=is_incoming and (not cfg.replay_mode),
+                    )
+                    processed_any = processed_any or ingest_res.processed
+
+                    _save_json_atomic(state_path, state)
+
+                    # If we skipped due to duplicates and file is in incoming, move to processed for cleanliness.
+                    if is_incoming and (not ingest_res.processed) and (ingest_res.skipped_reason or "").startswith("duplicate"):
                         try:
                             dest = Path(paths.processed_snapshots_dir) / p.name
                             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -211,37 +193,13 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                                 p.replace(dest)
                         except Exception:
                             pass
-                    continue
-
-                try:
-                    ingest_res: IngestResult = ingest_snapshot_file(
-                        cfg=cfg,
-                        paths=paths,
-                        db_path=db_path,
-                        snapshot_path=p,
-                        snapshot_hash=file_hash,
-                        codex=codex,
-                        state=state,
-                        bootstrap_mode=False,
-                        move_files=is_incoming and (not cfg.replay_mode),
-                    )
-                    processed_any = processed_any or ingest_res.processed
-
-                    _save_json_atomic(state_path, state)
 
                 except Exception as e:
                     delay = backoff.get(str(p) + ":delay", cfg.watch_poll_seconds)
                     delay = min(max(delay * 2, cfg.watch_poll_seconds), 60.0)
                     backoff[str(p) + ":delay"] = delay
                     backoff[str(p)] = time.time() + delay
-                    log_daemon_event(
-                        paths.logs_daemon_dir,
-                        "error",
-                        "snapshot_process_error",
-                        file=str(p),
-                        error=str(e),
-                        backoff_seconds=delay,
-                    )
+                    log_daemon_event(paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
 
             time.sleep(cfg.watch_poll_seconds if not processed_any else 0.1)
 

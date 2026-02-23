@@ -1,4 +1,4 @@
--- Options AI v1.6 schema
+-- Options AI v2.2 schema
 
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
@@ -21,6 +21,11 @@ CREATE TABLE IF NOT EXISTS predictions (
   reasoning TEXT NOT NULL,
   prompt_version TEXT NOT NULL,
 
+  -- v2.2 routing
+  model_used TEXT NOT NULL,
+  model_provider TEXT NOT NULL,
+  routing_reason TEXT NOT NULL,
+
   price_at_prediction REAL,
   price_at_outcome REAL,
   actual_move REAL,
@@ -30,8 +35,8 @@ CREATE TABLE IF NOT EXISTS predictions (
   scored_at TEXT
 );
 
--- idempotency is (snapshot_hash, prompt_version)
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt ON predictions(source_snapshot_hash, prompt_version);
+-- idempotency is (snapshot_hash, prompt_version, model_used)
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt_model ON predictions(source_snapshot_hash, prompt_version, model_used);
 
 CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON predictions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_predictions_result_null ON predictions(result);

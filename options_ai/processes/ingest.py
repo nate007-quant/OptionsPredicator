@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from options_ai.ai.codex_client import CodexClient
-from options_ai.ai.oauth import OAuthUnavailable
+from options_ai.ai.router import ModelRouter, try_models
 from options_ai.config import Config
 from options_ai.processes.analyzer import run_chart_extraction_if_available, run_prediction
 from options_ai.queries import (
@@ -254,7 +254,7 @@ def ingest_snapshot_file(
     db_path: str,
     snapshot_path: Path,
     snapshot_hash: str,
-    codex: CodexClient | None,
+    router: ModelRouter | None,
     state: dict[str, Any],
     bootstrap_mode: bool = False,
     move_files: bool | None = None,
@@ -262,7 +262,8 @@ def ingest_snapshot_file(
     """Ingest one snapshot JSON file, using caching and prompt-version idempotency (v1.6)."""
 
     # idempotency: (hash,prompt_version)
-    if hash_exists(db_path, snapshot_hash, cfg.prompt_version):
+    if False:  # idempotency handled after model routing
+        pass
         return IngestResult(processed=False, skipped_reason="duplicate_hash_prompt")
 
     # Default move behavior: move only in live incoming mode.
@@ -362,37 +363,54 @@ def ingest_snapshot_file(
     chart_description: str | None = None
     chart_report: dict[str, Any] | None = None
 
-    if not bootstrap_mode and codex is not None and chart_path:
-        cached = load_model_cache(
-            paths,
-            snapshot_hash,
-            chart_hash=chart_hash,
-            prompt_version=cfg.prompt_version,
-            model_id=cfg.codex_model,
-            kind="chart",
-        )
-        if cached and isinstance(cached.get("chart_description"), str):
-            chart_description = str(cached.get("chart_description"))
-            chart_report = dict(cached.get("report") or {})
-            chart_report["cache_hit"] = True
-        else:
+    candidates = router.candidates(bootstrap_mode=bootstrap_mode) if router is not None else []
+
+    # Chart extraction routing + caching (chart is optional; failures should not stop prediction).
+    if not bootstrap_mode and chart_path and candidates:
+        for c in candidates:
+            cached = load_model_cache(
+                paths,
+                snapshot_hash,
+                chart_hash=chart_hash,
+                prompt_version=cfg.prompt_version,
+                model_id=c.model_used,
+                kind="chart",
+            )
+            if cached and isinstance(cached.get("chart_description"), str):
+                chart_description = str(cached.get("chart_description"))
+                chart_report = dict(cached.get("report") or {})
+                chart_report.update({
+                    "cache_hit": True,
+                    "model_used": c.model_used,
+                    "model_provider": c.provider,
+                    "routing_reason": c.routing_reason,
+                })
+                break
+
             try:
-                chart_description, chart_report = run_chart_extraction_if_available(codex=codex, chart_png_path=chart_path)
-            except OAuthUnavailable as e:
-                chart_description = None
-                chart_report = {"oauth_unavailable": True, "error": str(e)}
-            try:
-                save_model_cache(
-                    paths,
-                    snapshot_hash,
-                    chart_hash=chart_hash,
-                    prompt_version=cfg.prompt_version,
-                    model_id=cfg.codex_model,
-                    kind="chart",
-                    payload={"chart_description": chart_description, "report": chart_report},
+                desc, rep, model_used, provider, reason = try_models(
+                    [c],
+                    fn_name="chart_extraction",
+                    fn=lambda client: run_chart_extraction_if_available(codex=client, chart_png_path=chart_path),
+                    local_max_retries=int(cfg.local_model_max_retries or 0),
                 )
+                chart_description = desc
+                chart_report = rep
+                try:
+                    save_model_cache(
+                        paths,
+                        snapshot_hash,
+                        chart_hash=chart_hash,
+                        prompt_version=cfg.prompt_version,
+                        model_id=model_used,
+                        kind="chart",
+                        payload={"chart_description": chart_description, "report": chart_report},
+                    )
+                except Exception:
+                    pass
+                break
             except Exception:
-                pass
+                continue
 
         if chart_report is not None:
             log_analyzer_report(
@@ -405,65 +423,97 @@ def ingest_snapshot_file(
     recent_predictions = fetch_recent_predictions(db_path, limit=cfg.history_records)
     perf_summary = fetch_latest_performance_summary(db_path)
 
-    # Phase 2: prediction (cached)
-    if codex is None:
-        pred_obj = {
-            "predicted_direction": "neutral",
-            "predicted_magnitude": 0.0,
-            "confidence": 0.0,
-            "strategy_suggested": "",
-            "signals_used": ["codex_disabled"],
-            "reasoning": "Model calls are disabled (OAuth not configured); defaulting to neutral.",
-        }
-        pred_report = {"raw_text": json.dumps(pred_obj), "validated": pred_obj, "attempts": 0, "cache_hit": False}
-    else:
+    # Phase 2: prediction (cached + routed)
+    pred_obj: dict[str, Any] | None = None
+    pred_report: dict[str, Any] | None = None
+    model_used = "none"
+    model_provider = "none"
+    routing_reason = "no_model_available"
+
+    # Filter out candidates already inserted (idempotency per model)
+    candidates_to_try = []
+    for c in candidates:
+        try:
+            if hash_exists(db_path, snapshot_hash, cfg.prompt_version, c.model_used):
+                continue
+        except Exception:
+            pass
+        candidates_to_try.append(c)
+
+    # If all routed candidates already exist in DB, skip processing (idempotent).
+    if candidates and not candidates_to_try:
+        return IngestResult(processed=False, skipped_reason="duplicate_hash_prompt_model")
+
+    # If there are no candidates (no remote/local available), ensure idempotency for the placeholder model.
+    if not candidates and hash_exists(db_path, snapshot_hash, cfg.prompt_version, "none"):
+        return IngestResult(processed=False, skipped_reason="duplicate_hash_prompt_model")
+
+    for c in candidates_to_try:
         cached = load_model_cache(
             paths,
             snapshot_hash,
             chart_hash=chart_hash,
             prompt_version=cfg.prompt_version,
-            model_id=cfg.codex_model,
+            model_id=c.model_used,
             kind="prediction",
         )
         if cached and isinstance(cached.get("validated"), dict):
             pred_obj = dict(cached["validated"])
             pred_report = dict(cached.get("report") or {})
-            pred_report["cache_hit"] = True
-        else:
-            try:
-                pred_obj, pred_report = run_prediction(
-                codex=codex,
-                snapshot_summary=snapshot_summary,
-                signals=signals,
-                chart_description=chart_description,
-                recent_predictions=recent_predictions,
-                performance_summary=perf_summary,
-                min_confidence=cfg.min_confidence,
+            pred_report.update({
+                "cache_hit": True,
+                "model_used": c.model_used,
+                "model_provider": c.provider,
+                "routing_reason": c.routing_reason,
+            })
+            model_used, model_provider, routing_reason = c.model_used, c.provider, c.routing_reason
+            break
+
+        try:
+            val, rep, mu, mp, rr = try_models(
+                [c],
+                fn_name="prediction",
+                fn=lambda client: run_prediction(
+                    codex=client,
+                    snapshot_summary=snapshot_summary,
+                    signals=signals,
+                    chart_description=chart_description,
+                    recent_predictions=recent_predictions,
+                    performance_summary=perf_summary,
+                    min_confidence=cfg.min_confidence,
+                ),
+                local_max_retries=int(cfg.local_model_max_retries or 0),
             )
-            except OAuthUnavailable as e:
-                pred_obj = {
-                    "predicted_direction": "neutral",
-                    "predicted_magnitude": 0.0,
-                    "confidence": 0.0,
-                    "strategy_suggested": "",
-                    "signals_used": ["oauth_unavailable"],
-                    "reasoning": "OAuth token unavailable; model calls skipped.",
-                }
-                pred_report = {"oauth_unavailable": True, "error": str(e), "cache_hit": False}
+            pred_obj = val
+            pred_report = rep
+            model_used, model_provider, routing_reason = mu, mp, rr
             try:
                 save_model_cache(
                     paths,
                     snapshot_hash,
                     chart_hash=chart_hash,
                     prompt_version=cfg.prompt_version,
-                    model_id=cfg.codex_model,
+                    model_id=model_used,
                     kind="prediction",
                     payload={"validated": pred_obj, "report": pred_report},
                 )
             except Exception:
                 pass
+            break
+        except Exception:
+            continue
 
-    # Local self-calibration enforcement (hard rule, deterministic).
+    if pred_obj is None:
+        pred_obj = {
+            "predicted_direction": "neutral",
+            "predicted_magnitude": 0.0,
+            "confidence": 0.0,
+            "strategy_suggested": "",
+            "signals_used": ["no_model_available"],
+            "reasoning": "No model provider available; prediction skipped.",
+        }
+        pred_report = {"cache_hit": False, "model_used": model_used, "model_provider": model_provider, "routing_reason": routing_reason}
+# Local self-calibration enforcement (hard rule, deterministic).
     try:
         if perf_summary and perf_summary.get("overall_accuracy") is not None and (perf_summary.get("total_scored") or 0) >= 5:
             if float(perf_summary["overall_accuracy"]) < 0.45:
@@ -511,6 +561,9 @@ def ingest_snapshot_file(
         "strategy_suggested": pred_obj.get("strategy_suggested", "") or "",
         "reasoning": pred_obj.get("reasoning", ""),
         "prompt_version": cfg.prompt_version,
+        "model_used": model_used,
+        "model_provider": model_provider,
+        "routing_reason": routing_reason,
         "price_at_prediction": float(spot),
     }
 

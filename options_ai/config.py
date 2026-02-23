@@ -39,9 +39,21 @@ class Config:
 
     # caching / reprocessing (v1.6)
     reprocess_mode: str = "none"  # none|from_model|from_summary|from_signals|full
-   
+
+    # Model routing (v2.2)
+    model_force_local: bool = False
+    model_force_remote: bool = False
+
+    remote_model_name: str = "openai-codex/gpt-5.2"
+
+    local_model_enabled: bool = True
+    local_model_endpoint: str = "http://192.168.86.24:11434/v1"
+    local_model_name: str = "deepseek-r1:14b"
+    local_model_timeout_seconds: int = 60
+    local_model_max_retries: int = 2
+
     codex_model: str = "gpt-5.2-codex"
-    prompt_version: str = "v2.0.0"
+    prompt_version: str = "v2.2.0"
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -99,6 +111,14 @@ def load_config() -> Config:
         bootstrap_max_model_calls_per_min=int(os.getenv("BOOTSTRAP_MAX_MODEL_CALLS_PER_MIN", "0")),
         bootstrap_max_model_calls_per_hour=int(os.getenv("BOOTSTRAP_MAX_MODEL_CALLS_PER_HOUR", "0")),
         reprocess_mode=os.getenv("REPROCESS_MODE", "none").strip().lower(),
+        model_force_local=_get_bool("MODEL_FORCE_LOCAL", False),
+        model_force_remote=_get_bool("MODEL_FORCE_REMOTE", False),
+        remote_model_name=os.getenv("REMOTE_MODEL_NAME", "openai-codex/gpt-5.2").strip(),
+        local_model_enabled=_get_bool("LOCAL_MODEL_ENABLED", True),
+        local_model_endpoint=os.getenv("LOCAL_MODEL_ENDPOINT", "http://192.168.86.24:11434/v1").strip(),
+        local_model_name=os.getenv("LOCAL_MODEL_NAME", "deepseek-r1:14b").strip(),
+        local_model_timeout_seconds=int(os.getenv("LOCAL_MODEL_TIMEOUT_SECONDS", "60")),
+        local_model_max_retries=int(os.getenv("LOCAL_MODEL_MAX_RETRIES", "2")),
         codex_model=os.getenv("CODEX_MODEL", "gpt-5.2-codex").strip(),
-        prompt_version=os.getenv("PROMPT_VERSION", "v2.0.0").strip(),
+        prompt_version=os.getenv("PROMPT_VERSION", "v2.2.0").strip(),
     )

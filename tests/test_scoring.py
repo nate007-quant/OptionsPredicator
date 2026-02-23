@@ -47,7 +47,10 @@ def test_scoring_updates_prediction_row(tmp_path: Path):
         "confidence": 0.9,
         "strategy_suggested": "",
         "reasoning": "test",
-        "prompt_version": "v1.3",
+        "prompt_version": "v2.2.0",
+        "model_used": "deepseek-r1:14b",
+        "model_provider": "local",
+        "routing_reason": "test",
         "price_at_prediction": 100.0,
     }
     pred_id = insert_prediction(db_path, pred_row)
