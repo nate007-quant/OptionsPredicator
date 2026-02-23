@@ -50,29 +50,19 @@ def _needs_migration_v22(conn: sqlite3.Connection) -> bool:
     if not needed.issubset(cols):
         return True
 
-    # ensure correct unique index exists and no conflicting unique index blocks it
-    idx_rows = list(conn.execute("PRAGMA index_list('predictions')"))
-
-    has_v22_unique = False
-    has_old_unique = False
+    # If older unique indexes exist they can block v2.2 idempotency.
+    try:
+        idx_rows = list(conn.execute("PRAGMA index_list('predictions')"))
+    except Exception:
+        return False
 
     for r in idx_rows:
-        name = r[1]
         is_unique = int(r[2]) == 1
-        cols_idx = _index_columns(conn, name)
-
-        if name == "uniq_predictions_hash_prompt_model" and is_unique and cols_idx == ["source_snapshot_hash", "prompt_version", "model_used"]:
-            has_v22_unique = True
-        # old v1.6 index
-        if is_unique and cols_idx == ["source_snapshot_hash", "prompt_version"]:
-            has_old_unique = True
-        if is_unique and cols_idx == ["source_snapshot_hash"]:
-            has_old_unique = True
-
-    if not has_v22_unique:
-        return True
-    if has_old_unique:
-        return True
+        if not is_unique:
+            continue
+        cols_idx = _index_columns(conn, r[1])
+        if cols_idx in (["source_snapshot_hash"], ["source_snapshot_hash", "prompt_version"]):
+            return True
 
     return False
 
@@ -212,5 +202,11 @@ def init_db(db_path: str, schema_sql_path: str) -> None:
         try:
             if _needs_migration_v22(conn):
                 _migrate_to_v22(conn)
+        except Exception:
+            pass
+
+        # Ensure v2.2 unique index exists (safe to run even if already present).
+        try:
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt_model ON predictions(source_snapshot_hash, prompt_version, model_used)")
         except Exception:
             pass

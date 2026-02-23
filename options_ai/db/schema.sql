@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS predictions (
   scored_at TEXT
 );
 
--- idempotency is (snapshot_hash, prompt_version, model_used)
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt_model ON predictions(source_snapshot_hash, prompt_version, model_used);
+-- Note: v2.2 unique index is created in db.init_db after migrations to avoid failures
+-- when upgrading older DBs that lack model_used.
 
 CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON predictions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_predictions_result_null ON predictions(result);
