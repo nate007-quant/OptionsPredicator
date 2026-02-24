@@ -456,7 +456,7 @@ def create_app() -> FastAPI:
             ORDER BY bucket_start_utc ASC
         """
         params: tuple[Any, ...] = (bucket_seconds, bucket_seconds, now_utc, int(window_days))
-        return sql, _params
+        return sql, params
 
     def _postprocess_bucket_row(r: sqlite3.Row, *, min_samples: int, include_action: bool) -> dict[str, Any]:
         total = int(r['total_scored'] or 0)
