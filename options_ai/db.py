@@ -207,7 +207,15 @@ def _ensure_event_time_columns(conn: sqlite3.Connection) -> None:
     # - outcome_ts_utc defaults to timestamp + 15 minutes (legacy default)
     conn.execute("UPDATE predictions SET observed_ts_utc = COALESCE(observed_ts_utc, timestamp) WHERE observed_ts_utc IS NULL")
     conn.execute(
-        "UPDATE predictions SET outcome_ts_utc = COALESCE(outcome_ts_utc, datetime(observed_ts_utc, '+15 minutes')) WHERE outcome_ts_utc IS NULL"
+        "UPDATE predictions SET outcome_ts_utc = COALESCE("
+        "outcome_ts_utc, (replace(datetime(observed_ts_utc, '+15 minutes'), ' ', 'T') || '+00:00')"
+        " ) WHERE outcome_ts_utc IS NULL"
+    )
+
+    # Normalize any legacy SQLite datetime strings (YYYY-MM-DD HH:MM:SS) to ISO-ish UTC.
+    conn.execute(
+        "UPDATE predictions SET outcome_ts_utc = (replace(outcome_ts_utc, ' ', 'T') || '+00:00') "
+        "WHERE outcome_ts_utc LIKE '____-__-__ __:__:__'"
     )
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_observed_ts_utc ON predictions(observed_ts_utc)")
