@@ -514,6 +514,11 @@ function _setTopError(msg) {
 }
 
 async function safe(name, fn) {
+  if (typeof fn !== 'function') {
+    _setTopError(`Dashboard error: missing function ${name}`);
+    console.error('missing function', name, fn);
+    return;
+  }
   try { await fn(); } catch (e) {
     console.error(name, e);
     _setTopError(`Dashboard error in ${name}: ${e}`);
