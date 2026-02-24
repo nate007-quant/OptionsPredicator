@@ -473,19 +473,42 @@ document.getElementById('queuePage')?.addEventListener('change', () => refreshPr
 document.getElementById('queuePageSize')?.addEventListener('change', () => refreshProcessing().catch(()=>{}));
 
 // initial load
+function _setTopError(msg) {
+  let el = document.getElementById('topError');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'topError';
+    el.style.cssText = 'margin:10px 0; padding:8px; border:1px solid #fca5a5; background:#fef2f2; color:#991b1b; border-radius:8px; display:none;';
+    document.body.insertBefore(el, document.body.children[2] || document.body.firstChild);
+  }
+  if (!msg) { el.style.display = 'none'; el.textContent=''; return; }
+  el.style.display = 'block';
+  el.textContent = msg;
+}
+
+async function safe(name, fn) {
+  try { await fn(); } catch (e) {
+    console.error(name, e);
+    _setTopError(`Dashboard error in ${name}: ${e}`);
+  }
+}
+
 (async () => {
-  await refreshConfig();
-  await refreshTokens();
-  await refreshLlmBuckets();
-  await refreshMetrics();
-  await refreshLogs();
-  await refreshML();
-  await refreshMlBuckets();
-  await refreshProcessing();
-  setInterval(() => refreshProcessing().catch(()=>{}), 2000);
-  setInterval(() => refreshConfig().catch(()=>{}), 5000);
-  setInterval(() => refreshTokens().catch(()=>{}), 10000);
-  setInterval(() => refreshML().catch(()=>{}), 20000);
+  if (typeof Chart === 'undefined') {
+    _setTopError('Chart.js failed to load (CDN blocked?). Charts will be blank.');
+  }
+  await safe('refreshConfig', refreshConfig);
+  await safe('refreshTokens', refreshTokens);
+  await safe('refreshLlmBuckets', refreshLlmBuckets);
+  await safe('refreshMetrics', refreshMetrics);
+  await safe('refreshLogs', refreshLogs);
+  await safe('refreshML', refreshML);
+  await safe('refreshMlBuckets', refreshMlBuckets);
+  await safe('refreshProcessing', refreshProcessing);
+  setInterval(() => safe('refreshProcessing', refreshProcessing), 2000);
+  setInterval(() => safe('refreshConfig', refreshConfig), 5000);
+  setInterval(() => safe('refreshTokens', refreshTokens), 10000);
+  setInterval(() => safe('refreshML', refreshML), 20000);
 })();
 </script>
 </body>
