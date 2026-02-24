@@ -435,7 +435,7 @@ def create_app() -> FastAPI:
 
         return {'days': days, 'series': series, 'tz': 'America/Chicago'}
     
-    def _series_buckets_query(*, provider_filter_sql: str, window_days: int, bucket_minutes: int) -> tuple[str, tuple[Any, ...]]:
+    def _series_buckets_query(*, provider_filter_sql: str, now_utc: str, window_days: int, bucket_minutes: int) -> tuple[str, tuple[Any, ...]]:
         # bucket_start_utc as ISO-like UTC string (no offset); we convert for output later.
         bucket_seconds = int(bucket_minutes) * 60
         sql = f"""
@@ -507,11 +507,12 @@ def create_app() -> FastAPI:
 
         sql, _params = _series_buckets_query(
             provider_filter_sql="model_provider != 'ml'",
+            now_utc=now_utc,
             window_days=int(window_days),
             bucket_minutes=int(bucket_minutes),
         )
         with _connect(db_path) as con:
-            rows = con.execute(sql, (int(bucket_minutes) * 60, int(bucket_minutes) * 60, now_utc, int(window_days))).fetchall()
+            rows = con.execute(sql, _params).fetchall()
 
         series = [_postprocess_bucket_row(r, min_samples=int(min_samples), include_action=False) for r in rows]
 
@@ -537,11 +538,12 @@ def create_app() -> FastAPI:
 
         sql, _params = _series_buckets_query(
             provider_filter_sql="model_provider = 'ml'",
+            now_utc=now_utc,
             window_days=int(window_days),
             bucket_minutes=int(bucket_minutes),
         )
         with _connect(db_path) as con:
-            rows = con.execute(sql, (int(bucket_minutes) * 60, int(bucket_minutes) * 60, now_utc, int(window_days))).fetchall()
+            rows = con.execute(sql, _params).fetchall()
 
         series = [_postprocess_bucket_row(r, min_samples=int(min_samples), include_action=True) for r in rows]
 
