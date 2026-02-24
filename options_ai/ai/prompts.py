@@ -138,5 +138,5 @@ def prediction_user_prompt(
         "Generate the next-15-minute directional prediction for SPX. "
         "Return JSON only. Required schema: {predicted_direction, predicted_magnitude, confidence, strategy_suggested, signals_used, reasoning}. "
         "Use the provided inputs strictly.\n\nINPUTS:\n"
-        + json.dumps(payload, ensure_ascii=False)
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     )

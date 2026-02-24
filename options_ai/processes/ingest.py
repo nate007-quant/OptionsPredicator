@@ -105,6 +105,53 @@ def _chart_enabled_for_provider(cfg: Config, provider: str) -> bool:
         return bool(cfg.chart_remote_enabled)
     return False
 
+
+
+def _compact_for_prompt(x: Any, *, float_ndigits: int = 4) -> Any:
+    """Deterministic payload compaction to reduce prompt chars."""
+    if x is None:
+        return None
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, int):
+        return x
+    if isinstance(x, float):
+        # round to keep JSON short but stable
+        try:
+            return round(float(x), int(float_ndigits))
+        except Exception:
+            return x
+    if isinstance(x, str):
+        return x
+    if isinstance(x, list):
+        out = []
+        for v in x:
+            cv = _compact_for_prompt(v, float_ndigits=float_ndigits)
+            # drop nullish entries
+            if cv is None:
+                continue
+            if cv == {} or cv == [] or cv == "":
+                continue
+            out.append(cv)
+        return out
+    if isinstance(x, dict):
+        out = {}
+        for k in sorted(x.keys()):
+            v = x.get(k)
+            cv = _compact_for_prompt(v, float_ndigits=float_ndigits)
+            if cv is None:
+                continue
+            if cv == {} or cv == [] or cv == "":
+                continue
+            out[k] = cv
+        return out
+    return x
+
+
+def _compact_signals_for_prompt(signals: dict[str, Any]) -> dict[str, Any]:
+    # Drop nulls/empties + round floats
+    x = _compact_for_prompt(signals, float_ndigits=4)
+    return x if isinstance(x, dict) else {}
 def parse_snapshot_filename(name: str) -> ParsedFilename:
     m = FILENAME_RE.match(name)
     if not m:
@@ -474,6 +521,8 @@ def ingest_snapshot_file(
         "regime_label": compact_gex.regime_label,
         "subset": compact_gex.subset,
     }
+    prompt_signals = _compact_signals_for_prompt(model_signals)
+
 
     # S4 Snapshot summary
     if derived is not None and mode in {"none", "from_model"}:
@@ -489,7 +538,7 @@ def ingest_snapshot_file(
                 snapshot_hash,
                 DerivedCache(
                     normalized_rows=[_row_to_dict(r) for r in rows],
-                    signals=model_signals,
+                    signals=prompt_signals,
                     snapshot_summary=snapshot_summary,
                 ),
             )
@@ -715,7 +764,7 @@ def ingest_snapshot_file(
                     codex=client,
                     system_prompt=system_prompt,
                     snapshot_summary=snapshot_summary,
-                    signals=model_signals,
+                    signals=prompt_signals,
                     chart_description=chart_description,
                     recent_predictions=recent_predictions,
                     performance_summary=perf_summary,
