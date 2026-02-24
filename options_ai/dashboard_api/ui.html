@@ -1,0 +1,305 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OptionsPredicator Dashboard</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
+    h2 { margin: 0 0 8px 0; font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid #eee; padding: 6px; text-align: left; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input, select { padding: 6px; }
+    button { padding: 6px 10px; }
+    pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+    .muted { color: #666; font-size: 12px; }
+    .logs { max-height: 320px; overflow: auto; background: #0b1020; color: #dce4ff; padding: 8px; border-radius: 8px; }
+    .logs .line { border-bottom: 1px solid rgba(255,255,255,0.06); padding: 4px 0; }
+    .pill { display:inline-block; padding:2px 6px; border-radius: 999px; background:#f2f2f2; font-size: 12px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <h1 style="margin: 0 0 12px 0;">OptionsPredicator Dashboard</h1>
+  <div class="muted">This page polls the local API. If you’re reverse-proxying, adjust host/port accordingly.</div>
+
+  <div class="grid" style="margin-top: 12px;">
+    <div class="card">
+      <h2>A) Processing</h2>
+      <div class="row muted">
+        <div>Queue: <span id="queueCount" class="pill">-</span></div>
+        <div>Processing: <span id="procCount" class="pill">-</span></div>
+        <div>Total predictions: <span id="totPred" class="pill">-</span></div>
+        <div>Scored: <span id="totScored" class="pill">-</span></div>
+        <div>Unscored: <span id="totUnscored" class="pill">-</span></div>
+      </div>
+      <h3 style="margin: 10px 0 6px 0; font-size: 14px;">Queue (incoming)</h3>
+      <table>
+        <thead><tr><th>file</th><th>size</th><th>mtime</th></tr></thead>
+        <tbody id="queueTable"></tbody>
+      </table>
+      <h3 style="margin: 10px 0 6px 0; font-size: 14px;">Currently processing</h3>
+      <div id="processingBox" class="muted">Not available</div>
+    </div>
+
+    <div class="card">
+      <h2>B) Metrics</h2>
+      <div class="row">
+        <label>Rolling N <input id="rollingN" type="number" min="10" max="5000" value="50" style="width: 90px;" /></label>
+        <button id="refreshMetrics">Refresh</button>
+        <span class="muted" id="metricsAsOf"></span>
+      </div>
+      <div class="row muted" style="margin-top: 8px;">
+        <div>Overall acc: <span id="rollOverall" class="pill">-</span></div>
+        <div>Excl inconc: <span id="rollExcl" class="pill">-</span></div>
+        <div>Hi-conf acc: <span id="rollHi" class="pill">-</span></div>
+        <div>Total: <span id="rollTotal" class="pill">-</span></div>
+      </div>
+      <div style="margin-top: 10px;">
+        <canvas id="dailyChart" height="120"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>C) Logs</h2>
+      <div class="row">
+        <label>Log
+          <select id="logName">
+            <option value="errors">errors</option>
+            <option value="system">system</option>
+            <option value="routing">routing</option>
+            <option value="model">model</option>
+            <option value="scoring">scoring</option>
+            <option value="performance">performance</option>
+            <option value="bootstrap">bootstrap</option>
+          </select>
+        </label>
+        <label>Lines <input id="logLimit" type="number" min="10" max="2000" value="200" style="width: 90px;" /></label>
+        <label>Search <input id="logSearch" type="text" placeholder="filter (client-side)" /></label>
+        <label><input id="logAuto" type="checkbox" /> auto-refresh</label>
+        <button id="refreshLogs">Refresh</button>
+      </div>
+      <div class="logs" id="logBox" style="margin-top: 8px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>D) Controls (runtime overrides)</h2>
+      <div class="row">
+        <label>REPROCESS_MODE
+          <select id="reprocessMode">
+            <option value="none">none</option>
+            <option value="from_model">from_model</option>
+            <option value="from_summary">from_summary</option>
+            <option value="from_signals">from_signals</option>
+            <option value="full">full</option>
+          </select>
+        </label>
+        <label>WATCH_POLL_SECONDS <input id="watchPoll" type="number" step="0.05" min="0.05" max="60" value="1" style="width: 90px;" /></label>
+        <label>FILE_STABLE_SECONDS <input id="fileStable" type="number" min="0" max="60" value="2" style="width: 90px;" /></label>
+        <label>OUTCOME_DELAY <input id="outcomeDelay" type="number" min="1" max="240" value="15" style="width: 90px;" /></label>
+      </div>
+      <div class="row" style="margin-top: 8px;">
+        <button id="applyOverrides">Apply</button>
+        <button id="clearReprocess">Clear REPROCESS override</button>
+        <span class="muted" id="cfgStatus"></span>
+      </div>
+      <h3 style="margin: 10px 0 6px 0; font-size: 14px;">Effective config (snippet)</h3>
+      <pre id="cfgSnippet">Loading...</pre>
+    </div>
+  </div>
+
+<script>
+const api = '';
+
+function fmtPct(x) {
+  if (x === null || x === undefined) return '—';
+  return (100.0 * x).toFixed(1) + '%';
+}
+
+async function jget(path) {
+  const r = await fetch(api + path);
+  if (!r.ok) throw new Error(await r.text());
+  return await r.json();
+}
+
+async function jpatch(path, obj) {
+  const r = await fetch(api + path, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(obj)
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return await r.json();
+}
+
+async function refreshProcessing() {
+  const data = await jget('/api/status/processing?limit=50');
+  document.getElementById('queueCount').textContent = data.queue.count;
+  document.getElementById('procCount').textContent = data.processing.count;
+  document.getElementById('totPred').textContent = data.counters.total_predictions;
+  document.getElementById('totScored').textContent = data.counters.total_scored;
+  document.getElementById('totUnscored').textContent = data.counters.unscored;
+
+  const tb = document.getElementById('queueTable');
+  tb.innerHTML = '';
+  for (const it of data.queue.items.slice().reverse()) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
+    tb.appendChild(tr);
+  }
+
+  const pb = document.getElementById('processingBox');
+  if (data.processing.items.length === 0) {
+    pb.textContent = 'Not available / idle (daemon writes state to /mnt/options_ai/state/current_task.json)';
+  } else {
+    const it = data.processing.items[0];
+    pb.innerHTML = `<div><b>${it.file}</b></div>` +
+      `<div class='muted'>stage=${it.stage} started_at=${it.started_at} elapsed=${(it.elapsed_seconds ?? 0).toFixed(1)}s</div>`;
+  }
+}
+
+let dailyChart;
+async function refreshMetrics() {
+  const n = parseInt(document.getElementById('rollingN').value || '50', 10);
+  const roll = await jget(`/api/metrics/rolling?n=${n}`);
+  document.getElementById('metricsAsOf').textContent = roll.as_of ? `as_of ${roll.as_of}` : '';
+  document.getElementById('rollOverall').textContent = fmtPct(roll.overall_accuracy);
+  document.getElementById('rollExcl').textContent = fmtPct(roll.accuracy_excluding_inconclusive);
+  document.getElementById('rollHi').textContent = fmtPct(roll.hi_accuracy);
+  document.getElementById('rollTotal').textContent = roll.total_scored;
+
+  const daily = await jget('/api/metrics/daily?days=30');
+  const labels = daily.series.map(x => x.day).reverse();
+  const overall = daily.series.map(x => x.overall_accuracy).reverse();
+  const excl = daily.series.map(x => x.accuracy_excluding_inconclusive).reverse();
+
+  const ctx = document.getElementById('dailyChart');
+  if (!dailyChart) {
+    dailyChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'overall_accuracy', data: overall, borderColor: '#2563eb', tension: 0.2 },
+          { label: 'accuracy_excl_inconclusive', data: excl, borderColor: '#16a34a', tension: 0.2 },
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { min: 0, max: 1 }
+        }
+      }
+    });
+  } else {
+    dailyChart.data.labels = labels;
+    dailyChart.data.datasets[0].data = overall;
+    dailyChart.data.datasets[1].data = excl;
+    dailyChart.update();
+  }
+}
+
+async function refreshLogs() {
+  const name = document.getElementById('logName').value;
+  const limit = parseInt(document.getElementById('logLimit').value || '200', 10);
+  const search = (document.getElementById('logSearch').value || '').toLowerCase();
+  const data = await jget(`/api/logs/tail?name=${encodeURIComponent(name)}&limit=${limit}`);
+
+  const box = document.getElementById('logBox');
+  box.innerHTML = '';
+
+  for (const l of data.lines) {
+    const raw = l.raw || '';
+    if (search && !raw.toLowerCase().includes(search)) continue;
+    const div = document.createElement('div');
+    div.className = 'line';
+    div.textContent = raw;
+    box.appendChild(div);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+async function refreshConfig() {
+  const data = await jget('/api/config');
+  const eff = data.effective;
+
+  document.getElementById('reprocessMode').value = eff.reprocess_mode;
+  document.getElementById('watchPoll').value = eff.watch_poll_seconds;
+  document.getElementById('fileStable').value = eff.file_stable_seconds;
+  document.getElementById('outcomeDelay').value = eff.outcome_delay_minutes;
+
+  const snippet = {
+    reprocess_mode: eff.reprocess_mode,
+    watch_poll_seconds: eff.watch_poll_seconds,
+    file_stable_seconds: eff.file_stable_seconds,
+    outcome_delay_minutes: eff.outcome_delay_minutes,
+    model_force_local: eff.model_force_local,
+    model_force_remote: eff.model_force_remote,
+    local_model_enabled: eff.local_model_enabled,
+    chart_enabled: eff.chart_enabled,
+    prompt_version: eff.prompt_version,
+  };
+  document.getElementById('cfgSnippet').textContent = JSON.stringify(snippet, null, 2);
+}
+
+async function applyOverrides() {
+  const payload = {
+    REPROCESS_MODE: document.getElementById('reprocessMode').value,
+    WATCH_POLL_SECONDS: parseFloat(document.getElementById('watchPoll').value),
+    FILE_STABLE_SECONDS: parseInt(document.getElementById('fileStable').value, 10),
+    OUTCOME_DELAY: parseInt(document.getElementById('outcomeDelay').value, 10),
+  };
+  const status = document.getElementById('cfgStatus');
+  status.textContent = 'Applying...';
+  try {
+    await jpatch('/api/config', payload);
+    status.textContent = 'Applied.';
+    await refreshConfig();
+  } catch (e) {
+    status.textContent = 'Error: ' + e;
+  }
+}
+
+async function clearReprocess() {
+  const status = document.getElementById('cfgStatus');
+  status.textContent = 'Clearing...';
+  try {
+    await jpatch('/api/config', {REPROCESS_MODE: null});
+    status.textContent = 'Cleared.';
+    await refreshConfig();
+  } catch (e) {
+    status.textContent = 'Error: ' + e;
+  }
+}
+
+// wire up
+
+document.getElementById('refreshMetrics').onclick = refreshMetrics;
+document.getElementById('refreshLogs').onclick = refreshLogs;
+document.getElementById('applyOverrides').onclick = applyOverrides;
+document.getElementById('clearReprocess').onclick = clearReprocess;
+
+let logTimer;
+document.getElementById('logAuto').addEventListener('change', (ev) => {
+  if (ev.target.checked) {
+    logTimer = setInterval(() => refreshLogs().catch(()=>{}), 5000);
+  } else {
+    if (logTimer) clearInterval(logTimer);
+  }
+});
+
+// initial load
+(async () => {
+  await refreshConfig();
+  await refreshMetrics();
+  await refreshLogs();
+  await refreshProcessing();
+  setInterval(() => refreshProcessing().catch(()=>{}), 2000);
+  setInterval(() => refreshConfig().catch(()=>{}), 5000);
+})();
+</script>
+</body>
+</html>

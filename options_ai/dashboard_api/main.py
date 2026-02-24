@@ -119,14 +119,8 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        # minimal GUI placeholder (phase 1). Can be replaced by a real SPA later.
-        return (
-            "<html><head><title>OptionsPredicator</title></head>"
-            "<body style='font-family: sans-serif'>"
-            "<h1>OptionsPredicator Dashboard</h1>"
-            "<p>API is running. Open <code>/docs</code> for the interactive API explorer.</p>"
-            "</body></html>"
-        )
+        html_path = Path(__file__).with_name('ui.html')
+        return html_path.read_text(encoding='utf-8')
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
