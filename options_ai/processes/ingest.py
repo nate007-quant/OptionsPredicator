@@ -400,9 +400,46 @@ def ingest_snapshot_file(
                 pass
         return IngestResult(processed=False, skipped_reason="invalid_json")
     # Choose observed time: JSON is source-of-truth; filename is fallback.
+    # Defensive: if both JSON time missing and filename time is stale in live mode, fall back to filesystem mtime.
     filename_dt_utc = parsed.observed_dt_utc
     json_dt_utc = extract_observed_dt_utc(snapshot)
+
     observed_dt_utc = json_dt_utc or filename_dt_utc
+
+    # If generator produces stale filename timestamps (e.g. timezone bug) and JSON has no observed time,
+    # use file mtime as a last-resort to keep scoring healthy. Never do this in replay/backtest.
+    if json_dt_utc is None and (not bool(cfg.replay_mode)) and (not bool(cfg.backtest_mode)):
+        try:
+            now_utc = datetime.now(timezone.utc)
+            delta_now = abs((now_utc - filename_dt_utc).total_seconds())
+            if delta_now > 2 * 3600:
+                mtime_dt = datetime.fromtimestamp(snapshot_path.stat().st_mtime, tz=timezone.utc)
+                observed_dt_utc = mtime_dt
+                lg = get_logger()
+                if lg:
+                    lg.warning(
+                        component="Ingest",
+                        event="snapshot_timestamp_stale_using_mtime",
+                        message="filename timestamp appears stale and JSON has no observed time; using file mtime",
+                        file_key="system",
+                        file=str(snapshot_path),
+                        filename_ts=filename_dt_utc.replace(microsecond=0).isoformat(),
+                        mtime_ts=mtime_dt.replace(microsecond=0).isoformat(),
+                        delta_seconds=float(delta_now),
+                    )
+                else:
+                    log_daemon_event(
+                        paths.logs_daemon_dir,
+                        "warn",
+                        "snapshot_timestamp_stale_using_mtime",
+                        file=str(snapshot_path),
+                        filename_ts=filename_dt_utc.replace(microsecond=0).isoformat(),
+                        mtime_ts=mtime_dt.replace(microsecond=0).isoformat(),
+                        delta_seconds=float(delta_now),
+                    )
+        except Exception:
+            pass
+
     observed_ts_utc = observed_dt_utc.replace(microsecond=0).isoformat()
     observed_date_compact = observed_dt_utc.strftime("%Y%m%d")
     observed_time_compact = observed_dt_utc.strftime("%H%M%S")
@@ -436,8 +473,7 @@ def ingest_snapshot_file(
         except Exception:
             pass
 
-
-    # Stage caching controls
+# Stage caching controls
     mode = (cfg.reprocess_mode or "none").lower()
     if mode not in {"none", "from_model", "from_summary", "from_signals", "full"}:
         mode = "none"

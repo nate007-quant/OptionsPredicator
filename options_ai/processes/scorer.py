@@ -52,6 +52,16 @@ def _ensure_snapshot_index(state: dict[str, Any], paths: Any) -> None:
                     obs_dt = None
 
                 obs_dt = obs_dt or parsed.observed_dt_utc
+
+                # last-resort: if filename timestamp is stale and JSON has no observed time, use file mtime
+                if obs_dt == parsed.observed_dt_utc:
+                    try:
+                        now_utc = datetime.now(timezone.utc)
+                        delta_now = abs((now_utc - parsed.observed_dt_utc).total_seconds())
+                        if delta_now > 2 * 3600:
+                            obs_dt = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+                    except Exception:
+                        pass
                 obs_iso = obs_dt.replace(microsecond=0).isoformat()
                 idx[obs_iso] = {"spot": parsed.spot_price, "file": p.name}
             except Exception:
