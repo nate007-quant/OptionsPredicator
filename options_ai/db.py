@@ -202,6 +202,12 @@ def _ensure_event_time_columns(conn: sqlite3.Connection) -> None:
     if "outcome_ts_utc" not in cols:
         conn.execute("ALTER TABLE predictions ADD COLUMN outcome_ts_utc TEXT")
 
+    # v2.7 ML feature storage columns
+    if "features_version" not in cols:
+        conn.execute("ALTER TABLE predictions ADD COLUMN features_version TEXT")
+    if "features_json" not in cols:
+        conn.execute("ALTER TABLE predictions ADD COLUMN features_json TEXT")
+
     # Best-effort backfill:
     # - observed_ts_utc defaults to legacy timestamp
     # - outcome_ts_utc defaults to timestamp + 15 minutes (legacy default)
@@ -276,4 +282,3 @@ def init_db(db_path: str, schema_sql_path: str) -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_kind ON model_usage(kind)")
         except Exception:
             pass
-

@@ -30,6 +30,8 @@ def insert_prediction(db_path: str, row: dict[str, Any]) -> int | None:
         "timestamp",
         "observed_ts_utc",
         "outcome_ts_utc",
+        "features_version",
+        "features_json",
         "ticker",
         "expiration_date",
         "source_snapshot_file",

@@ -100,7 +100,25 @@
     </div>
 
     <div class="card">
+      <h2>E) ML Performance</h2>
+      <div class="row muted" style="margin-top: 4px;">
+        <div>Action rate: <span id="mlActionRate" class="pill">—</span></div>
+        <div>Acc (actionable): <span id="mlAccAction" class="pill">—</span></div>
+        <div>Overall acc: <span id="mlOverall" class="pill">—</span></div>
+        <div>Scored: <span id="mlTotal" class="pill">—</span></div>
+      </div>
+      <div style="margin-top: 10px;">
+        <canvas id="mlDailyChart" height="120"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>D) Controls (runtime overrides)</h2>
+      <div class="row" style="margin-top: 6px;">
+        <label><input id="llmEnabled" type="checkbox" /> LLM_ENABLED</label>
+        <label><input id="mlEnabled" type="checkbox" /> ML_ENABLED</label>
+        <label><input id="chartEnabled" type="checkbox" /> CHART_ENABLED (requires LLM)</label>
+      </div>
       <div class="row">
         <label>REPROCESS_MODE
           <select id="reprocessMode">
@@ -176,6 +194,40 @@ async function refreshProcessing() {
 }
 
 let dailyChart;
+let mlDailyChart;
+async function refreshML() {
+  const roll = await jget('/api/ml/metrics/rolling?n=50');
+  document.getElementById('mlActionRate').textContent = fmtPct(roll.action_rate);
+  document.getElementById('mlAccAction').textContent = fmtPct(roll.accuracy_actionable);
+  document.getElementById('mlOverall').textContent = fmtPct(roll.overall_accuracy);
+  document.getElementById('mlTotal').textContent = roll.total_scored;
+
+  const daily = await jget('/api/ml/metrics/daily?days=30');
+  const labels = daily.series.map(x => x.day).reverse();
+  const action = daily.series.map(x => x.action_rate).reverse();
+  const acc = daily.series.map(x => x.accuracy_actionable).reverse();
+
+  const ctx = document.getElementById('mlDailyChart');
+  if (!mlDailyChart) {
+    mlDailyChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'action_rate', data: action, borderColor: '#f59e0b', tension: 0.2 },
+          { label: 'accuracy_actionable', data: acc, borderColor: '#a855f7', tension: 0.2 },
+        ]
+      },
+      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+    });
+  } else {
+    mlDailyChart.data.labels = labels;
+    mlDailyChart.data.datasets[0].data = action;
+    mlDailyChart.data.datasets[1].data = acc;
+    mlDailyChart.update();
+  }
+}
+
 async function refreshTokens() {
   const data = await jget('/api/usage/tokens?hours=24');
   const s = data.summary || {};
@@ -260,6 +312,10 @@ async function refreshConfig() {
   document.getElementById('fileStable').value = eff.file_stable_seconds;
   document.getElementById('outcomeDelay').value = eff.outcome_delay_minutes;
 
+  if (document.getElementById('llmEnabled')) document.getElementById('llmEnabled').checked = !!eff.llm_enabled;
+  if (document.getElementById('mlEnabled')) document.getElementById('mlEnabled').checked = !!eff.ml_enabled;
+  if (document.getElementById('chartEnabled')) document.getElementById('chartEnabled').checked = !!eff.chart_enabled;
+
   const snippet = {
     reprocess_mode: eff.reprocess_mode,
     watch_poll_seconds: eff.watch_poll_seconds,
@@ -276,6 +332,9 @@ async function refreshConfig() {
 
 async function applyOverrides() {
   const payload = {
+    LLM_ENABLED: document.getElementById('llmEnabled') ? !!document.getElementById('llmEnabled').checked : undefined,
+    ML_ENABLED: document.getElementById('mlEnabled') ? !!document.getElementById('mlEnabled').checked : undefined,
+    CHART_ENABLED: document.getElementById('chartEnabled') ? !!document.getElementById('chartEnabled').checked : undefined,
     REPROCESS_MODE: document.getElementById('reprocessMode').value,
     WATCH_POLL_SECONDS: parseFloat(document.getElementById('watchPoll').value),
     FILE_STABLE_SECONDS: parseInt(document.getElementById('fileStable').value, 10),
@@ -284,6 +343,7 @@ async function applyOverrides() {
   const status = document.getElementById('cfgStatus');
   status.textContent = 'Applying...';
   try {
+    Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
     await jpatch('/api/config', payload);
     status.textContent = 'Applied.';
     await refreshConfig();
@@ -326,10 +386,12 @@ document.getElementById('logAuto').addEventListener('change', (ev) => {
   await refreshTokens();
   await refreshMetrics();
   await refreshLogs();
+  await refreshML();
   await refreshProcessing();
   setInterval(() => refreshProcessing().catch(()=>{}), 2000);
   setInterval(() => refreshConfig().catch(()=>{}), 5000);
   setInterval(() => refreshTokens().catch(()=>{}), 10000);
+  setInterval(() => refreshML().catch(()=>{}), 20000);
 })();
 </script>
 </body>

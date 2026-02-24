@@ -1,4 +1,4 @@
--- Options AI v2.6 schema
+-- Options AI v2.7 schema
 
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
@@ -7,9 +7,13 @@ CREATE TABLE IF NOT EXISTS predictions (
   id INTEGER PRIMARY KEY,
   timestamp TEXT NOT NULL, -- ISO-8601 UTC (legacy)
 
-  -- v2.5 event-time fields (ISO-8601 UTC, no micros)
+  -- event-time fields (ISO-8601 UTC)
   observed_ts_utc TEXT,
   outcome_ts_utc TEXT,
+
+  -- ML reproducibility
+  features_version TEXT,
+  features_json TEXT,
 
   ticker TEXT NOT NULL,
   expiration_date TEXT NOT NULL,
@@ -26,7 +30,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   reasoning TEXT NOT NULL,
   prompt_version TEXT NOT NULL,
 
-  -- v2.2 routing
+  -- routing
   model_used TEXT NOT NULL,
   model_provider TEXT NOT NULL,
   routing_reason TEXT NOT NULL,
@@ -40,7 +44,6 @@ CREATE TABLE IF NOT EXISTS predictions (
   scored_at TEXT
 );
 
--- legacy indexes
 CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON predictions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_predictions_result_null ON predictions(result);
 
@@ -53,7 +56,6 @@ CREATE TABLE IF NOT EXISTS performance_summary (
   summary_json TEXT NOT NULL
 );
 
--- v2.3: store ERROR/CRITICAL system events (for postmortem/debug)
 CREATE TABLE IF NOT EXISTS system_events (
   id INTEGER PRIMARY KEY,
   timestamp TEXT NOT NULL,
@@ -69,7 +71,7 @@ CREATE TABLE IF NOT EXISTS system_events (
 CREATE INDEX IF NOT EXISTS idx_system_events_timestamp ON system_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_system_events_level ON system_events(level);
 
--- v2.6: model usage telemetry (for Tokens UI tile)
+-- model usage telemetry (tokens/hour tile)
 CREATE TABLE IF NOT EXISTS model_usage (
   id INTEGER PRIMARY KEY,
   ts_utc TEXT NOT NULL,

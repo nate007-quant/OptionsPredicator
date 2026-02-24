@@ -228,7 +228,7 @@ def create_app() -> FastAPI:
                 """
                 SELECT timestamp, scored_at, result, confidence
                 FROM predictions
-                WHERE result IS NOT NULL
+                WHERE result IS NOT NULL AND model_provider != 'ml'
                 ORDER BY COALESCE(scored_at, timestamp) DESC
                 """
             ).fetchall()
@@ -255,7 +255,7 @@ def create_app() -> FastAPI:
                 """
                 SELECT result, confidence, COALESCE(scored_at, timestamp) AS ts
                 FROM predictions
-                WHERE result IS NOT NULL
+                WHERE result IS NOT NULL AND model_provider != 'ml'
                 ORDER BY ts DESC
                 LIMIT ?
                 """,
@@ -269,6 +269,83 @@ def create_app() -> FastAPI:
         m = _calc_metrics(rows)
         return {"n": n, "as_of": as_of, **m, "tz": "America/Chicago"}
 
+    
+    @app.get("/api/ml/metrics/rolling")
+    def ml_metrics_rolling(n: int = Query(50, ge=10, le=5000)) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT result, confidence, predicted_direction, predicted_magnitude, actual_move, COALESCE(scored_at, timestamp) AS ts
+                FROM predictions
+                WHERE result IS NOT NULL AND model_provider = 'ml'
+                ORDER BY ts DESC
+                LIMIT ?
+                """,
+                (int(n),),
+            ).fetchall()
+
+        as_of = _to_central_iso(rows[0]["ts"]) if rows else None
+        m = _calc_metrics(rows)
+
+        total = int(m.get('total_scored') or 0)
+        actionable_total = 0
+        actionable_correct = 0
+        for r in rows:
+            if (r['predicted_direction'] or '') != 'neutral':
+                actionable_total += 1
+                if r['result'] == 'correct':
+                    actionable_correct += 1
+
+        action_rate = (actionable_total / total) if total > 0 else None
+        acc_actionable = (actionable_correct / actionable_total) if actionable_total > 0 else None
+
+        return {
+            'n': n,
+            'as_of': as_of,
+            **m,
+            'action_rate': action_rate,
+            'accuracy_actionable': acc_actionable,
+            'actionable_total': actionable_total,
+            'tz': 'America/Chicago',
+        }
+
+    @app.get("/api/ml/metrics/daily")
+    def ml_metrics_daily(days: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT timestamp, scored_at, result, confidence, predicted_direction
+                FROM predictions
+                WHERE result IS NOT NULL AND model_provider = 'ml'
+                ORDER BY COALESCE(scored_at, timestamp) DESC
+                """
+            ).fetchall()
+
+        by_day: dict[str, list[sqlite3.Row]] = {}
+        for r in rows:
+            ts = r['scored_at'] or r['timestamp']
+            day = _central_day_key(ts)
+            if not day:
+                continue
+            by_day.setdefault(day, []).append(r)
+
+        series = []
+        for day in sorted(by_day.keys(), reverse=True)[:days]:
+            rs = by_day[day]
+            m = _calc_metrics(rs)
+            total = int(m.get('total_scored') or 0)
+            actionable_total = 0
+            actionable_correct = 0
+            for r in rs:
+                if (r['predicted_direction'] or '') != 'neutral':
+                    actionable_total += 1
+                    if r['result'] == 'correct':
+                        actionable_correct += 1
+            action_rate = (actionable_total / total) if total > 0 else None
+            acc_actionable = (actionable_correct / actionable_total) if actionable_total > 0 else None
+            series.append({'day': day, **m, 'action_rate': action_rate, 'accuracy_actionable': acc_actionable, 'actionable_total': actionable_total})
+
+        return {'days': days, 'series': series, 'tz': 'America/Chicago'}
     @app.get("/api/predictions/recent")
     def predictions_recent(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
         with _connect(db_path) as con:

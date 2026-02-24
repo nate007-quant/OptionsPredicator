@@ -11,6 +11,9 @@ from typing import Any
 from options_ai.ai.codex_client import CodexClient
 from options_ai.ai.router import ModelRouter, try_models
 from options_ai.config import Config
+from options_ai.ml.features import build_features
+from options_ai.ml.model_store import load_bundle
+from options_ai.ml.infer import infer as ml_infer
 from options_ai.processes.analyzer import run_chart_extraction_if_available, run_prediction
 from options_ai.queries import (
     fetch_latest_performance_summary,
@@ -530,6 +533,12 @@ def ingest_snapshot_file(
     else:
         snapshot_summary = build_snapshot_summary(parsed, rows, snapshot)
 
+    # ML feature snapshot (deterministic, event-time)
+    features = build_features(snapshot_summary, model_signals)
+    features_version = str(cfg.ml_features_version or "ml_features_v1")
+    features_json = json.dumps(features, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
     # Write derived cache if missing or forced recompute occurred
     if mode != "from_model":
         try:
@@ -558,6 +567,8 @@ def ingest_snapshot_file(
     chart_report: dict[str, Any] | None = None
 
     candidates = router.candidates(bootstrap_mode=bootstrap_mode) if router is not None else []
+    if not bool(cfg.llm_enabled):
+        candidates = []
     try:
         log_routing(
             paths,
@@ -573,7 +584,7 @@ def ingest_snapshot_file(
 
 
     # Chart extraction routing + caching (chart is optional; failures should not stop prediction).
-    if (not bootstrap_mode) and chart_path and candidates and (not (bool(cfg.backtest_mode) and bool(cfg.backtest_disable_chart))) and any(_chart_enabled_for_provider(cfg, c.provider) for c in candidates):
+    if (not bootstrap_mode) and chart_path and candidates and (not (bool(cfg.backtest_mode) and bool(cfg.backtest_disable_chart))) and bool(cfg.llm_enabled) and any(_chart_enabled_for_provider(cfg, c.provider) for c in candidates):
         for c in candidates:
             if not _chart_enabled_for_provider(cfg, c.provider):
                 continue
@@ -917,6 +928,86 @@ def ingest_snapshot_file(
         pass
 
 
+    
+    # --- ML prediction row (optional, runs alongside LLM) ---
+    if bool(cfg.ml_enabled):
+        try:
+            # load bundle
+            bundle = load_bundle(str(cfg.ml_models_dir), str(cfg.ml_model_version))
+            feature_keys = list(bundle.meta.get("feature_keys") or sorted(features.keys()))
+
+            ml_out = ml_infer(
+                bundle=bundle,
+                features=features,
+                feature_keys=feature_keys,
+                expected_move_abs=float(features.get("expected_move_abs", 0.0)),
+                min_neutral_band_pts=float(cfg.ml_min_neutral_band_pts),
+                k_em=float(cfg.ml_k_em),
+                action_threshold=float(cfg.ml_action_threshold),
+            )
+
+            ml_row = {
+                "timestamp": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                "outcome_ts_utc": (parsed.observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
+        "features_version": features_version,
+        "features_json": features_json,
+                "features_version": features_version,
+                "features_json": features_json,
+                "ticker": parsed.ticker,
+                "expiration_date": parsed.expiration_date,
+                "source_snapshot_file": snapshot_path.name,
+                "source_snapshot_hash": snapshot_hash,
+                "chart_file": None,
+                "spot_price": float(spot),
+                "signals_used": json.dumps({"computed": model_signals, "ml": ml_out.diagnostics}, sort_keys=True),
+                "chart_description": None,
+                "predicted_direction": ml_out.predicted_direction,
+                "predicted_magnitude": float(ml_out.predicted_magnitude),
+                "confidence": float(ml_out.confidence),
+                "strategy_suggested": "",
+                "reasoning": "ML two-stage (action gate + move regressor).",
+                "prompt_version": features_version,
+                "model_used": str(cfg.ml_model_version),
+                "model_provider": "ml",
+                "routing_reason": "ml_primary",
+                "price_at_prediction": float(spot),
+            }
+            _ = insert_prediction(db_path, ml_row)
+        except Exception as _e:
+            # Still insert a neutral ML row so dashboards remain consistent
+            try:
+                ml_row = {
+                    "timestamp": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                    "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                    "outcome_ts_utc": (parsed.observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
+        "features_version": features_version,
+        "features_json": features_json,
+                    "features_version": features_version,
+                    "features_json": features_json,
+                    "ticker": parsed.ticker,
+                    "expiration_date": parsed.expiration_date,
+                    "source_snapshot_file": snapshot_path.name,
+                    "source_snapshot_hash": snapshot_hash,
+                    "chart_file": None,
+                    "spot_price": float(spot),
+                    "signals_used": json.dumps({"computed": model_signals, "ml": {"error": str(_e)}}, sort_keys=True),
+                    "chart_description": None,
+                    "predicted_direction": "neutral",
+                    "predicted_magnitude": 0.0,
+                    "confidence": 0.0,
+                    "strategy_suggested": "",
+                    "reasoning": "ML enabled but model bundle missing or failed.",
+                    "prompt_version": features_version,
+                    "model_used": str(cfg.ml_model_version),
+                    "model_provider": "ml",
+                    "routing_reason": "ml_error",
+                    "price_at_prediction": float(spot),
+                }
+                _ = insert_prediction(db_path, ml_row)
+            except Exception:
+                pass
+
     signals_payload = {
         "computed": model_signals,
         "model_signals_used": pred_obj.get("signals_used"),
@@ -926,6 +1017,8 @@ def ingest_snapshot_file(
         "timestamp": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
         "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
         "outcome_ts_utc": (parsed.observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
+        "features_version": features_version,
+        "features_json": features_json,
         "ticker": parsed.ticker,
         "expiration_date": parsed.expiration_date,
         "source_snapshot_file": snapshot_path.name,

@@ -38,6 +38,16 @@ class Config:
     tokens_per_char: float = 0.25
     tokens_estimation_mode: str = "chars"  # chars|tokenizer (future)
 
+    # ML runtime toggles + params (v2.7)
+    ml_enabled: bool = False
+    llm_enabled: bool = True
+    ml_models_dir: str = "/mnt/options_ai/models"
+    ml_model_version: str = "ml_v1"
+    ml_features_version: str = "ml_features_v1"
+    ml_action_threshold: float = 0.85
+    ml_min_neutral_band_pts: float = 3.0
+    ml_k_em: float = 0.20
+
     # GEX prompt compression (v2.3+)
     gex_neighbor_strikes: int = 2
     gex_topk_abs_strikes: int = 0
@@ -112,8 +122,6 @@ def load_config() -> Config:
     if not database_url:
         raise RuntimeError("DATABASE_URL is required")
 
-    # OPENAI_API_KEY is required for live runs; tests may omit it.
-
     return Config(
         openai_api_key=openai_api_key,
         database_url=database_url,
@@ -135,6 +143,14 @@ def load_config() -> Config:
         backtest_disable_chart=_get_bool("BACKTEST_DISABLE_CHART", True),
         tokens_per_char=float(os.getenv("TOKENS_PER_CHAR", "0.25")),
         tokens_estimation_mode=os.getenv("TOKENS_ESTIMATION_MODE", "chars").strip().lower(),
+        ml_enabled=_get_bool("ML_ENABLED", False),
+        llm_enabled=_get_bool("LLM_ENABLED", True),
+        ml_models_dir=os.getenv("ML_MODELS_DIR", "/mnt/options_ai/models").strip(),
+        ml_model_version=os.getenv("ML_MODEL_VERSION", "ml_v1").strip(),
+        ml_features_version=os.getenv("ML_FEATURES_VERSION", "ml_features_v1").strip(),
+        ml_action_threshold=float(os.getenv("ML_ACTION_THRESHOLD", "0.85")),
+        ml_min_neutral_band_pts=float(os.getenv("ML_MIN_NEUTRAL_BAND_PTS", "3.0")),
+        ml_k_em=float(os.getenv("ML_K_EM", "0.20")),
         gex_neighbor_strikes=int(os.getenv("GEX_NEIGHBOR_STRIKES", "2")),
         gex_topk_abs_strikes=int(os.getenv("GEX_TOPK_ABS_STRIKES", "0")),
         gex_sticky_day_max=int(os.getenv("GEX_STICKY_DAY_MAX", "20")),

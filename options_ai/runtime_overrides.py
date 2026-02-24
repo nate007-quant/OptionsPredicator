@@ -10,7 +10,7 @@ from options_ai.config import Config
 from options_ai.utils.logger import get_logger
 
 
-# Phase-1 allowlist (spec v1)
+# Phase-1 allowlist (spec v1) + ML toggles (v2.7)
 ALLOWLIST: dict[str, Any] = {
     # Required reprocessing controls
     "REPROCESS_MODE": {"type": "enum", "values": ["none", "from_model", "from_summary", "from_signals", "full"]},
@@ -28,11 +28,13 @@ ALLOWLIST: dict[str, Any] = {
     "CHART_LOCAL_ENABLED": {"type": "bool"},
     "CHART_REMOTE_ENABLED": {"type": "bool"},
 
+    # ML/LLM toggles
+    "ML_ENABLED": {"type": "bool"},
+    "LLM_ENABLED": {"type": "bool"},
+
     # Optional experiment/versioning
     "PROMPT_VERSION": {"type": "str", "min_len": 1, "max_len": 64},
 }
-
-# Explicitly disallowed keys: anything not in allowlist.
 
 
 def _coerce_bool(v: Any) -> bool:
@@ -46,14 +48,6 @@ def _coerce_bool(v: Any) -> bool:
 
 
 def validate_and_normalize_overrides(incoming: dict[str, Any]) -> dict[str, Any]:
-    """Validate allowlisted runtime overrides.
-
-    Supports key removal by setting value to None.
-
-    Returns normalized dict with keys as provided (ENV-like).
-    Raises ValueError on any invalid key/value.
-    """
-
     if not isinstance(incoming, dict):
         raise ValueError("overrides must be a JSON object")
 
@@ -135,7 +129,6 @@ def load_overrides_file(path: Path) -> dict[str, Any]:
     if not isinstance(obj, dict):
         return {}
 
-    # Filter to allowlist only; if invalid values, ignore (and log warning).
     try:
         norm = validate_and_normalize_overrides(obj)
     except Exception as e:
@@ -152,7 +145,6 @@ def load_overrides_file(path: Path) -> dict[str, Any]:
             )
         return {}
 
-    # Remove nulls in file (treated as not set)
     return {k: v for k, v in norm.items() if v is not None}
 
 
@@ -164,8 +156,6 @@ def write_overrides_file_atomic(path: Path, overrides: dict[str, Any]) -> None:
 
 
 def apply_overrides(base_cfg: Config, overrides: dict[str, Any]) -> Config:
-    """Apply normalized override dict to a Config, returning a new Config."""
-
     fields: dict[str, Any] = {}
 
     if "REPROCESS_MODE" in overrides:
@@ -190,6 +180,11 @@ def apply_overrides(base_cfg: Config, overrides: dict[str, Any]) -> Config:
         fields["chart_local_enabled"] = bool(overrides["CHART_LOCAL_ENABLED"])
     if "CHART_REMOTE_ENABLED" in overrides:
         fields["chart_remote_enabled"] = bool(overrides["CHART_REMOTE_ENABLED"])
+
+    if "ML_ENABLED" in overrides:
+        fields["ml_enabled"] = bool(overrides["ML_ENABLED"])
+    if "LLM_ENABLED" in overrides:
+        fields["llm_enabled"] = bool(overrides["LLM_ENABLED"])
 
     if "PROMPT_VERSION" in overrides:
         fields["prompt_version"] = str(overrides["PROMPT_VERSION"]).strip()
