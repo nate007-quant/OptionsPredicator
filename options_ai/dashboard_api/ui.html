@@ -138,7 +138,23 @@
         <button id="clearReprocess">Clear REPROCESS override</button>
         <span class="muted" id="cfgStatus"></span>
       </div>
-      <h3 style="margin: 10px 0 6px 0; font-size: 14px;">Effective config (snippet)</h3>
+            <div class="card" style="border-color:#ef4444; margin-top:12px;">
+        <h3 style="margin:0 0 8px 0; color:#b91c1c;">Full Reset (Danger)</h3>
+        <div class="muted" style="color:#b91c1c;">Irreversible. Deletes DB rows + files. Requires PAUSE_PROCESSING=true.</div>
+        <ul class="muted">
+          <li>DELETE FROM: predictions, performance_summary, system_events, model_usage</li>
+          <li>Delete under DATA_ROOT: incoming/, historical/, processed/, cache/, logs/, quarantine/, models/, state files</li>
+          <li>Run SQLite VACUUM</li>
+        </ul>
+        <div class="row">
+          <label><input id="pauseProcessing" type="checkbox" /> PAUSE_PROCESSING</label>
+          <input id="resetConfirm" type="text" placeholder="Type: RESET ALL DATA" style="min-width:220px;" />
+          <button id="runReset" style="background:#ef4444; color:white; border:none;">Run Full Reset</button>
+        </div>
+        <pre id="resetStatus" class="muted" style="margin-top:8px;">(reset output)</pre>
+      </div>
+
+<h3 style="margin: 10px 0 6px 0; font-size: 14px;">Effective config (snippet)</h3>
       <pre id="cfgSnippet">Loading...</pre>
     </div>
   </div>
@@ -335,6 +351,7 @@ async function applyOverrides() {
     LLM_ENABLED: document.getElementById('llmEnabled') ? !!document.getElementById('llmEnabled').checked : undefined,
     ML_ENABLED: document.getElementById('mlEnabled') ? !!document.getElementById('mlEnabled').checked : undefined,
     CHART_ENABLED: document.getElementById('chartEnabled') ? !!document.getElementById('chartEnabled').checked : undefined,
+    PAUSE_PROCESSING: document.getElementById('pauseProcessing') ? !!document.getElementById('pauseProcessing').checked : undefined,
     REPROCESS_MODE: document.getElementById('reprocessMode').value,
     WATCH_POLL_SECONDS: parseFloat(document.getElementById('watchPoll').value),
     FILE_STABLE_SECONDS: parseInt(document.getElementById('fileStable').value, 10),
@@ -347,6 +364,23 @@ async function applyOverrides() {
     await jpatch('/api/config', payload);
     status.textContent = 'Applied.';
     await refreshConfig();
+  } catch (e) {
+    status.textContent = 'Error: ' + e;
+  }
+}
+
+async function runFullReset() {
+  const status = document.getElementById('resetStatus');
+  status.textContent = 'Running reset...';
+  try {
+    const confirm = (document.getElementById('resetConfirm').value || '');
+    const r = await fetch('/api/admin/reset_all', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({confirm})
+    });
+    const txt = await r.text();
+    status.textContent = txt;
   } catch (e) {
     status.textContent = 'Error: ' + e;
   }
@@ -370,6 +404,7 @@ document.getElementById('refreshMetrics').onclick = refreshMetrics;
 document.getElementById('refreshLogs').onclick = refreshLogs;
 document.getElementById('applyOverrides').onclick = applyOverrides;
 document.getElementById('clearReprocess').onclick = clearReprocess;
+if (document.getElementById('runReset')) document.getElementById('runReset').onclick = runFullReset;
 
 let logTimer;
 document.getElementById('logAuto').addEventListener('change', (ev) => {

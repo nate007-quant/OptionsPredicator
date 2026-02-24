@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import HTMLResponse
 
 from options_ai.config import load_config
@@ -25,6 +25,61 @@ from options_ai.queries import fetch_tokens_summary, fetch_tokens_hourly_series
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
 
+
+
+def _safe_data_root(p: Path) -> Path:
+    p = p.resolve()
+    if str(p) in {"/", ""}:
+        raise ValueError("DATA_ROOT unsafe")
+    if not p.is_absolute():
+        raise ValueError("DATA_ROOT must be absolute")
+    return p
+
+
+def _is_within(root: Path, child: Path) -> bool:
+    try:
+        child.resolve().relative_to(root)
+        return True
+    except Exception:
+        return False
+
+
+def _wipe_path(root: Path, rel: str, errors: list[str]) -> int:
+    """Delete files/dirs under root/rel (contents only). Returns deleted count."""
+    from shutil import rmtree
+
+    deleted = 0
+    target = (root / rel).resolve()
+    if not _is_within(root, target):
+        errors.append(f"refusing to delete outside data_root: {target}")
+        return 0
+
+    if not target.exists():
+        return 0
+
+    # If it's a file, unlink it.
+    if target.is_file() or target.is_symlink():
+        try:
+            target.unlink(missing_ok=True)
+            return 1
+        except Exception as e:
+            errors.append(f"unlink failed {target}: {e}")
+            return 0
+
+    # If it's a dir, delete contents.
+    if target.is_dir():
+        for child in list(target.iterdir()):
+            try:
+                if child.is_dir():
+                    rmtree(child)
+                else:
+                    child.unlink(missing_ok=True)
+                deleted += 1
+            except Exception as e:
+                errors.append(f"delete failed {child}: {e}")
+        return deleted
+
+    return 0
 
 def _now_central_iso() -> str:
     return datetime.now(timezone.utc).astimezone(CENTRAL_TZ).replace(microsecond=0).isoformat()
@@ -418,6 +473,103 @@ def create_app() -> FastAPI:
         for r in series:
             r["hour_bucket"] = _to_central_iso(r.get("hour_bucket"))
         return {"summary": summary, "series": series, "tz": "America/Chicago", "note": "Estimated from chars (DeepSeek endpoint doesn't return usage)"}
+    
+    @app.post("/api/admin/reset_all")
+    def reset_all(body: dict[str, Any]) -> dict[str, Any]:
+        # Gate
+        if os.getenv("RESET_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            raise HTTPException(status_code=403, detail="RESET_ENABLED is false")
+
+        # Must be paused
+        overrides = load_overrides_file(overrides_path)
+        effective = apply_overrides(cfg, overrides)
+        if not bool(getattr(effective, "pause_processing", False)):
+            raise HTTPException(status_code=409, detail="Reset requires PAUSE_PROCESSING=true")
+
+        confirm = (body or {}).get("confirm")
+        if confirm != "RESET ALL DATA":
+            raise HTTPException(status_code=400, detail="Typed confirmation required: RESET ALL DATA")
+
+        # Path safety
+        root = _safe_data_root(data_root)
+
+        lg = None
+        try:
+            from options_ai.utils.logger import get_logger
+            lg = get_logger()
+        except Exception:
+            lg = None
+
+        if lg:
+            lg.warning(component="Admin", event="reset_started", message="full reset started", file_key="system", data_root=str(root))
+
+        # DB truncate
+        db_counts: dict[str, int] = {}
+        with _connect(db_path) as con:
+            con.execute("PRAGMA foreign_keys=OFF")
+            for tbl in ("predictions", "performance_summary", "system_events", "model_usage"):
+                try:
+                    n = int(con.execute(f"SELECT COUNT(1) AS n FROM {tbl}").fetchone()["n"])
+                    db_counts[tbl] = n
+                    con.execute(f"DELETE FROM {tbl}")
+                except Exception:
+                    db_counts[tbl] = -1
+            con.commit()
+
+        # VACUUM
+        vacuum_ran = False
+        try:
+            con2 = sqlite3.connect(db_path, timeout=30.0)
+            con2.execute("VACUUM")
+            con2.close()
+            vacuum_ran = True
+        except Exception as e:
+            if lg:
+                lg.error(component="Admin", event="reset_vacuum_failed", message="VACUUM failed", file_key="system", error=str(e))
+
+        # Filesystem wipe
+        errors: list[str] = []
+        deleted = 0
+
+        # state
+        for rel in (
+            "state/seen_files.json",
+            "state/current_task.json",
+            "state/bootstrap_checkpoint.json",
+            "state/bootstrap_completed.json",
+            "state/runtime_overrides.json",
+        ):
+            deleted += _wipe_path(root, rel, errors)
+
+        # logs
+        deleted += _wipe_path(root, "logs", errors)
+
+        # cache
+        deleted += _wipe_path(root, "cache/derived", errors)
+        deleted += _wipe_path(root, "cache/model", errors)
+
+        # processed + quarantine + incoming + historical
+        deleted += _wipe_path(root, f"processed/{cfg.ticker}/snapshots", errors)
+        deleted += _wipe_path(root, f"processed/{cfg.ticker}/charts", errors)
+        deleted += _wipe_path(root, "quarantine/invalid_filenames", errors)
+        deleted += _wipe_path(root, "quarantine/invalid_json", errors)
+        deleted += _wipe_path(root, f"incoming/{cfg.ticker}", errors)
+        deleted += _wipe_path(root, f"historical/{cfg.ticker}", errors)
+
+        # ML artifacts (under DATA_ROOT by default)
+        deleted += _wipe_path(root, "models", errors)
+
+        if lg:
+            lg.warning(component="Admin", event="reset_completed", message="full reset completed", file_key="system", data_root=str(root), deleted_files=int(deleted), errors=int(len(errors)))
+
+        return {
+            "ok": True,
+            "db": db_counts,
+            "files": {"deleted": int(deleted), "errors": int(len(errors)), "error_list": errors[:50]},
+            "vacuum": {"ran": vacuum_ran},
+            "data_root": str(root),
+        }
+
     @app.get("/api/config")
     def get_config() -> dict[str, Any]:
         overrides = load_overrides_file(overrides_path)

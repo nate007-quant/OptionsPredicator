@@ -54,6 +54,7 @@ class Config:
     gex_sticky_day_max: int = 20
     file_stable_seconds: int = 2
     watch_poll_seconds: float = 1.0
+    pause_processing: bool = False
     replay_mode: bool = False
 
     # bootstrap (v1.5+)
@@ -156,6 +157,7 @@ def load_config() -> Config:
         gex_sticky_day_max=int(os.getenv("GEX_STICKY_DAY_MAX", "20")),
         file_stable_seconds=int(os.getenv("FILE_STABLE_SECONDS", "2")),
         watch_poll_seconds=float(os.getenv("WATCH_POLL_SECONDS", "1")),
+        pause_processing=_get_bool("PAUSE_PROCESSING", False),
         replay_mode=_get_bool("REPLAY_MODE", False),
         bootstrap_enable=_get_bool("BOOTSTRAP_ENABLE", True),
         bootstrap_max_model_calls_per_min=int(os.getenv("BOOTSTRAP_MAX_MODEL_CALLS_PER_MIN", "0")),

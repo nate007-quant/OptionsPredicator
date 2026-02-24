@@ -16,6 +16,7 @@ ALLOWLIST: dict[str, Any] = {
     "REPROCESS_MODE": {"type": "enum", "values": ["none", "from_model", "from_summary", "from_signals", "full"]},
 
     # Operational knobs
+    "PAUSE_PROCESSING": {"type": "bool"},
     "WATCH_POLL_SECONDS": {"type": "float", "min": 0.05, "max": 60.0},
     "FILE_STABLE_SECONDS": {"type": "int", "min": 0, "max": 60},
     "OUTCOME_DELAY": {"type": "int", "min": 1, "max": 240},
@@ -160,6 +161,8 @@ def apply_overrides(base_cfg: Config, overrides: dict[str, Any]) -> Config:
 
     if "REPROCESS_MODE" in overrides:
         fields["reprocess_mode"] = str(overrides["REPROCESS_MODE"]).strip().lower()
+    if "PAUSE_PROCESSING" in overrides:
+        fields["pause_processing"] = bool(overrides["PAUSE_PROCESSING"])
     if "WATCH_POLL_SECONDS" in overrides:
         fields["watch_poll_seconds"] = float(overrides["WATCH_POLL_SECONDS"])
     if "FILE_STABLE_SECONDS" in overrides:

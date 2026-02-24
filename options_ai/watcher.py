@@ -197,6 +197,11 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                 router = ModelRouter(new_effective, bootstrap_rate_limiter=limiter)
             cfg_effective = new_effective
 
+            if bool(cfg_effective.pause_processing):
+                # paused: do not ingest or score; keep loop alive for dashboard/runtime changes
+                time.sleep(cfg_effective.watch_poll_seconds)
+                continue
+
             score_due_predictions(cfg=cfg_effective, paths=paths, db_path=db_path, state=state)
 
             dirs: list[Path] = []
