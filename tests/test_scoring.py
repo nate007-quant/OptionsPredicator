@@ -54,6 +54,7 @@ def test_scoring_updates_prediction_row(tmp_path: Path):
         "price_at_prediction": 100.0,
     }
     pred_id = insert_prediction(db_path, pred_row)
+    assert pred_id is not None
     assert isinstance(pred_id, int)
 
     # Provide an outcome snapshot at/after t0 + 15m

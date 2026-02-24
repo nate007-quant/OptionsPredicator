@@ -17,7 +17,15 @@ def hash_exists(db_path: str, source_snapshot_hash: str, prompt_version: str, mo
 
 
 
-def insert_prediction(db_path: str, row: dict[str, Any]) -> int:
+def insert_prediction(db_path: str, row: dict[str, Any]) -> int | None:
+    """Insert prediction row.
+
+    v2.3: idempotent on UNIQUE(source_snapshot_hash, prompt_version, model_used).
+    Returns:
+      - new row id if inserted
+      - None if ignored due to uniqueness (duplicate)
+    """
+
     cols = [
         "timestamp",
         "ticker",
@@ -46,13 +54,16 @@ def insert_prediction(db_path: str, row: dict[str, Any]) -> int:
     col_sql = ",".join(cols)
 
     with connect(db_path) as conn:
+        before = conn.total_changes
         cur = conn.execute(
-            f"INSERT INTO predictions ({col_sql}) VALUES ({placeholders})",
+            f"INSERT OR IGNORE INTO predictions ({col_sql}) VALUES ({placeholders})",
             tuple(values),
         )
+        after = conn.total_changes
+        inserted = after > before
+        if not inserted:
+            return None
         return int(cur.lastrowid)
-
-
 def fetch_recent_predictions(db_path: str, limit: int) -> list[dict[str, Any]]:
     with connect(db_path) as conn:
         cur = conn.execute(

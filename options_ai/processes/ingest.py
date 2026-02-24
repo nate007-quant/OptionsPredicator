@@ -672,6 +672,24 @@ def ingest_snapshot_file(
 
     pred_id = insert_prediction(db_path, row)
 
+    if pred_id is None:
+        # Duplicate (snapshot_hash, prompt_version, model_used)
+        try:
+            log_routing(
+                paths,
+                level="INFO",
+                event="duplicate_prediction",
+                message="prediction already exists; skipping",
+                snapshot_hash=snapshot_hash,
+                model_used=model_used,
+                model_provider=model_provider,
+                routing_reason=routing_reason,
+            )
+        except Exception:
+            pass
+        return IngestResult(processed=False, skipped_reason="duplicate_hash_prompt_model")
+
+
     # Update state snapshot index (for scoring)
     state.setdefault("snapshot_index", {})
     obs_iso = parsed.observed_dt_utc.replace(microsecond=0).isoformat()

@@ -1,17 +1,24 @@
-# OptionsPredicator — SPX Options AI Prediction System (v1.3)
+# OptionsPredicator — SPX Options AI Prediction System (v2.3.x)
 
-File-driven, local daemon that watches for new **SPX** snapshot JSON files and produces a **15-minute directional prediction** (bullish/bearish/neutral). No live market-data APIs and no broker execution in v1.
+File-driven, local daemon that watches for new **SPX** snapshot JSON files and produces a **15-minute directional prediction** (bullish/bearish/neutral). No live market-data APIs and no broker execution.
 
-## Key points
+## Baseline (current)
 
-- **Input source of truth**: snapshot JSON files under `/mnt/options_ai/incoming/SPX/`.
-- Optional chart images: `/mnt/options_ai/incoming/SPX/charts/`.
-- Outputs (DB, logs, state, processed files) live under `/mnt/options_ai/` (never in the repo).
-- Model: `gpt-5.2-codex` via `OPENAI_API_KEY`.
+- **SPX only** (fails fast if `TICKER != SPX`)
+- **File-driven** snapshots: `/mnt/options_ai/incoming/SPX/` (+ optional charts)
+- Deterministic signals + **GEX structure** (call wall / put wall / magnet / flip)
+- **Dual-model routing**
+  - Remote (OAuth): `openai-codex/gpt-5.2`
+  - Local fallback (OpenAI-compatible endpoint): `deepseek-r1:8b` (default)
+- **Bootstrap backtest** on first run (empty DB): `/mnt/options_ai/historical/SPX/`
+- **Multi-layer caching** (derived + model caches)
+- **Structured JSONL logging + full error capture** under `/mnt/options_ai/logs/*.log`
+- **Idempotent reprocessing (no crash)**: if a prediction already exists for
+  `(source_snapshot_hash, prompt_version, model_used)`, ingest is a no-op and returns a duplicate skip.
 
 ## Quick start
 
-### 1) Create runtime directories (daemon also creates them)
+### 1) Create runtime directories
 
 ```bash
 sudo mkdir -p /mnt/options_ai
@@ -21,7 +28,7 @@ sudo chown -R $USER:$USER /mnt/options_ai
 ### 2) Python env
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
@@ -43,4 +50,4 @@ pytest -q
 
 ## Spec
 
-See `SPEC_OPTIONS_AI_v1_3.txt` for the authoritative requirements.
+The repository includes the original `SPEC_OPTIONS_AI_v1_3.txt`. The implementation has advanced beyond v1.3; see `.env.example` and current source for active knobs/behavior.
