@@ -51,6 +51,12 @@ def run_chart_extraction_if_available(
         user_prompt=chart_extraction_user_prompt(),
         max_output_tokens=chart_max_output_tokens,
     )
+    # Ensure output_chars present for usage telemetry
+    try:
+        report = dict(report or {})
+        report.setdefault("output_chars", len(desc or ""))
+    except Exception:
+        pass
     return desc, report
 
 
@@ -86,6 +92,8 @@ def run_prediction(
     except Exception:
         report["provider_report"] = rep0
 
+    report.setdefault("output_chars", len(raw_text or ""))
+
     # Tolerant JSON extraction first to avoid a second model call.
     last_err: str | None = None
     for attempt in range(2):
@@ -105,12 +113,18 @@ def run_prediction(
                     "Return ONLY a valid JSON object matching the required keys and types. "
                     "No surrounding text."
                 )
+                retry_user_prompt = user_prompt + "\n\n" + correction
                 raw_text, report2 = codex.generate_prediction(
                     system_prompt=system_prompt,
-                    user_prompt=user_prompt + "\n\n" + correction,
+                    user_prompt=retry_user_prompt,
                     max_output_tokens=prediction_max_output_tokens,
                 )
+                report2 = dict(report2 or {})
+                report2["prompt_chars"] = len(retry_user_prompt)
+                report2["output_chars"] = len(raw_text or "")
                 report["retry_report"] = report2
+                # Update outer report to reflect last raw_text
+                report["output_chars"] = len(raw_text or "")
                 continue
             break
 

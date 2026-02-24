@@ -20,6 +20,7 @@ from options_ai.runtime_overrides import (
     write_overrides_file_atomic,
 )
 from options_ai.utils_web.tail import tail_jsonl
+from options_ai.queries import fetch_tokens_summary, fetch_tokens_hourly_series
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -307,6 +308,16 @@ def create_app() -> FastAPI:
 
         return {"name": name, "limit": limit, "lines": lines, "tz": "America/Chicago"}
 
+    
+    @app.get("/api/usage/tokens")
+    def usage_tokens(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
+        now_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        summary = fetch_tokens_summary(db_path, now_ts_utc=now_utc)
+        series = fetch_tokens_hourly_series(db_path, now_ts_utc=now_utc, hours=int(hours))
+        # Convert hour bucket timestamps to Central for display
+        for r in series:
+            r["hour_bucket"] = _to_central_iso(r.get("hour_bucket"))
+        return {"summary": summary, "series": series, "tz": "America/Chicago", "note": "Estimated from chars (DeepSeek endpoint doesn't return usage)"}
     @app.get("/api/config")
     def get_config() -> dict[str, Any]:
         overrides = load_overrides_file(overrides_path)

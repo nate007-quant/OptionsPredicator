@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from options_ai.db import connect
@@ -67,6 +68,98 @@ def insert_prediction(db_path: str, row: dict[str, Any]) -> int | None:
         return int(cur.lastrowid)
 
 
+def insert_model_usage(db_path: str, row: dict[str, Any]) -> int | None:
+    cols = [
+        "ts_utc",
+        "observed_ts_utc",
+        "snapshot_hash",
+        "kind",
+        "model_used",
+        "model_provider",
+        "prompt_chars",
+        "output_chars",
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "est_input_tokens",
+        "est_output_tokens",
+        "est_total_tokens",
+    ]
+    values = [row.get(c) for c in cols]
+    placeholders = ",".join(["?"] * len(cols))
+
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            f"INSERT INTO model_usage ({','.join(cols)}) VALUES ({placeholders})",
+            tuple(values),
+        )
+        return int(cur.lastrowid)
+
+
+def estimate_tokens_from_chars(prompt_chars: int, output_chars: int, tokens_per_char: float) -> tuple[int, int, int]:
+    est_in = int(math.ceil(float(prompt_chars or 0) * float(tokens_per_char)))
+    est_out = int(math.ceil(float(output_chars or 0) * float(tokens_per_char)))
+    return est_in, est_out, est_in + est_out
+
+
+def fetch_tokens_summary(db_path: str, *, now_ts_utc: str) -> dict[str, Any]:
+    """Return last-60m + previous-60m token sums and avg per file."""
+
+    # We use SQLite datetime() for simple windowing. now_ts_utc should be ISO string.
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN ts_utc >= datetime(?, '-60 minutes') THEN est_total_tokens ELSE 0 END) AS sum_last60,
+              COUNT(DISTINCT CASE WHEN ts_utc >= datetime(?, '-60 minutes') THEN snapshot_hash ELSE NULL END) AS files_last60,
+              SUM(CASE WHEN ts_utc >= datetime(?, '-120 minutes') AND ts_utc < datetime(?, '-60 minutes') THEN est_total_tokens ELSE 0 END) AS sum_prev60
+            FROM model_usage
+            """,
+            (now_ts_utc, now_ts_utc, now_ts_utc, now_ts_utc),
+        )
+        r = cur.fetchone()
+        sum_last60 = int(r[0] or 0)
+        files_last60 = int(r[1] or 0)
+        sum_prev60 = int(r[2] or 0)
+
+    avg_per_file = (sum_last60 / files_last60) if files_last60 > 0 else None
+    trend_pct = None
+    if sum_prev60 > 0:
+        trend_pct = (sum_last60 - sum_prev60) / float(sum_prev60)
+
+    return {
+        "est_total_tokens_last_60m": sum_last60,
+        "avg_est_tokens_per_file_last_60m": avg_per_file,
+        "trend_vs_prev_hour_pct": trend_pct,
+        "prev_hour_est_total_tokens": sum_prev60,
+        "files_last_60m": files_last60,
+    }
+
+
+def fetch_tokens_hourly_series(db_path: str, *, now_ts_utc: str, hours: int = 24) -> list[dict[str, Any]]:
+    hours = max(1, int(hours))
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT strftime('%Y-%m-%dT%H:00:00+00:00', ts_utc) AS hour_bucket,
+                   SUM(est_total_tokens) AS tokens
+            FROM model_usage
+            WHERE ts_utc >= datetime(?, '-' || ? || ' hours')
+            GROUP BY hour_bucket
+            ORDER BY hour_bucket DESC
+            LIMIT ?
+            """,
+            (now_ts_utc, int(hours), int(hours)),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    # Ensure descending order by default; caller can reverse.
+    for r in rows:
+        r["tokens"] = int(r.get("tokens") or 0)
+    return rows
+
+
 def fetch_recent_predictions(db_path: str, limit: int) -> list[dict[str, Any]]:
     """Legacy: latest predictions by timestamp."""
 
@@ -105,11 +198,7 @@ def fetch_gex_levels_before(
     day_key_utc: str,
     limit: int = 50,
 ) -> list[float]:
-    """Fetch prior GEX level strikes for the same UTC day, strictly before T.
-
-    We parse the stored signals_used JSON (signals_used contains a JSON object with a 'computed' section).
-    Returns a de-duped list in reverse-chronological order (most recent first).
-    """
+    """Fetch prior GEX level strikes for the same UTC day, strictly before T."""
 
     with connect(db_path) as conn:
         cur = conn.execute(
@@ -186,7 +275,6 @@ def fetch_eligible_to_score(db_path: str, cutoff_ts_iso: str) -> list[dict[str, 
     """
 
     with connect(db_path) as conn:
-        # If outcome_ts_utc exists, use it; otherwise fallback to timestamp.
         try:
             cur = conn.execute(
                 "SELECT id, timestamp, predicted_direction, predicted_magnitude, spot_price, observed_ts_utc, outcome_ts_utc "

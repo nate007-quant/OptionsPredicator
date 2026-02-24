@@ -34,6 +34,10 @@ class Config:
     backtest_mode: bool = False
     backtest_disable_chart: bool = True
 
+    # Tokens estimation (v2.6)
+    tokens_per_char: float = 0.25
+    tokens_estimation_mode: str = "chars"  # chars|tokenizer (future)
+
     # GEX prompt compression (v2.3+)
     gex_neighbor_strikes: int = 2
     gex_topk_abs_strikes: int = 0
@@ -129,6 +133,8 @@ def load_config() -> Config:
         similar_conditions_n=int(os.getenv("SIMILAR_CONDITIONS_N", "3")),
         backtest_mode=_get_bool("BACKTEST_MODE", False),
         backtest_disable_chart=_get_bool("BACKTEST_DISABLE_CHART", True),
+        tokens_per_char=float(os.getenv("TOKENS_PER_CHAR", "0.25")),
+        tokens_estimation_mode=os.getenv("TOKENS_ESTIMATION_MODE", "chars").strip().lower(),
         gex_neighbor_strikes=int(os.getenv("GEX_NEIGHBOR_STRIKES", "2")),
         gex_topk_abs_strikes=int(os.getenv("GEX_TOPK_ABS_STRIKES", "0")),
         gex_sticky_day_max=int(os.getenv("GEX_STICKY_DAY_MAX", "20")),

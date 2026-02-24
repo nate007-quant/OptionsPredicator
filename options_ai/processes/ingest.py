@@ -18,6 +18,8 @@ from options_ai.queries import (
     fetch_gex_levels_before,
     hash_exists,
     insert_prediction,
+    insert_model_usage,
+    estimate_tokens_from_chars,
 )
 from options_ai.utils.cache import (
     DerivedCache,
@@ -603,6 +605,36 @@ def ingest_snapshot_file(
                 observed_ts_compact=parsed.observed_date_compact + parsed.observed_time_compact,
                 report={"phase": "chart_extraction", **chart_report},
             )
+            # Usage telemetry (chart)
+            try:
+                ts_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+                prompt_chars = int(chart_report.get("prompt_chars") or 0)
+                output_chars = int(chart_report.get("output_chars") or 0)
+                latency_ms = int(chart_report.get("latency_ms") or 0)
+                est_in, est_out, est_total = estimate_tokens_from_chars(prompt_chars, output_chars, float(cfg.tokens_per_char))
+                insert_model_usage(
+                    db_path,
+                    {
+                        "ts_utc": ts_utc,
+                        "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                        "snapshot_hash": snapshot_hash,
+                        "kind": "chart",
+                        "model_used": chart_report.get("model_used"),
+                        "model_provider": chart_report.get("model_provider"),
+                        "prompt_chars": prompt_chars,
+                        "output_chars": output_chars,
+                        "latency_ms": latency_ms,
+                        "input_tokens": None,
+                        "output_tokens": None,
+                        "total_tokens": None,
+                        "est_input_tokens": est_in,
+                        "est_output_tokens": est_out,
+                        "est_total_tokens": est_total,
+                    },
+                )
+            except Exception:
+                pass
+
 
     # Context for prediction
     recent_predictions_raw = fetch_recent_predictions_before(
@@ -778,6 +810,63 @@ def ingest_snapshot_file(
         observed_ts_compact=parsed.observed_date_compact + parsed.observed_time_compact,
         report={"phase": "prediction", **(pred_report or {})},
     )
+    # Usage telemetry (prediction + optional retry)
+    try:
+        ts_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        prompt_chars = int((pred_report or {}).get("prompt_chars") or 0)
+        output_chars = int((pred_report or {}).get("output_chars") or 0)
+        latency_ms = int((pred_report or {}).get("latency_ms") or 0)
+        est_in, est_out, est_total = estimate_tokens_from_chars(prompt_chars, output_chars, float(cfg.tokens_per_char))
+        insert_model_usage(
+            db_path,
+            {
+                "ts_utc": ts_utc,
+                "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                "snapshot_hash": snapshot_hash,
+                "kind": "prediction",
+                "model_used": (pred_report or {}).get("model_used"),
+                "model_provider": (pred_report or {}).get("model_provider"),
+                "prompt_chars": prompt_chars,
+                "output_chars": output_chars,
+                "latency_ms": latency_ms,
+                "input_tokens": None,
+                "output_tokens": None,
+                "total_tokens": None,
+                "est_input_tokens": est_in,
+                "est_output_tokens": est_out,
+                "est_total_tokens": est_total,
+            },
+        )
+
+        rr = (pred_report or {}).get("retry_report")
+        if isinstance(rr, dict):
+            prompt_chars2 = int(rr.get("prompt_chars") or 0)
+            output_chars2 = int(rr.get("output_chars") or 0)
+            latency_ms2 = int(rr.get("latency_ms") or 0)
+            est_in2, est_out2, est_total2 = estimate_tokens_from_chars(prompt_chars2, output_chars2, float(cfg.tokens_per_char))
+            insert_model_usage(
+                db_path,
+                {
+                    "ts_utc": ts_utc,
+                    "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                    "snapshot_hash": snapshot_hash,
+                    "kind": "retry",
+                    "model_used": (pred_report or {}).get("model_used"),
+                    "model_provider": (pred_report or {}).get("model_provider"),
+                    "prompt_chars": prompt_chars2,
+                    "output_chars": output_chars2,
+                    "latency_ms": latency_ms2,
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "total_tokens": None,
+                    "est_input_tokens": est_in2,
+                    "est_output_tokens": est_out2,
+                    "est_total_tokens": est_total2,
+                },
+            )
+    except Exception:
+        pass
+
 
     signals_payload = {
         "computed": model_signals,

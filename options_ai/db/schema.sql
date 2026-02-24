@@ -1,4 +1,4 @@
--- Options AI v2.5 schema
+-- Options AI v2.6 schema
 
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
@@ -68,3 +68,29 @@ CREATE TABLE IF NOT EXISTS system_events (
 
 CREATE INDEX IF NOT EXISTS idx_system_events_timestamp ON system_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_system_events_level ON system_events(level);
+
+-- v2.6: model usage telemetry (for Tokens UI tile)
+CREATE TABLE IF NOT EXISTS model_usage (
+  id INTEGER PRIMARY KEY,
+  ts_utc TEXT NOT NULL,
+  observed_ts_utc TEXT,
+  snapshot_hash TEXT,
+  kind TEXT NOT NULL, -- prediction|chart|retry
+  model_used TEXT,
+  model_provider TEXT,
+  prompt_chars INTEGER,
+  output_chars INTEGER,
+  latency_ms INTEGER,
+
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  total_tokens INTEGER,
+
+  est_input_tokens INTEGER NOT NULL,
+  est_output_tokens INTEGER NOT NULL,
+  est_total_tokens INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_usage_ts_utc ON model_usage(ts_utc);
+CREATE INDEX IF NOT EXISTS idx_model_usage_snapshot_hash ON model_usage(snapshot_hash);
+CREATE INDEX IF NOT EXISTS idx_model_usage_kind ON model_usage(kind);

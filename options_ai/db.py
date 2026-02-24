@@ -246,3 +246,34 @@ def init_db(db_path: str, schema_sql_path: str) -> None:
             _ensure_event_time_columns(conn)
         except Exception:
             pass
+
+        # v2.6 model_usage telemetry table + indexes
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS model_usage (
+                  id INTEGER PRIMARY KEY,
+                  ts_utc TEXT NOT NULL,
+                  observed_ts_utc TEXT,
+                  snapshot_hash TEXT,
+                  kind TEXT NOT NULL,
+                  model_used TEXT,
+                  model_provider TEXT,
+                  prompt_chars INTEGER,
+                  output_chars INTEGER,
+                  latency_ms INTEGER,
+                  input_tokens INTEGER,
+                  output_tokens INTEGER,
+                  total_tokens INTEGER,
+                  est_input_tokens INTEGER NOT NULL,
+                  est_output_tokens INTEGER NOT NULL,
+                  est_total_tokens INTEGER NOT NULL
+                );
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_ts_utc ON model_usage(ts_utc)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_snapshot_hash ON model_usage(snapshot_hash)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_kind ON model_usage(kind)")
+        except Exception:
+            pass
+

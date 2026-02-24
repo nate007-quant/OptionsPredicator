@@ -47,6 +47,20 @@
 
     <div class="card">
       <h2>B) Metrics</h2>
+      <div class="card" style="margin-top:10px; border-style:dashed;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline;">
+          <div>
+            <div class="muted">Tokens / Hour (est.)</div>
+            <div style="font-size:34px; font-weight:700;" id="tokTotal">—</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="muted" id="tokAvg">avg/file: —</div>
+            <div class="muted" id="tokTrend">trend: —</div>
+          </div>
+        </div>
+        <div class="muted" style="margin-top:6px;">Estimated from chars (DeepSeek endpoint doesn't return usage)</div>
+      </div>
+
       <div class="row">
         <label>Rolling N <input id="rollingN" type="number" min="10" max="5000" value="50" style="width: 90px;" /></label>
         <button id="refreshMetrics">Refresh</button>
@@ -162,6 +176,21 @@ async function refreshProcessing() {
 }
 
 let dailyChart;
+async function refreshTokens() {
+  const data = await jget('/api/usage/tokens?hours=24');
+  const s = data.summary || {};
+  document.getElementById('tokTotal').textContent = (s.est_total_tokens_last_60m ?? 0).toLocaleString();
+  const avg = s.avg_est_tokens_per_file_last_60m;
+  document.getElementById('tokAvg').textContent = 'avg/file: ' + (avg === null || avg === undefined ? '—' : Math.round(avg).toLocaleString());
+  const tr = s.trend_vs_prev_hour_pct;
+  if (tr === null || tr === undefined) {
+    document.getElementById('tokTrend').textContent = 'trend: —';
+  } else {
+    const pct = (100*tr).toFixed(1);
+    document.getElementById('tokTrend').textContent = 'trend: ' + (tr>=0?'+':'') + pct + '% vs prev hr';
+  }
+}
+
 async function refreshMetrics() {
   const n = parseInt(document.getElementById('rollingN').value || '50', 10);
   const roll = await jget(`/api/metrics/rolling?n=${n}`);
@@ -294,11 +323,13 @@ document.getElementById('logAuto').addEventListener('change', (ev) => {
 // initial load
 (async () => {
   await refreshConfig();
+  await refreshTokens();
   await refreshMetrics();
   await refreshLogs();
   await refreshProcessing();
   setInterval(() => refreshProcessing().catch(()=>{}), 2000);
   setInterval(() => refreshConfig().catch(()=>{}), 5000);
+  setInterval(() => refreshTokens().catch(()=>{}), 10000);
 })();
 </script>
 </body>
