@@ -434,6 +434,125 @@ def create_app() -> FastAPI:
             series.append({'day': day, **m, 'action_rate': action_rate, 'accuracy_actionable': acc_actionable, 'actionable_total': actionable_total})
 
         return {'days': days, 'series': series, 'tz': 'America/Chicago'}
+    
+    def _series_buckets_query(*, provider_filter_sql: str, window_days: int, bucket_minutes: int) -> tuple[str, tuple[Any, ...]]:
+        # bucket_start_utc as ISO-like UTC string (no offset); we convert for output later.
+        bucket_seconds = int(bucket_minutes) * 60
+        sql = f"""
+            SELECT
+              datetime((strftime('%s', COALESCE(observed_ts_utc, timestamp)) / ?) * ?, 'unixepoch') AS bucket_start_utc,
+              COUNT(*) AS total_scored,
+              SUM(CASE WHEN result='correct' THEN 1 ELSE 0 END) AS correct,
+              SUM(CASE WHEN result='wrong_direction' THEN 1 ELSE 0 END) AS wrong_direction,
+              SUM(CASE WHEN result='correct_direction_wrong_magnitude' THEN 1 ELSE 0 END) AS correct_direction_wrong_magnitude,
+              SUM(CASE WHEN result NOT IN ('correct','wrong_direction','correct_direction_wrong_magnitude') THEN 1 ELSE 0 END) AS inconclusive,
+              SUM(CASE WHEN predicted_direction != 'neutral' THEN 1 ELSE 0 END) AS actionable_total,
+              SUM(CASE WHEN predicted_direction != 'neutral' AND result='correct' THEN 1 ELSE 0 END) AS actionable_correct
+            FROM predictions
+            WHERE result IS NOT NULL
+              AND COALESCE(observed_ts_utc, timestamp) >= datetime(?, '-' || ? || ' days')
+              AND {provider_filter_sql}
+            GROUP BY bucket_start_utc
+            ORDER BY bucket_start_utc ASC
+        """
+        params: tuple[Any, ...] = (bucket_seconds, bucket_seconds, now_utc, int(window_days))
+        return sql, _params
+
+    def _postprocess_bucket_row(r: sqlite3.Row, *, min_samples: int, include_action: bool) -> dict[str, Any]:
+        total = int(r['total_scored'] or 0)
+        correct = int(r['correct'] or 0)
+        wrong_dir = int(r['wrong_direction'] or 0)
+        cdwm = int(r['correct_direction_wrong_magnitude'] or 0)
+        inconc = int(r['inconclusive'] or 0)
+
+        overall = None
+        excl = None
+        if total >= int(min_samples) and total > 0:
+            overall = correct / total
+            denom_excl = total - inconc
+            excl = (correct / denom_excl) if denom_excl > 0 else None
+
+        actionable_total = int(r['actionable_total'] or 0) if include_action else 0
+        actionable_correct = int(r['actionable_correct'] or 0) if include_action else 0
+        action_rate = (actionable_total / total) if include_action and total > 0 else None
+        acc_actionable = None
+        if include_action and actionable_total >= int(min_samples) and actionable_total > 0:
+            acc_actionable = actionable_correct / actionable_total
+
+        return {
+            'bucket_start': _to_central_iso(str(r['bucket_start_utc']) + '+00:00'),
+            'total_scored': total,
+            'correct': correct,
+            'wrong_direction': wrong_dir,
+            'correct_direction_wrong_magnitude': cdwm,
+            'inconclusive': inconc,
+            'overall_accuracy': overall,
+            'accuracy_excluding_inconclusive': excl,
+            'action_rate': action_rate,
+            'actionable_total': actionable_total if include_action else None,
+            'accuracy_actionable': acc_actionable,
+        }
+
+
+    @app.get("/api/metrics/series_buckets")
+    def metrics_series_buckets(
+        window_days: int = Query(15, ge=1, le=60),
+        bucket_minutes: int = Query(15),
+        min_samples: int = Query(5, ge=1, le=200),
+    ) -> dict[str, Any]:
+        if int(bucket_minutes) not in {5, 10, 15, 30, 60}:
+            raise HTTPException(status_code=400, detail='bucket_minutes must be one of 5,10,15,30,60')
+
+        now_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+        sql, _params = _series_buckets_query(
+            provider_filter_sql="model_provider != 'ml'",
+            window_days=int(window_days),
+            bucket_minutes=int(bucket_minutes),
+        )
+        with _connect(db_path) as con:
+            rows = con.execute(sql, (int(bucket_minutes) * 60, int(bucket_minutes) * 60, now_utc, int(window_days))).fetchall()
+
+        series = [_postprocess_bucket_row(r, min_samples=int(min_samples), include_action=False) for r in rows]
+
+        return {
+            'window_days': int(window_days),
+            'bucket_minutes': int(bucket_minutes),
+            'min_samples': int(min_samples),
+            'tz': 'America/Chicago',
+            'series': series,
+        }
+
+
+    @app.get("/api/ml/metrics/series_buckets")
+    def ml_metrics_series_buckets(
+        window_days: int = Query(15, ge=1, le=60),
+        bucket_minutes: int = Query(15),
+        min_samples: int = Query(5, ge=1, le=200),
+    ) -> dict[str, Any]:
+        if int(bucket_minutes) not in {5, 10, 15, 30, 60}:
+            raise HTTPException(status_code=400, detail='bucket_minutes must be one of 5,10,15,30,60')
+
+        now_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+        sql, _params = _series_buckets_query(
+            provider_filter_sql="model_provider = 'ml'",
+            window_days=int(window_days),
+            bucket_minutes=int(bucket_minutes),
+        )
+        with _connect(db_path) as con:
+            rows = con.execute(sql, (int(bucket_minutes) * 60, int(bucket_minutes) * 60, now_utc, int(window_days))).fetchall()
+
+        series = [_postprocess_bucket_row(r, min_samples=int(min_samples), include_action=True) for r in rows]
+
+        return {
+            'window_days': int(window_days),
+            'bucket_minutes': int(bucket_minutes),
+            'min_samples': int(min_samples),
+            'tz': 'America/Chicago',
+            'series': series,
+        }
+
     @app.get("/api/predictions/recent")
     def predictions_recent(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
         with _connect(db_path) as con:

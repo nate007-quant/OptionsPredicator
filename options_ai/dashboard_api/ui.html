@@ -85,6 +85,23 @@
         <div>Hi-conf acc: <span id="rollHi" class="pill">-</span></div>
         <div>Total: <span id="rollTotal" class="pill">-</span></div>
       </div>
+      <div class="row" style="margin-top:10px;">
+        <label>Window days <input id="llmWinDays" type="number" min="1" max="60" value="15" style="width:80px;" /></label>
+        <label>Bucket
+          <select id="llmBucketMin">
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="15" selected>15</option>
+            <option value="30">30</option>
+            <option value="60">60</option>
+          </select>
+        </label>
+        <label>Min samples <input id="llmMinSamples" type="number" min="1" max="200" value="5" style="width:80px;" /></label>
+        <button id="refreshLlmBuckets">Refresh 15m</button>
+      </div>
+      <div style="margin-top: 10px;">
+        <canvas id="llmBucketChart" height="120"></canvas>
+      </div>
       <div style="margin-top: 10px;">
         <canvas id="dailyChart" height="120"></canvas>
       </div>
@@ -120,6 +137,23 @@
         <div>Acc (actionable): <span id="mlAccAction" class="pill">—</span></div>
         <div>Overall acc: <span id="mlOverall" class="pill">—</span></div>
         <div>Scored: <span id="mlTotal" class="pill">—</span></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <label>Window days <input id="mlWinDays" type="number" min="1" max="60" value="15" style="width:80px;" /></label>
+        <label>Bucket
+          <select id="mlBucketMin">
+            <option value="5">5</option>
+            <option value="10">10</option>
+            <option value="15" selected>15</option>
+            <option value="30">30</option>
+            <option value="60">60</option>
+          </select>
+        </label>
+        <label>Min samples <input id="mlMinSamples" type="number" min="1" max="200" value="5" style="width:80px;" /></label>
+        <button id="refreshMlBuckets">Refresh 15m</button>
+      </div>
+      <div style="margin-top: 10px;">
+        <canvas id="mlBucketChart" height="120"></canvas>
       </div>
       <div style="margin-top: 10px;">
         <canvas id="mlDailyChart" height="120"></canvas>
@@ -418,6 +452,8 @@ async function clearReprocess() {
 // wire up
 
 document.getElementById('refreshMetrics').onclick = refreshMetrics;
+if (document.getElementById('refreshLlmBuckets')) document.getElementById('refreshLlmBuckets').onclick = refreshLlmBuckets;
+if (document.getElementById('refreshMlBuckets')) document.getElementById('refreshMlBuckets').onclick = refreshMlBuckets;
 document.getElementById('refreshLogs').onclick = refreshLogs;
 document.getElementById('applyOverrides').onclick = applyOverrides;
 document.getElementById('clearReprocess').onclick = clearReprocess;
@@ -440,9 +476,11 @@ document.getElementById('queuePageSize')?.addEventListener('change', () => refre
 (async () => {
   await refreshConfig();
   await refreshTokens();
+  await refreshLlmBuckets();
   await refreshMetrics();
   await refreshLogs();
   await refreshML();
+  await refreshMlBuckets();
   await refreshProcessing();
   setInterval(() => refreshProcessing().catch(()=>{}), 2000);
   setInterval(() => refreshConfig().catch(()=>{}), 5000);
