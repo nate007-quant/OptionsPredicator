@@ -11,24 +11,33 @@ from options_ai.ai.oauth import OAuthTokenManager
 
 
 def _response_text(resp: Any) -> str:
+    """Best-effort extraction of plain text across OpenAI/compat response shapes."""
+
     if resp is None:
         return ""
+
+    # New "responses" API
     if hasattr(resp, "output_text") and isinstance(resp.output_text, str):
         return resp.output_text
+
     try:
-        chunks = []
-        for item in resp.output:
+        chunks: list[str] = []
+        for item in getattr(resp, "output", []) or []:
             for c in getattr(item, "content", []) or []:
-                if getattr(c, "type", None) in {"output_text", "text"} and getattr(c, "text", None):
-                    chunks.append(c.text)
+                c_type = getattr(c, "type", None)
+                c_text = getattr(c, "text", None)
+                if c_type in {"output_text", "text"} and c_text:
+                    chunks.append(c_text)
         if chunks:
             return "\n".join(chunks)
     except Exception:
         pass
+
+    # ChatCompletions shape
     try:
         return resp.choices[0].message.content
     except Exception:
-        return str(resp)
+        return "" if resp is None else str(resp)
 
 
 class CodexClient:
@@ -67,8 +76,10 @@ class CodexClient:
         kwargs: dict[str, Any] = {"api_key": api_key}
         if self.base_url:
             kwargs["base_url"] = self.base_url
+        if self.timeout_seconds is not None:
+            # openai-python supports float seconds or httpx.Timeout.
+            kwargs["timeout"] = float(self.timeout_seconds)
 
-        # openai-python currently takes timeout via httpx internally; keep simple.
         return OpenAI(**kwargs)
 
     def extract_chart_description(
@@ -103,7 +114,10 @@ class CodexClient:
             **kwargs,
         )
         text = _response_text(resp).strip()
-        report = {"raw": getattr(resp, "model_dump", lambda: {})()} if hasattr(resp, "model_dump") else {"raw": str(resp)}
+        report = {
+            "method": "responses",
+            "raw": getattr(resp, "model_dump", lambda: {})() if hasattr(resp, "model_dump") else str(resp),
+        }
         return text, report
 
     def generate_prediction(
@@ -127,7 +141,32 @@ class CodexClient:
             **kwargs,
         )
         text = _response_text(resp).strip()
-        report = {"raw": getattr(resp, "model_dump", lambda: {})()} if hasattr(resp, "model_dump") else {"raw": str(resp)}
+        report: dict[str, Any] = {
+            "method": "responses",
+            "raw": getattr(resp, "model_dump", lambda: {})() if hasattr(resp, "model_dump") else str(resp),
+        }
+
+        # Some OpenAI-compatible local endpoints implement /v1/chat/completions but not /v1/responses.
+        # In that case the SDK may return an object that parses but has no text content. Fallback.
+        if not text and self.base_url:
+            chat_kwargs: dict[str, Any] = {}
+            if max_output_tokens is not None:
+                chat_kwargs["max_tokens"] = int(max_output_tokens)
+
+            chat_resp = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                **chat_kwargs,
+            )
+            text = _response_text(chat_resp).strip()
+            report["method"] = "chat_completions_fallback"
+            report["fallback_raw"] = (
+                getattr(chat_resp, "model_dump", lambda: {})() if hasattr(chat_resp, "model_dump") else str(chat_resp)
+            )
+
         return text, report
 
 
