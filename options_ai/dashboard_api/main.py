@@ -6,8 +6,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 
 from options_ai.config import load_config
@@ -21,8 +22,30 @@ from options_ai.runtime_overrides import (
 from options_ai.utils_web.tail import tail_jsonl
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+CENTRAL_TZ = ZoneInfo("America/Chicago")
+
+
+def _now_central_iso() -> str:
+    return datetime.now(timezone.utc).astimezone(CENTRAL_TZ).replace(microsecond=0).isoformat()
+
+
+def _to_central_iso(x: Any) -> Any:
+    if x is None:
+        return None
+    if isinstance(x, datetime):
+        dt = x
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(CENTRAL_TZ).replace(microsecond=0).isoformat()
+    if isinstance(x, str):
+        try:
+            dt = datetime.fromisoformat(x.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(CENTRAL_TZ).replace(microsecond=0).isoformat()
+        except Exception:
+            return x
+    return x
 
 
 def _db_path_from_database_url(database_url: str) -> str:
@@ -30,11 +53,6 @@ def _db_path_from_database_url(database_url: str) -> str:
     if not database_url.startswith("sqlite:"):
         raise ValueError("only sqlite DATABASE_URL supported")
     p = database_url.replace("sqlite:", "", 1)
-    if p.startswith("///"):
-        # sqlite:////abs/path -> p="////abs/path" then strip 3 => "/abs/path"?
-        pass
-    # sqlite URI: sqlite:////mnt/... -> string after scheme contains absolute path with leading //
-    # easiest: drop leading slashes until single leading slash remains
     while p.startswith("////"):
         p = p[1:]
     if not p.startswith("/"):
@@ -104,6 +122,18 @@ def _calc_metrics(rows: list[sqlite3.Row]) -> dict[str, Any]:
     }
 
 
+def _central_day_key(iso_ts: str | None) -> str | None:
+    if not iso_ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(CENTRAL_TZ).date().isoformat()
+    except Exception:
+        return None
+
+
 def create_app() -> FastAPI:
     cfg = load_config()
 
@@ -119,12 +149,12 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        html_path = Path(__file__).with_name('ui.html')
-        return html_path.read_text(encoding='utf-8')
+        html_path = Path(__file__).with_name("ui.html")
+        return html_path.read_text(encoding="utf-8")
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "time": _now_iso()}
+        return {"ok": True, "time": _now_central_iso(), "tz": "America/Chicago"}
 
     @app.get("/api/status/processing")
     def status_processing(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
@@ -149,12 +179,14 @@ def create_app() -> FastAPI:
 
                 obj = json.loads(current_task_path.read_text(encoding="utf-8"))
                 if isinstance(obj, dict) and obj.get("file"):
-                    started_at = obj.get("started_at")
+                    started_at = _to_central_iso(obj.get("started_at"))
                     elapsed = None
                     try:
-                        if started_at:
-                            dt = datetime.fromisoformat(str(started_at).replace("Z", "+00:00")).astimezone(timezone.utc)
-                            elapsed = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+                        if obj.get("started_at"):
+                            dt = datetime.fromisoformat(str(obj.get("started_at")).replace("Z", "+00:00"))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            elapsed = max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
                     except Exception:
                         elapsed = None
                     processing_items = [
@@ -185,27 +217,27 @@ def create_app() -> FastAPI:
             "queue": {"count": len(queue_items), "items": queue_items},
             "processing": {"count": len(processing_items), "items": processing_items},
             "counters": {"total_predictions": total_predictions, "total_scored": total_scored, "unscored": unscored},
+            "tz": "America/Chicago",
         }
 
     @app.get("/api/metrics/daily")
     def metrics_daily(days: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
         with _connect(db_path) as con:
-            # day key uses scored_at if present else timestamp
             rows = con.execute(
                 """
-                SELECT date(COALESCE(scored_at, timestamp)) AS day,
-                       result,
-                       confidence
+                SELECT timestamp, scored_at, result, confidence
                 FROM predictions
                 WHERE result IS NOT NULL
                 ORDER BY COALESCE(scored_at, timestamp) DESC
                 """
             ).fetchall()
 
-        # roll up per day
         by_day: dict[str, list[sqlite3.Row]] = {}
         for r in rows:
-            day = r["day"]
+            ts = r["scored_at"] or r["timestamp"]
+            day = _central_day_key(ts)
+            if not day:
+                continue
             by_day.setdefault(day, []).append(r)
 
         series = []
@@ -213,7 +245,7 @@ def create_app() -> FastAPI:
             m = _calc_metrics(by_day[day])
             series.append({"day": day, **m})
 
-        return {"days": days, "series": series}
+        return {"days": days, "series": series, "tz": "America/Chicago"}
 
     @app.get("/api/metrics/rolling")
     def metrics_rolling(n: int = Query(50, ge=10, le=5000)) -> dict[str, Any]:
@@ -231,10 +263,10 @@ def create_app() -> FastAPI:
 
         as_of = None
         if rows:
-            as_of = rows[0]["ts"]
+            as_of = _to_central_iso(rows[0]["ts"])
 
         m = _calc_metrics(rows)
-        return {"n": n, "as_of": as_of, **m}
+        return {"n": n, "as_of": as_of, **m, "tz": "America/Chicago"}
 
     @app.get("/api/predictions/recent")
     def predictions_recent(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
@@ -249,7 +281,15 @@ def create_app() -> FastAPI:
                 """,
                 (int(limit),),
             ).fetchall()
-        return {"limit": limit, "items": [dict(r) for r in rows]}
+
+        items = []
+        for r in rows:
+            d = dict(r)
+            d["timestamp"] = _to_central_iso(d.get("timestamp"))
+            d["scored_at"] = _to_central_iso(d.get("scored_at"))
+            items.append(d)
+
+        return {"limit": limit, "items": items, "tz": "America/Chicago"}
 
     @app.get("/api/logs/tail")
     def logs_tail(
@@ -258,7 +298,14 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         path = logs_root / f"{name}.log"
         lines = tail_jsonl(path, limit=limit)
-        return {"name": name, "limit": limit, "lines": lines}
+
+        # Normalize parsed timestamp fields if present
+        for item in lines:
+            parsed = item.get("parsed")
+            if isinstance(parsed, dict) and parsed.get("timestamp"):
+                parsed["timestamp"] = _to_central_iso(parsed.get("timestamp"))
+
+        return {"name": name, "limit": limit, "lines": lines, "tz": "America/Chicago"}
 
     @app.get("/api/config")
     def get_config() -> dict[str, Any]:
@@ -270,14 +317,12 @@ def create_app() -> FastAPI:
             "effective": asdict(effective),
             "allowlist": allowlist_public_spec(),
             "overrides_path": str(overrides_path),
+            "tz": "America/Chicago",
         }
 
     @app.patch("/api/config")
     def patch_config(patch: dict[str, Any]) -> dict[str, Any]:
-        # Load existing
         current = load_overrides_file(overrides_path)
-
-        # Validate the incoming patch (allows null removal)
         norm_patch = validate_and_normalize_overrides(patch)
 
         merged = dict(current)
@@ -287,7 +332,6 @@ def create_app() -> FastAPI:
             else:
                 merged[k] = v
 
-        # Write
         write_overrides_file_atomic(overrides_path, merged)
 
         effective = apply_overrides(cfg, merged)
@@ -296,6 +340,7 @@ def create_app() -> FastAPI:
             "effective": asdict(effective),
             "allowlist": allowlist_public_spec(),
             "written_to": str(overrides_path),
+            "tz": "America/Chicago",
         }
 
     return app
