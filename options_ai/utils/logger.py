@@ -120,6 +120,22 @@ class StructuredLogger:
             "performance": _RotatingFile(logs_root / "performance.log"),
         }
 
+    # Convenience helpers (stdlib logging-style)
+    def debug(self, **fields: Any) -> None:
+        self.log(level="DEBUG", **fields)
+
+    def info(self, **fields: Any) -> None:
+        self.log(level="INFO", **fields)
+
+    def warning(self, **fields: Any) -> None:
+        self.log(level="WARNING", **fields)
+
+    def error(self, **fields: Any) -> None:
+        self.log(level="ERROR", **fields)
+
+    def critical(self, **fields: Any) -> None:
+        self.log(level="CRITICAL", **fields)
+
     def log(
         self,
         *,
