@@ -314,16 +314,16 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             rows = con.execute(
                 """
-                SELECT timestamp, scored_at, result, confidence
+                SELECT observed_ts_utc, timestamp, result, confidence
                 FROM predictions
                 WHERE result IS NOT NULL AND model_provider != 'ml'
-                ORDER BY COALESCE(scored_at, timestamp) DESC
+                ORDER BY COALESCE(observed_ts_utc, timestamp) DESC
                 """
             ).fetchall()
 
         by_day: dict[str, list[sqlite3.Row]] = {}
         for r in rows:
-            ts = r["scored_at"] or r["timestamp"]
+            ts = r["observed_ts_utc"] or r["timestamp"]
             day = _central_day_key(ts)
             if not day:
                 continue
@@ -341,7 +341,7 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             rows = con.execute(
                 """
-                SELECT result, confidence, COALESCE(scored_at, timestamp) AS ts
+                SELECT result, confidence, COALESCE(observed_ts_utc, timestamp) AS ts
                 FROM predictions
                 WHERE result IS NOT NULL AND model_provider != 'ml'
                 ORDER BY ts DESC
@@ -363,7 +363,7 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             rows = con.execute(
                 """
-                SELECT result, confidence, predicted_direction, predicted_magnitude, actual_move, COALESCE(scored_at, timestamp) AS ts
+                SELECT result, confidence, predicted_direction, predicted_magnitude, actual_move, COALESCE(observed_ts_utc, timestamp) AS ts
                 FROM predictions
                 WHERE result IS NOT NULL AND model_provider = 'ml'
                 ORDER BY ts DESC
@@ -402,16 +402,16 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             rows = con.execute(
                 """
-                SELECT timestamp, scored_at, result, confidence, predicted_direction
+                SELECT observed_ts_utc, timestamp, result, confidence, predicted_direction
                 FROM predictions
                 WHERE result IS NOT NULL AND model_provider = 'ml'
-                ORDER BY COALESCE(scored_at, timestamp) DESC
+                ORDER BY COALESCE(observed_ts_utc, timestamp) DESC
                 """
             ).fetchall()
 
         by_day: dict[str, list[sqlite3.Row]] = {}
         for r in rows:
-            ts = r['scored_at'] or r['timestamp']
+            ts = r['observed_ts_utc'] or r['timestamp']
             day = _central_day_key(ts)
             if not day:
                 continue
