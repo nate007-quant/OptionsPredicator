@@ -13,6 +13,7 @@ from options_ai.config import Config
 from options_ai.processes.ingest import IngestResult, ingest_snapshot_file
 from options_ai.processes.scorer import score_due_predictions
 from options_ai.queries import fetch_total_predictions
+from options_ai.runtime_overrides import apply_overrides, load_overrides_file
 from options_ai.utils.cache import sha256_file
 from options_ai.utils.logger import get_logger, log_bootstrap, log_daemon_event
 
@@ -109,7 +110,49 @@ def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[
     log_bootstrap(paths, level="INFO", event="bootstrap_complete", message="bootstrap complete")
 
 
+def _task_state_path(paths: Any) -> Path:
+    return Path(paths.state_dir) / "current_task.json"
+
+
+def _write_current_task(paths: Any, obj: dict[str, Any] | None) -> None:
+    path = _task_state_path(paths)
+    try:
+        if obj is None:
+            if path.exists():
+                path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _should_rebuild_router(prev: Config, cur: Config) -> bool:
+    keys = [
+        "model_force_local",
+        "model_force_remote",
+        "local_model_enabled",
+        "local_model_endpoint",
+        "local_model_name",
+        "local_model_timeout_seconds",
+        "local_model_max_retries",
+        "remote_model_name",
+        "chart_enabled",
+        "chart_local_enabled",
+        "chart_remote_enabled",
+    ]
+    for k in keys:
+        if getattr(prev, k) != getattr(cur, k):
+            return True
+    return False
+
+
 def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
+    # Load base config once; apply runtime overrides per loop iteration.
+    base_cfg = cfg
+
     state_path = Path(paths.state_dir) / "seen_files.json"
     state = _load_seen_state(state_path)
 
@@ -117,24 +160,51 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
     backoff: dict[str, float] = {}
 
     limiter = RateLimiter(
-        max_per_minute=int(cfg.bootstrap_max_model_calls_per_min or 0),
-        max_per_hour=int(cfg.bootstrap_max_model_calls_per_hour or 0),
+        max_per_minute=int(base_cfg.bootstrap_max_model_calls_per_min or 0),
+        max_per_hour=int(base_cfg.bootstrap_max_model_calls_per_hour or 0),
     )
-    router = ModelRouter(cfg, bootstrap_rate_limiter=limiter)
+
+    # Router initialized from base config; may be rebuilt if overrides change routing knobs.
+    router = ModelRouter(base_cfg, bootstrap_rate_limiter=limiter)
 
     # Bootstrap backtest on first run
-    _run_bootstrap_if_needed(cfg, paths, db_path, state, router)
+    _run_bootstrap_if_needed(base_cfg, paths, db_path, state, router)
+
+    overrides_path = Path(paths.state_dir) / "runtime_overrides.json"
+    last_overrides: dict[str, Any] = {}
+
+    cfg_effective = base_cfg
 
     while True:
         try:
-            score_due_predictions(cfg=cfg, paths=paths, db_path=db_path, state=state)
+            overrides = load_overrides_file(overrides_path)
+            if overrides != last_overrides:
+                lg = get_logger()
+                changed_keys = sorted(set(overrides.keys()) ^ set(last_overrides.keys()))
+                if lg:
+                    lg.info(
+                        component="Config",
+                        event="runtime_overrides_changed",
+                        message="runtime overrides changed",
+                        file_key="system",
+                        changed_keys=changed_keys,
+                        overrides=overrides,
+                    )
+                last_overrides = overrides
+
+            new_effective = apply_overrides(base_cfg, overrides)
+            if _should_rebuild_router(cfg_effective, new_effective):
+                router = ModelRouter(new_effective, bootstrap_rate_limiter=limiter)
+            cfg_effective = new_effective
+
+            score_due_predictions(cfg=cfg_effective, paths=paths, db_path=db_path, state=state)
 
             dirs: list[Path] = []
-            if cfg.replay_mode:
+            if cfg_effective.replay_mode:
                 dirs = [Path(paths.historical_dir)]
             else:
                 dirs = [Path(paths.incoming_snapshots_dir)]
-                if (cfg.reprocess_mode or "none").lower() != "none":
+                if (cfg_effective.reprocess_mode or "none").lower() != "none":
                     dirs.append(Path(paths.processed_snapshots_dir))
 
             candidates: list[Path] = []
@@ -161,14 +231,26 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                     if st.st_size != prev.size:
                         file_sizes[str(p)] = _FileSeen(size=st.st_size, last_change_ts=now)
                         continue
-                    if now - prev.last_change_ts < cfg.file_stable_seconds:
+                    if now - prev.last_change_ts < cfg_effective.file_stable_seconds:
                         continue
 
                 file_hash = _sha256_file(p)
 
+                # Current task state (optional observability)
+                _write_current_task(
+                    paths,
+                    {
+                        "file": p.name,
+                        "snapshot_hash": file_hash,
+                        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "stage": "ingest",
+                        "pid": os.getpid(),
+                    },
+                )
+
                 try:
                     ingest_res: IngestResult = ingest_snapshot_file(
-                        cfg=cfg,
+                        cfg=cfg_effective,
                         paths=paths,
                         db_path=db_path,
                         snapshot_path=p,
@@ -176,7 +258,7 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                         router=router,
                         state=state,
                         bootstrap_mode=False,
-                        move_files=is_incoming and (not cfg.replay_mode),
+                        move_files=is_incoming and (not cfg_effective.replay_mode),
                     )
                     processed_any = processed_any or ingest_res.processed
 
@@ -194,18 +276,53 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                         except Exception:
                             pass
 
+                    _write_current_task(
+                        paths,
+                        {
+                            "file": p.name,
+                            "snapshot_hash": file_hash,
+                            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "stage": "done",
+                            "pid": os.getpid(),
+                            "processed": bool(ingest_res.processed),
+                            "prediction_id": ingest_res.prediction_id,
+                            "skipped_reason": ingest_res.skipped_reason,
+                        },
+                    )
+
                 except Exception as e:
-                    delay = backoff.get(str(p) + ":delay", cfg.watch_poll_seconds)
-                    delay = min(max(delay * 2, cfg.watch_poll_seconds), 60.0)
+                    delay = backoff.get(str(p) + ":delay", cfg_effective.watch_poll_seconds)
+                    delay = min(max(delay * 2, cfg_effective.watch_poll_seconds), 60.0)
                     backoff[str(p) + ":delay"] = delay
                     backoff[str(p)] = time.time() + delay
                     lg = get_logger()
                     if lg:
-                        lg.exception(level="ERROR", component="Watcher", event="snapshot_process_error", message="snapshot process error", file_key="errors", exc=e, file=str(p), backoff_seconds=delay)
+                        lg.exception(
+                            level="ERROR",
+                            component="Watcher",
+                            event="snapshot_process_error",
+                            message="snapshot process error",
+                            file_key="errors",
+                            exc=e,
+                            file=str(p),
+                            backoff_seconds=delay,
+                        )
                     else:
                         log_daemon_event(paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
 
-            time.sleep(cfg.watch_poll_seconds if not processed_any else 0.1)
+                    _write_current_task(
+                        paths,
+                        {
+                            "file": p.name,
+                            "snapshot_hash": file_hash,
+                            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "stage": "error",
+                            "pid": os.getpid(),
+                            "error": str(e),
+                        },
+                    )
+
+            time.sleep(cfg_effective.watch_poll_seconds if not processed_any else 0.1)
 
         except Exception as e:
             lg = get_logger()

@@ -1,0 +1,33 @@
+# OptionsPredicator Dashboard API (FastAPI)
+#
+# Install:
+#   sudo cp systemd/options_ai_dashboard_api.service /etc/systemd/system/options_ai_dashboard_api.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now options_ai_dashboard_api
+#
+# Logs:
+#   journalctl -u options_ai_dashboard_api -f
+
+[Unit]
+Description=OptionsPredicator Dashboard API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+
+# Bind to localhost by default (put nginx in front if needed)
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m uvicorn options_ai.dashboard_api.main:app --host 127.0.0.1 --port 8088
+
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
