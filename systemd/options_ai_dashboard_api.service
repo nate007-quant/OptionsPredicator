@@ -22,7 +22,7 @@ EnvironmentFile=/opt/OptionsPredicator/.env
 Environment=PYTHONUNBUFFERED=1
 
 # Bind to localhost by default (put nginx in front if needed)
-ExecStart=/opt/OptionsPredicator/.venv/bin/python -m uvicorn options_ai.dashboard_api.main:app --host 127.0.0.1 --port 8088
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m uvicorn options_ai.dashboard_api.main:app --host 0.0.0.0 --port 8088
 
 Restart=always
 RestartSec=3
