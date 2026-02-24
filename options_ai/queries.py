@@ -338,3 +338,84 @@ def insert_performance_summary(db_path: str, row: dict[str, Any]) -> int:
             ),
         )
         return int(cur.lastrowid)
+
+
+def upsert_eod_prediction(db_path: str, row: dict[str, Any]) -> None:
+    """Upsert into eod_predictions."""
+
+    cols = [
+        "trade_day",
+        "asof_minutes",
+        "levels_asof_snapshot_index",
+        "model_version",
+        "created_at_utc",
+        "open_price",
+        "early_end_price",
+        "close_price",
+        "levels_json",
+        "features_version",
+        "features_json",
+        "pred_dir",
+        "pred_conf",
+        "pred_move_pts",
+        "p_action",
+        "event_probs_json",
+        "label_dir",
+        "label_move_pts",
+        "label_band_pts",
+        "label_events_json",
+        "scored_at",
+    ]
+    values = [row.get(c) for c in cols]
+
+    placeholders = ",".join(["?"] * len(cols))
+    update_cols = [c for c in cols if c not in {"trade_day", "asof_minutes", "levels_asof_snapshot_index", "model_version"}]
+    set_sql = ",".join([f"{c}=excluded.{c}" for c in update_cols])
+
+    with connect(db_path) as conn:
+        conn.execute(
+            f"""
+            INSERT INTO eod_predictions ({','.join(cols)})
+            VALUES ({placeholders})
+            ON CONFLICT(trade_day, asof_minutes, levels_asof_snapshot_index, model_version)
+            DO UPDATE SET {set_sql}
+            """,
+            tuple(values),
+        )
+
+
+def fetch_eod_metrics_daily(db_path: str, *, days: int, model_version: str) -> list[dict[str, Any]]:
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT trade_day, pred_dir, label_dir
+            FROM eod_predictions
+            WHERE label_dir IS NOT NULL AND model_version = ?
+            ORDER BY trade_day DESC
+            LIMIT ?
+            """,
+            (model_version, int(days)),
+        ).fetchall()
+
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_day.setdefault(r["trade_day"], []).append(dict(r))
+
+    series = []
+    for day in sorted(by_day.keys()):
+        items = by_day[day]
+        total = len(items)
+        actionable = sum(1 for it in items if it.get("pred_dir") and it.get("pred_dir") != "neutral")
+        correct = sum(1 for it in items if it.get("pred_dir") == it.get("label_dir"))
+        actionable_correct = sum(1 for it in items if it.get("pred_dir") != "neutral" and it.get("pred_dir") == it.get("label_dir"))
+        series.append(
+            {
+                "trade_day": day,
+                "total": total,
+                "actionable_total": actionable,
+                "action_rate": (actionable / total) if total else None,
+                "overall_accuracy": (correct / total) if total else None,
+                "accuracy_actionable": (actionable_correct / actionable) if actionable else None,
+            }
+        )
+    return series

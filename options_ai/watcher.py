@@ -12,6 +12,7 @@ from options_ai.ai.throttle import RateLimiter
 from options_ai.config import Config
 from options_ai.processes.ingest import IngestResult, ingest_snapshot_file
 from options_ai.processes.scorer import score_due_predictions
+from options_ai.ml_eod.pipeline import maybe_generate_today
 from options_ai.queries import fetch_total_predictions
 from options_ai.runtime_overrides import apply_overrides, load_overrides_file
 from options_ai.utils.cache import sha256_file
@@ -357,6 +358,11 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                             "error": str(e),
                         },
                     )
+
+            try:
+                maybe_generate_today(cfg_effective, db_path)
+            except Exception:
+                pass
 
             time.sleep(cfg_effective.watch_poll_seconds if not processed_any else 0.1)
 

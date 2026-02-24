@@ -282,3 +282,38 @@ def init_db(db_path: str, schema_sql_path: str) -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_usage_kind ON model_usage(kind)")
         except Exception:
             pass
+        # v2.8 eod_predictions table + indexes
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS eod_predictions (
+                  trade_day TEXT NOT NULL,
+                  asof_minutes INTEGER NOT NULL,
+                  levels_asof_snapshot_index INTEGER NOT NULL,
+                  model_version TEXT NOT NULL,
+                  created_at_utc TEXT NOT NULL,
+                  open_price REAL,
+                  early_end_price REAL,
+                  close_price REAL,
+                  levels_json TEXT,
+                  features_version TEXT,
+                  features_json TEXT,
+                  pred_dir TEXT,
+                  pred_conf REAL,
+                  pred_move_pts REAL,
+                  p_action REAL,
+                  event_probs_json TEXT,
+                  label_dir TEXT,
+                  label_move_pts REAL,
+                  label_band_pts REAL,
+                  label_events_json TEXT,
+                  scored_at TEXT,
+                  PRIMARY KEY (trade_day, asof_minutes, levels_asof_snapshot_index, model_version)
+                );
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_eod_predictions_trade_day ON eod_predictions(trade_day)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_eod_predictions_model_version ON eod_predictions(model_version)")
+        except Exception:
+            pass
+

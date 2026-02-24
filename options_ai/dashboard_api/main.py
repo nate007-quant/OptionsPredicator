@@ -555,6 +555,48 @@ def create_app() -> FastAPI:
             'series': series,
         }
 
+    
+    @app.get("/api/ml_eod/metrics/daily")
+    def ml_eod_metrics_daily(
+        days: int = Query(30, ge=1, le=365),
+        variant: str = Query("lvl0", pattern="^(lvl0|lvl1)$"),
+    ) -> dict[str, Any]:
+        # model_version selection
+        mv = cfg.eod_model_version_lvl0 if variant == 'lvl0' else cfg.eod_model_version_lvl1
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT trade_day, pred_dir, label_dir
+                FROM eod_predictions
+                WHERE label_dir IS NOT NULL AND model_version = ?
+                ORDER BY trade_day DESC
+                LIMIT ?
+                """,
+                (mv, int(days)),
+            ).fetchall()
+
+        by_day: dict[str, list[sqlite3.Row]] = {}
+        for r in rows:
+            by_day.setdefault(r['trade_day'], []).append(r)
+
+        series = []
+        for day in sorted(by_day.keys(), reverse=True):
+            rs = by_day[day]
+            total = len(rs)
+            actionable_total = sum(1 for r in rs if (r['pred_dir'] or '') != 'neutral')
+            correct = sum(1 for r in rs if (r['pred_dir'] or '') == (r['label_dir'] or ''))
+            actionable_correct = sum(1 for r in rs if (r['pred_dir'] or '') != 'neutral' and (r['pred_dir'] or '') == (r['label_dir'] or ''))
+            series.append({
+                'day': day,
+                'total_scored': total,
+                'actionable_total': actionable_total,
+                'action_rate': (actionable_total/total) if total else None,
+                'overall_accuracy': (correct/total) if total else None,
+                'accuracy_actionable': (actionable_correct/actionable_total) if actionable_total else None,
+            })
+
+        return {'days': int(days), 'variant': variant, 'model_version': mv, 'series': series, 'tz': 'America/Chicago'}
+
     @app.get("/api/predictions/recent")
     def predictions_recent(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
         with _connect(db_path) as con:

@@ -159,7 +159,30 @@
       <div style="margin-top: 10px;">
         <canvas id="mlDailyChart" height="120"></canvas>
       </div>
+        <div class="card">
+      <h2>F) ML EOD (Early 60m)</h2>
+      <div class="muted">Bucketed by trade_day (Central). Variants compare levels-as-of snapshot index 0 vs 1.</div>
+      <div class="row" style="margin-top:8px;">
+        <label>Variant
+          <select id="eodVariant">
+            <option value="lvl0" selected>lvl0 (first snapshot after open)</option>
+            <option value="lvl1">lvl1 (second snapshot after open)</option>
+          </select>
+        </label>
+        <label>Days <input id="eodDays" type="number" min="5" max="120" value="30" style="width:80px;" /></label>
+        <button id="refreshEod">Refresh</button>
+      </div>
+      <div class="row muted" style="margin-top:8px;">
+        <div>Action rate: <span id="eodActionRate" class="pill">—</span></div>
+        <div>Acc (actionable): <span id="eodAccAction" class="pill">—</span></div>
+        <div>Overall acc: <span id="eodOverall" class="pill">—</span></div>
+      </div>
+      <div style="margin-top:10px;">
+        <canvas id="eodDailyChart" height="120"></canvas>
+      </div>
     </div>
+
+</div>
 
     <div class="card">
       <h2>D) Controls (runtime overrides)</h2>
@@ -287,6 +310,48 @@ async function refreshProcessing() {
 
 let dailyChart;
 let mlDailyChart;
+let eodDailyChart;
+async function refreshEod() {
+  if (typeof Chart === 'undefined') {
+    _setTopError('Chart.js failed to load (CDN blocked?). Charts will be blank.');
+    return;
+  }
+  const variant = document.getElementById('eodVariant').value || 'lvl0';
+  const days = parseInt(document.getElementById('eodDays').value || '30', 10);
+  const data = await jget(`/api/ml_eod/metrics/daily?days=${days}&variant=${variant}`);
+  const series = (data.series || []).slice().reverse();
+  const labels = series.map(x => x.day);
+  const ar = series.map(x => x.action_rate);
+  const aa = series.map(x => x.accuracy_actionable);
+
+  // headline (last day)
+  const last = (data.series || [])[0] || {};
+  document.getElementById('eodActionRate').textContent = fmtPct(last.action_rate);
+  document.getElementById('eodAccAction').textContent = fmtPct(last.accuracy_actionable);
+  document.getElementById('eodOverall').textContent = fmtPct(last.overall_accuracy);
+
+  const ctx = document.getElementById('eodDailyChart');
+  if (!eodDailyChart) {
+    eodDailyChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'action_rate', data: ar, borderColor: '#f97316', tension: 0.2 },
+          { label: 'accuracy_actionable', data: aa, borderColor: '#06b6d4', tension: 0.2 },
+        ]
+      },
+      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+    });
+  } else {
+    eodDailyChart.data.labels = labels;
+    eodDailyChart.data.datasets[0].data = ar;
+    eodDailyChart.data.datasets[1].data = aa;
+    eodDailyChart.update();
+  }
+}
+
+
 async function refreshML()
    {
   const roll = await jget('/api/ml/metrics/rolling?n=50');
@@ -481,6 +546,7 @@ async function clearReprocess() {
 document.getElementById('refreshMetrics').onclick = refreshMetrics;
 if (document.getElementById('refreshLlmBuckets')) document.getElementById('refreshLlmBuckets').onclick = refreshLlmBuckets;
 if (document.getElementById('refreshMlBuckets')) document.getElementById('refreshMlBuckets').onclick = refreshMlBuckets;
+if (document.getElementById('refreshEod')) document.getElementById('refreshEod').onclick = () => safe('refreshEod', refreshEod);
 document.getElementById('refreshLogs').onclick = refreshLogs;
 document.getElementById('applyOverrides').onclick = applyOverrides;
 document.getElementById('clearReprocess').onclick = clearReprocess;
@@ -536,6 +602,7 @@ async function safe(name, fn) {
   await safe('refreshLogs', refreshLogs);
   await safe('refreshML', refreshML);
   await safe('refreshMlBuckets', refreshMlBuckets);
+  await safe('refreshEod', refreshEod);
   await safe('refreshProcessing', refreshProcessing);
   setInterval(() => safe('refreshProcessing', refreshProcessing), 2000);
   setInterval(() => safe('refreshConfig', refreshConfig), 5000);

@@ -38,6 +38,24 @@ class Config:
     tokens_per_char: float = 0.25
     tokens_estimation_mode: str = "chars"  # chars|tokenizer (future)
 
+    # ML EOD (early 60m -> cash close) (v2.8)
+    eod_ml_enabled: bool = False
+    eod_asof_minutes: int = 60
+    eod_levels_asof_snapshot_index: int = 0
+    eod_model_version_lvl0: str = "ml_eod60_lvl0_v1"
+    eod_model_version_lvl1: str = "ml_eod60_lvl1_v1"
+    eod_features_version: str = "ml_eod_features_v1"
+    open_snapshot_max_delay_min: int = 10
+    close_snapshot_tolerance_min: int = 10
+    eod_early_window_minutes: int = 60
+    reject_lookahead_minutes: int = 30
+    min_near_pts: float = 5.0
+    k_near: float = 0.25
+    min_reject_pts: float = 8.0
+    k_reject: float = 0.40
+    min_eod_band_pts: float = 8.0
+    k_eod: float = 0.35
+    eod_action_threshold: float = 0.85
     # ML runtime toggles + params (v2.7)
     ml_enabled: bool = False
     llm_enabled: bool = True
@@ -144,6 +162,23 @@ def load_config() -> Config:
         backtest_disable_chart=_get_bool("BACKTEST_DISABLE_CHART", True),
         tokens_per_char=float(os.getenv("TOKENS_PER_CHAR", "0.25")),
         tokens_estimation_mode=os.getenv("TOKENS_ESTIMATION_MODE", "chars").strip().lower(),
+        eod_ml_enabled=_get_bool("EOD_ML_ENABLED", False),
+        eod_asof_minutes=int(os.getenv("EOD_ASOF_MINUTES", "60")),
+        eod_levels_asof_snapshot_index=int(os.getenv("LEVELS_ASOF_SNAPSHOT_INDEX", "0")),
+        eod_model_version_lvl0=os.getenv("EOD_MODEL_VERSION_LVL0", "ml_eod60_lvl0_v1").strip(),
+        eod_model_version_lvl1=os.getenv("EOD_MODEL_VERSION_LVL1", "ml_eod60_lvl1_v1").strip(),
+        eod_features_version=os.getenv("EOD_FEATURES_VERSION", "ml_eod_features_v1").strip(),
+        open_snapshot_max_delay_min=int(os.getenv("OPEN_SNAPSHOT_MAX_DELAY_MIN", "10")),
+        close_snapshot_tolerance_min=int(os.getenv("CLOSE_SNAPSHOT_TOLERANCE_MIN", "10")),
+        eod_early_window_minutes=int(os.getenv("EOD_EARLY_WINDOW_MINUTES", "60")),
+        reject_lookahead_minutes=int(os.getenv("REJECT_LOOKAHEAD_MINUTES", "30")),
+        min_near_pts=float(os.getenv("MIN_NEAR_PTS", "5.0")),
+        k_near=float(os.getenv("K_NEAR", "0.25")),
+        min_reject_pts=float(os.getenv("MIN_REJECT_PTS", "8.0")),
+        k_reject=float(os.getenv("K_REJECT", "0.40")),
+        min_eod_band_pts=float(os.getenv("MIN_EOD_BAND_PTS", "8.0")),
+        k_eod=float(os.getenv("K_EOD", "0.35")),
+        eod_action_threshold=float(os.getenv("EOD_ACTION_THRESHOLD", "0.85")),
         ml_enabled=_get_bool("ML_ENABLED", False),
         llm_enabled=_get_bool("LLM_ENABLED", True),
         ml_models_dir=os.getenv("ML_MODELS_DIR", "/mnt/options_ai/models").strip(),
