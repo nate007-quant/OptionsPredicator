@@ -34,10 +34,41 @@ def _load_json(path: Path, default: Any) -> Any:
 
 
 def _save_json_atomic(path: Path, obj: Any) -> None:
+    """Best-effort atomic JSON write.
+
+    Some filesystems (notably certain FUSE/CIFS/NTFS mounts) can raise
+    EPERM on os.replace() if the destination file is being read. In that
+    case we fall back to an in-place truncate+write, which is not fully
+    atomic but keeps the daemon functional.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+        return
+    except PermissionError:
+        # Fall back below
+        pass
+    except OSError as e:
+        # EPERM/EXDEV/etc. -> fall back
+        if getattr(e, "errno", None) not in {1, 18}:
+            raise
+    try:
+        with path.open("w", encoding="utf-8") as f:
+            f.write(payload)
+            f.write("\n")
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _load_seen_state(state_path: Path) -> dict[str, Any]:
