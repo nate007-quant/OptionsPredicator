@@ -263,7 +263,9 @@ def fetch_total_predictions(db_path: str) -> int:
 
 def fetch_scored_predictions(db_path: str) -> list[dict[str, Any]]:
     with connect(db_path) as conn:
-        cur = conn.execute("SELECT result, confidence FROM predictions WHERE result IS NOT NULL")
+        cur = conn.execute(
+            "SELECT result, confidence, predicted_direction FROM predictions WHERE result IS NOT NULL"
+        )
         return [dict(r) for r in cur.fetchall()]
 
 

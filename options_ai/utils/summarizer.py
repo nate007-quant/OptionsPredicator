@@ -28,25 +28,39 @@ def build_performance_summary(db_path: str) -> PerformanceSummary:
     scored_non_inconclusive = 0
     correct_non_inconclusive = 0
 
+    directional_samples = 0
+    directional_correct = 0
+
     hi_total = 0
     hi_correct = 0
 
     for r in rows:
         res = r["result"]
         counts[res] = counts.get(res, 0) + 1
+
         if res == "correct":
             correct += 1
+
+        # "excluding inconclusive" metrics
         if res != "inconclusive":
             scored_non_inconclusive += 1
             if res == "correct":
                 correct_non_inconclusive += 1
+
+        # Directional attempts (ignore neutral predictions so we can detect a "neutral lock")
+        pd = (r.get("predicted_direction") or "").strip().lower()
+        if pd and pd != "neutral" and res != "inconclusive":
+            directional_samples += 1
+            # Direction is considered correct for both strict "correct" and
+            # "correct_direction_wrong_magnitude".
+            if res in {"correct", "correct_direction_wrong_magnitude"}:
+                directional_correct += 1
 
         conf = r.get("confidence")
         if conf is not None and conf > 0.75:
             hi_total += 1
             if res == "correct":
                 hi_correct += 1
-
     overall_accuracy = (correct / total_scored) if total_scored else None
     accuracy_ex_inconclusive = (
         correct_non_inconclusive / scored_non_inconclusive if scored_non_inconclusive else None
@@ -56,6 +70,11 @@ def build_performance_summary(db_path: str) -> PerformanceSummary:
     summary = {
         "counts": counts,
         "accuracy_excluding_inconclusive": accuracy_ex_inconclusive,
+        "scored_non_inconclusive": scored_non_inconclusive,
+        # Direction-only metrics (exclude neutral predictions)
+        "directional_samples": directional_samples,
+        "directional_correct": directional_correct,
+        "directional_accuracy": (directional_correct / directional_samples) if directional_samples else None,
         "high_confidence": {
             "threshold": 0.75,
             "total": hi_total,

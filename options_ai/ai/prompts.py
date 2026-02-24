@@ -96,7 +96,8 @@ Safety/self-consistency:
 PREDICTION_SYSTEM_LOCAL = """SPX-only predictor. Use ONLY the provided snapshot_summary + signals + chart_description + recent_predictions + performance_summary.
 Return JSON only (no markdown, no commentary). Must match required schema exactly.
 If confidence < MIN_CONFIDENCE => strategy_suggested must be "".
-If performance_summary indicates overall_accuracy < 0.45 with total_scored >= 5 => output neutral.
+If performance_summary.summary_json indicates directional_accuracy < 0.45 with directional_samples >= 5 => output neutral.
+NOTE: directional_* metrics ignore neutral predictions to avoid a self-reinforcing "neutral lock".
 GEX: use signals["gex"]: levels(call_wall/put_wall/magnet/flip) + regime_label(positive_gamma|negative_gamma) + distances already provided. Mention nearest relevant level(s) and regime.
 Reasoning: 2–3 sentences max.
 """
