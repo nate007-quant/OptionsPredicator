@@ -374,20 +374,7 @@ def ingest_snapshot_file(
     magnet = signals.get("gex_magnet_strike")
     flip = signals.get("gex_flip_strike")
 
-    # Update sticky strikes for the day: always include levels + top-K abs strikes
-    top_abs = []
-    try:
-        items = []
-        for k, v in abs_map.items():
-            try:
-                items.append((float(k), float(v)))
-            except Exception:
-                continue
-        items.sort(key=lambda t: t[1], reverse=True)
-        top_abs = [s for s, _ in items[: int(cfg.gex_topk_abs_strikes or 0)]]
-    except Exception:
-        top_abs = []
-
+    # Update sticky strikes for the day: include any level strike seen earlier today (sticky-day)
     for lv in [call_wall, put_wall, magnet, flip]:
         if lv is None:
             continue
@@ -395,16 +382,10 @@ def ingest_snapshot_file(
             sticky_list.append(float(lv))
         except Exception:
             pass
-    for s in top_abs:
-        try:
-            sticky_list.append(float(s))
-        except Exception:
-            pass
-
-    # de-dup + cap
-    sticky_unique = []
+    # de-dup (preserve recency) + cap (keep most recent)
     seen = set()
-    for s in sticky_list:
+    sticky_unique_rev = []
+    for s in reversed(sticky_list):
         try:
             sf = float(s)
         except Exception:
@@ -412,9 +393,10 @@ def ingest_snapshot_file(
         if sf in seen:
             continue
         seen.add(sf)
-        sticky_unique.append(sf)
-        if len(sticky_unique) >= int(cfg.gex_sticky_day_max or 0):
+        sticky_unique_rev.append(sf)
+        if int(cfg.gex_sticky_day_max or 0) and len(sticky_unique_rev) >= int(cfg.gex_sticky_day_max or 0):
             break
+    sticky_unique = list(reversed(sticky_unique_rev))
 
     state["day_levels"][day_key]["sticky_strikes"] = sticky_unique
 

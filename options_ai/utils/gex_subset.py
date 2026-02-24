@@ -96,7 +96,7 @@ def build_compact_gex(
     for name, strike, dist in level_pairs:
         if strike is None:
             continue
-        levels[name] = {"strike": float(strike), "distance_pct": float(dist) if dist is not None else None}
+        levels[name] = {"strike": float(strike), "distance_pct": (round(float(dist), 4) if dist is not None else None)}
         chosen.add(float(strike))
         for nb in _neighbors(strikes_sorted, float(strike), int(neighbors_each_level)):
             chosen.add(float(nb))

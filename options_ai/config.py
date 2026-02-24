@@ -31,7 +31,7 @@ class Config:
 
     # GEX prompt compression (v2.3+)
     gex_neighbor_strikes: int = 2
-    gex_topk_abs_strikes: int = 10
+    gex_topk_abs_strikes: int = 0
     gex_sticky_day_max: int = 20
     file_stable_seconds: int = 2
     watch_poll_seconds: float = 1.0
@@ -110,7 +110,7 @@ def load_config() -> Config:
         history_records=int(os.getenv("HISTORY_RECORDS", "10")),
         similar_conditions_n=int(os.getenv("SIMILAR_CONDITIONS_N", "3")),
         gex_neighbor_strikes=int(os.getenv("GEX_NEIGHBOR_STRIKES", "2")),
-        gex_topk_abs_strikes=int(os.getenv("GEX_TOPK_ABS_STRIKES", "10")),
+        gex_topk_abs_strikes=int(os.getenv("GEX_TOPK_ABS_STRIKES", "0")),
         gex_sticky_day_max=int(os.getenv("GEX_STICKY_DAY_MAX", "20")),
         file_stable_seconds=int(os.getenv("FILE_STABLE_SECONDS", "2")),
         watch_poll_seconds=float(os.getenv("WATCH_POLL_SECONDS", "1")),
