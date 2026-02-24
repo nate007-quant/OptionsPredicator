@@ -18,7 +18,8 @@ def chart_extraction_user_prompt() -> str:
     )
 
 
-PREDICTION_SYSTEM = """You are an SPX-only short-horizon prediction engine. Source of truth is the snapshot JSON summary and deterministic signals provided.
+# Remote (full) system prompt: keep existing behavior.
+PREDICTION_SYSTEM_REMOTE = """You are an SPX-only short-horizon prediction engine. Source of truth is the snapshot JSON summary and deterministic signals provided.
 Do not assume any data not provided. Use UTC timestamps.
 Self-calibration: if the provided performance summary or similar-condition accuracy indicates <45% accuracy with sample >=5, output neutral.
 If confidence < MIN_CONFIDENCE, strategy_suggested must be an empty string.
@@ -89,6 +90,20 @@ Safety/self-consistency:
 - If levels are missing (null), do not fabricate them.
 - If spot is very near flip or magnet AND non-GEX signals are mixed: lean neutral and lower confidence.
 """
+
+
+# Local (compact) system prompt: optimized for small local models.
+PREDICTION_SYSTEM_LOCAL = """SPX-only predictor. Use ONLY the provided snapshot_summary + signals + chart_description + recent_predictions + performance_summary.
+Return JSON only (no markdown, no commentary). Must match required schema exactly.
+If confidence < MIN_CONFIDENCE => strategy_suggested must be "".
+If performance_summary indicates overall_accuracy < 0.45 with total_scored >= 5 => output neutral.
+GEX: use signals["gex"]: levels(call_wall/put_wall/magnet/flip) + regime_label(positive_gamma|negative_gamma) + distances already provided. Mention nearest relevant level(s) and regime.
+Reasoning: 2–3 sentences max.
+"""
+
+
+# Back-compat name (older code may import PREDICTION_SYSTEM)
+PREDICTION_SYSTEM = PREDICTION_SYSTEM_REMOTE
 
 
 def prediction_user_prompt(

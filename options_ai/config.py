@@ -27,6 +27,7 @@ class Config:
     min_confidence: float = 0.65
     outcome_delay_minutes: int = 15
     history_records: int = 10
+    local_history_records: int = 3
     similar_conditions_n: int = 3
 
     # GEX prompt compression (v2.3+)
@@ -56,6 +57,18 @@ class Config:
     local_model_name: str = "deepseek-r1:8b"
     local_model_timeout_seconds: int = 60
     local_model_max_retries: int = 2
+
+    # Prompt variants (v2.4)
+    use_compact_system_prompt_local: bool = True
+
+    # Output token caps (v2.4)
+    prediction_max_output_tokens: int = 300
+    chart_max_output_tokens: int = 160
+
+    # Chart extraction gating (v2.4)
+    chart_enabled: bool = False
+    chart_local_enabled: bool = False
+    chart_remote_enabled: bool = True
 
     codex_model: str = "gpt-5.2-codex"
     prompt_version: str = "v2.3.0"
@@ -108,6 +121,7 @@ def load_config() -> Config:
         min_confidence=float(os.getenv("MIN_CONFIDENCE", "0.65")),
         outcome_delay_minutes=int(os.getenv("OUTCOME_DELAY", "15")),
         history_records=int(os.getenv("HISTORY_RECORDS", "10")),
+        local_history_records=int(os.getenv("LOCAL_HISTORY_RECORDS", "3")),
         similar_conditions_n=int(os.getenv("SIMILAR_CONDITIONS_N", "3")),
         gex_neighbor_strikes=int(os.getenv("GEX_NEIGHBOR_STRIKES", "2")),
         gex_topk_abs_strikes=int(os.getenv("GEX_TOPK_ABS_STRIKES", "0")),
@@ -127,6 +141,12 @@ def load_config() -> Config:
         local_model_name=os.getenv("LOCAL_MODEL_NAME", "deepseek-r1:8b").strip(),
         local_model_timeout_seconds=int(os.getenv("LOCAL_MODEL_TIMEOUT_SECONDS", "60")),
         local_model_max_retries=int(os.getenv("LOCAL_MODEL_MAX_RETRIES", "2")),
+        use_compact_system_prompt_local=_get_bool("USE_COMPACT_SYSTEM_PROMPT_LOCAL", True),
+        prediction_max_output_tokens=int(os.getenv("PREDICTION_MAX_OUTPUT_TOKENS", "300")),
+        chart_max_output_tokens=int(os.getenv("CHART_MAX_OUTPUT_TOKENS", "160")),
+        chart_enabled=_get_bool("CHART_ENABLED", False),
+        chart_local_enabled=_get_bool("CHART_LOCAL_ENABLED", False),
+        chart_remote_enabled=_get_bool("CHART_REMOTE_ENABLED", True),
         codex_model=os.getenv("CODEX_MODEL", "gpt-5.2-codex").strip(),
         prompt_version=os.getenv("PROMPT_VERSION", "v2.3.0").strip(),
     )

@@ -71,12 +71,23 @@ class CodexClient:
         # openai-python currently takes timeout via httpx internally; keep simple.
         return OpenAI(**kwargs)
 
-    def extract_chart_description(self, png_path: str, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any]]:
+    def extract_chart_description(
+        self,
+        png_path: str,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        max_output_tokens: int | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         img_bytes = Path(png_path).read_bytes()
         b64 = base64.b64encode(img_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{b64}"
 
         client = self._client()
+        kwargs: dict[str, Any] = {}
+        if max_output_tokens is not None:
+            kwargs["max_output_tokens"] = int(max_output_tokens)
+
         resp = client.responses.create(
             model=self.model,
             input=[
@@ -89,19 +100,31 @@ class CodexClient:
                     ],
                 },
             ],
+            **kwargs,
         )
         text = _response_text(resp).strip()
         report = {"raw": getattr(resp, "model_dump", lambda: {})()} if hasattr(resp, "model_dump") else {"raw": str(resp)}
         return text, report
 
-    def generate_prediction(self, system_prompt: str, user_prompt: str) -> tuple[str, dict[str, Any]]:
+    def generate_prediction(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        max_output_tokens: int | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         client = self._client()
+        kwargs: dict[str, Any] = {}
+        if max_output_tokens is not None:
+            kwargs["max_output_tokens"] = int(max_output_tokens)
+
         resp = client.responses.create(
             model=self.model,
             input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            **kwargs,
         )
         text = _response_text(resp).strip()
         report = {"raw": getattr(resp, "model_dump", lambda: {})()} if hasattr(resp, "model_dump") else {"raw": str(resp)}
@@ -109,5 +132,37 @@ class CodexClient:
 
 
 def safe_json_loads(s: str) -> Any:
-    s = s.strip()
+    """Strict JSON loader."""
+
+    s = (s or "").strip()
     return json.loads(s)
+
+
+def safe_json_loads_tolerant(s: str) -> Any:
+    """Tolerant JSON extraction for models that may emit extra text.
+
+    Strategy:
+      - Strip whitespace
+      - If direct json.loads works, return
+      - Otherwise, take substring from first '{' to last '}' and try again
+
+    We intentionally do NOT attempt lossy repairs (e.g. trailing commas), because we
+    want to avoid silent corruption.
+    """
+
+    s = (s or "").strip()
+    if not s:
+        raise json.JSONDecodeError("empty", s, 0)
+
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+
+    start = s.find("{")
+    end = s.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise json.JSONDecodeError("no_json_object_found", s, 0)
+
+    sub = s[start : end + 1].strip()
+    return json.loads(sub)

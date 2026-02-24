@@ -60,6 +60,48 @@ class IngestResult:
     skipped_reason: str | None = None
 
 
+def _compact_recent_predictions(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Shrink recent_predictions payload to reduce prompt size."""
+
+    out: list[dict[str, Any]] = []
+    for r in (rows or [])[: max(0, int(limit or 0))]:
+        if not isinstance(r, dict):
+            continue
+        out.append(
+            {
+                "timestamp": r.get("timestamp"),
+                "predicted_direction": r.get("predicted_direction"),
+                "confidence": r.get("confidence"),
+                "result": r.get("result"),
+                "spot_price": r.get("spot_price"),
+            }
+        )
+    return out
+
+
+def _compact_performance_summary(perf: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(perf, dict):
+        return None
+    # Keep only key calibration stats.
+    keys = {
+        "overall_accuracy",
+        "accuracy_excluding_inconclusive",
+        "high_confidence_accuracy",
+        "high_confidence_total",
+        "total_scored",
+    }
+    return {k: perf.get(k) for k in keys if k in perf}
+
+
+def _chart_enabled_for_provider(cfg: Config, provider: str) -> bool:
+    if not bool(cfg.chart_enabled):
+        return False
+    if provider == "local":
+        return bool(cfg.chart_local_enabled)
+    if provider == "remote":
+        return bool(cfg.chart_remote_enabled)
+    return False
+
 def parse_snapshot_filename(name: str) -> ParsedFilename:
     m = FILENAME_RE.match(name)
     if not m:
@@ -489,8 +531,10 @@ def ingest_snapshot_file(
 
 
     # Chart extraction routing + caching (chart is optional; failures should not stop prediction).
-    if not bootstrap_mode and chart_path and candidates:
+    if (not bootstrap_mode) and chart_path and candidates and any(_chart_enabled_for_provider(cfg, c.provider) for c in candidates):
         for c in candidates:
+            if not _chart_enabled_for_provider(cfg, c.provider):
+                continue
             cached = load_model_cache(
                 paths,
                 snapshot_hash,
@@ -514,7 +558,7 @@ def ingest_snapshot_file(
                 desc, rep, model_used, provider, reason = try_models(
                     [c],
                     fn_name="chart_extraction",
-                    fn=lambda client: run_chart_extraction_if_available(codex=client, chart_png_path=chart_path),
+                    fn=lambda client: run_chart_extraction_if_available(codex=client, chart_png_path=chart_path, chart_max_output_tokens=cfg.chart_max_output_tokens),
                     local_max_retries=int(cfg.local_model_max_retries or 0),
                 )
                 chart_description = desc
@@ -570,8 +614,8 @@ def ingest_snapshot_file(
             )
 
     # Context for prediction
-    recent_predictions = fetch_recent_predictions(db_path, limit=cfg.history_records)
-    perf_summary = fetch_latest_performance_summary(db_path)
+    recent_predictions_raw = fetch_recent_predictions(db_path, limit=max(int(cfg.history_records or 0), int(cfg.local_history_records or 0)))
+    perf_summary_raw = fetch_latest_performance_summary(db_path)
 
     # Phase 2: prediction (cached + routed)
     pred_obj: dict[str, Any] | None = None
@@ -599,6 +643,19 @@ def ingest_snapshot_file(
         return IngestResult(processed=False, skipped_reason="duplicate_hash_prompt_model")
 
     for c in candidates_to_try:
+        # Provider-specific prompt/payload optimizations
+        if c.provider == "local":
+            recent_predictions = _compact_recent_predictions(recent_predictions_raw, int(cfg.local_history_records or 3))
+        else:
+            recent_predictions = _compact_recent_predictions(recent_predictions_raw, int(cfg.history_records or 10))
+
+        perf_summary = _compact_performance_summary(perf_summary_raw)
+
+        from options_ai.ai.prompts import PREDICTION_SYSTEM_LOCAL, PREDICTION_SYSTEM_REMOTE
+        system_prompt = PREDICTION_SYSTEM_REMOTE
+        if c.provider == "local" and bool(cfg.use_compact_system_prompt_local):
+            system_prompt = PREDICTION_SYSTEM_LOCAL
+
         cached = load_model_cache(
             paths,
             snapshot_hash,
@@ -629,12 +686,14 @@ def ingest_snapshot_file(
                 fn_name="prediction",
                 fn=lambda client: run_prediction(
                     codex=client,
+                    system_prompt=system_prompt,
                     snapshot_summary=snapshot_summary,
                     signals=model_signals,
                     chart_description=chart_description,
                     recent_predictions=recent_predictions,
                     performance_summary=perf_summary,
                     min_confidence=cfg.min_confidence,
+                    prediction_max_output_tokens=cfg.prediction_max_output_tokens,
                 ),
                 local_max_retries=int(cfg.local_model_max_retries or 0),
             )
