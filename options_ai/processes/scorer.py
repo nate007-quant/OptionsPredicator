@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from options_ai.config import Config
+from options_ai.utils.timeparse import extract_observed_dt_utc
 from options_ai.queries import fetch_eligible_to_score, insert_performance_summary, update_scoring
 from options_ai.utils.logger import get_logger, log_daemon_event, log_scoring
 from options_ai.utils.scoring import score_prediction, simulate_pnl
@@ -17,12 +18,15 @@ def _parse_ts(ts_iso: str) -> datetime:
 
 
 def _ensure_snapshot_index(state: dict[str, Any], paths: Any) -> None:
-    """Ensure state['snapshot_index'] exists; if missing/empty, attempt a light rebuild by scanning filenames."""
+    """Ensure state['snapshot_index'] exists; if missing/empty, attempt a light rebuild.
+
+    Defensive: prefer JSON observed timestamp when present; fallback to filename.
+    """
+
     state.setdefault("snapshot_index", {})
     if state["snapshot_index"]:
         return
 
-    # scan a few directories for snapshots
     dirs = [
         Path(paths.processed_snapshots_dir),
         Path(paths.incoming_snapshots_dir),
@@ -38,7 +42,17 @@ def _ensure_snapshot_index(state: dict[str, Any], paths: Any) -> None:
         for p in d.glob("*.json"):
             try:
                 parsed = parse_snapshot_filename(p.name)
-                obs_iso = parsed.observed_dt_utc.replace(microsecond=0).isoformat()
+
+                obs_dt = None
+                try:
+                    snap = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(snap, dict):
+                        obs_dt = extract_observed_dt_utc(snap)
+                except Exception:
+                    obs_dt = None
+
+                obs_dt = obs_dt or parsed.observed_dt_utc
+                obs_iso = obs_dt.replace(microsecond=0).isoformat()
                 idx[obs_iso] = {"spot": parsed.spot_price, "file": p.name}
             except Exception:
                 continue
@@ -89,7 +103,14 @@ def score_due_predictions(*, cfg: Config, paths: Any, db_path: str, state: dict[
 
             price_outcome, matched_obs = _find_outcome_price(state, target_ts)
             if price_outcome is None:
-                log_scoring(paths, level="INFO", event="missing_outcome_price", message="outcome not available yet", pred_id=int(p.get("id")))
+                newest = None
+                try:
+                    keys = list((state.get("snapshot_index") or {}).keys())
+                    if keys:
+                        newest = max(keys)
+                except Exception:
+                    newest = None
+                log_scoring(paths, level="INFO", event="missing_outcome_price", message="outcome not available yet", pred_id=int(p.get("id")), target_outcome_ts=target_ts.isoformat(), newest_snapshot_ts=newest)
                 continue
 
             price_pred = float(p.get("spot_price") or 0.0)

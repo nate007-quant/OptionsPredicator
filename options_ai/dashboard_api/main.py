@@ -212,12 +212,35 @@ def create_app() -> FastAPI:
             cur = con.execute("SELECT COUNT(*) AS n FROM predictions WHERE result IS NULL")
             unscored = int(cur.fetchone()["n"])
 
+        # Scoring health: newest snapshot_index key + oldest unscored prediction
+        newest_snapshot = None
+        try:
+            import json as _json
+            seen_path = data_root / "state" / "seen_files.json"
+            if seen_path.exists():
+                st = _json.loads(seen_path.read_text(encoding="utf-8"))
+                keys = list((st.get("snapshot_index") or {}).keys())
+                newest_snapshot = max(keys) if keys else None
+        except Exception:
+            newest_snapshot = None
+
+        oldest_unscored = None
+        try:
+            cur = con.execute(
+                "SELECT MIN(COALESCE(observed_ts_utc, timestamp)) AS ts FROM predictions WHERE result IS NULL"
+            )
+            oldest_unscored = cur.fetchone()["ts"]
+        except Exception:
+            oldest_unscored = None
+
         return {
             "incoming_dir": str(incoming_dir),
             "processed_dir": str(processed_dir),
             "queue": {"count": len(queue_items), "items": queue_items},
             "processing": {"count": len(processing_items), "items": processing_items},
             "counters": {"total_predictions": total_predictions, "total_scored": total_scored, "unscored": unscored},
+            "snapshot_index_newest_ts": _to_central_iso(newest_snapshot) if newest_snapshot else None,
+            "oldest_unscored_ts": _to_central_iso(oldest_unscored) if oldest_unscored else None,
             "tz": "America/Chicago",
         }
 

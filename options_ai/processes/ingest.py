@@ -11,6 +11,7 @@ from typing import Any
 from options_ai.ai.codex_client import CodexClient
 from options_ai.ai.router import ModelRouter, try_models
 from options_ai.config import Config
+from options_ai.utils.timeparse import extract_observed_dt_utc
 from options_ai.ml.features import build_features
 from options_ai.ml.model_store import load_bundle
 from options_ai.ml.infer import infer as ml_infer
@@ -226,10 +227,7 @@ def validate_snapshot_json(snapshot: dict[str, Any], parsed: ParsedFilename) -> 
     elif isinstance(snapshot.get("observed_utc_epoch"), (int, float)):
         obs_from_json = datetime.fromtimestamp(int(snapshot["observed_utc_epoch"]), tz=timezone.utc)
 
-    if obs_from_json is not None:
-        delta = abs((obs_from_json - parsed.observed_dt_utc).total_seconds())
-        if delta > 2.0:
-            raise ValueError("observed_utc mismatch vs filename exceeds tolerance")
+    # NOTE: observed timestamp mismatch is handled defensively in ingest; do not hard-fail here.
 
     # arrays exist + alignment
     n: int | None = None
@@ -401,6 +399,43 @@ def ingest_snapshot_file(
             except Exception:
                 pass
         return IngestResult(processed=False, skipped_reason="invalid_json")
+    # Choose observed time: JSON is source-of-truth; filename is fallback.
+    filename_dt_utc = parsed.observed_dt_utc
+    json_dt_utc = extract_observed_dt_utc(snapshot)
+    observed_dt_utc = json_dt_utc or filename_dt_utc
+    observed_ts_utc = observed_dt_utc.replace(microsecond=0).isoformat()
+    observed_date_compact = observed_dt_utc.strftime("%Y%m%d")
+    observed_time_compact = observed_dt_utc.strftime("%H%M%S")
+
+    if json_dt_utc is not None:
+        try:
+            delta_s = abs((json_dt_utc - filename_dt_utc).total_seconds())
+            if delta_s > 300:
+                lg = get_logger()
+                if lg:
+                    lg.warning(
+                        component="Ingest",
+                        event="snapshot_timestamp_mismatch",
+                        message="snapshot JSON observed time differs from filename; using JSON time",
+                        file_key="system",
+                        file=str(snapshot_path),
+                        filename_ts=filename_dt_utc.replace(microsecond=0).isoformat(),
+                        json_ts=json_dt_utc.replace(microsecond=0).isoformat(),
+                        delta_seconds=float(delta_s),
+                    )
+                else:
+                    log_daemon_event(
+                        paths.logs_daemon_dir,
+                        "warn",
+                        "snapshot_timestamp_mismatch",
+                        file=str(snapshot_path),
+                        filename_ts=filename_dt_utc.replace(microsecond=0).isoformat(),
+                        json_ts=json_dt_utc.replace(microsecond=0).isoformat(),
+                        delta_seconds=float(delta_s),
+                    )
+        except Exception:
+            pass
+
 
     # Stage caching controls
     mode = (cfg.reprocess_mode or "none").lower()
@@ -455,7 +490,7 @@ def ingest_snapshot_file(
         signals = compute_all_signals(rows, spot, price_series_raw)
 
     # --- Reduce LLM tokens: compact GEX + keep sticky day levels (v2.3+)
-    day_key = parsed.observed_dt_utc.date().isoformat()
+    day_key = observed_dt_utc.date().isoformat()
 
     # Order-invariant sticky strikes (event-time): derived from DB rows strictly before this snapshot.
     # This eliminates in-memory state leakage and makes backtests reproducible.
@@ -463,7 +498,7 @@ def ingest_snapshot_file(
     try:
         prior_levels = fetch_gex_levels_before(
             db_path,
-            observed_ts_utc=parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+            observed_ts_utc=observed_ts_utc,
             day_key_utc=day_key,
             limit=max(50, int(cfg.gex_sticky_day_max or 0) * 2),
         )
@@ -532,6 +567,7 @@ def ingest_snapshot_file(
         snapshot_summary = dict(derived.snapshot_summary)
     else:
         snapshot_summary = build_snapshot_summary(parsed, rows, snapshot)
+    snapshot_summary["observed_utc"] = observed_ts_utc
 
     # ML feature snapshot (deterministic, event-time)
     features = build_features(snapshot_summary, model_signals)
@@ -662,7 +698,7 @@ def ingest_snapshot_file(
         if chart_report is not None:
             log_analyzer_report(
                 Path(paths.logs_analyzer_reports_dir),
-                observed_ts_compact=parsed.observed_date_compact + parsed.observed_time_compact,
+                observed_ts_compact=observed_date_compact + observed_time_compact,
                 report={"phase": "chart_extraction", **chart_report},
             )
             # Usage telemetry (chart)
@@ -676,7 +712,7 @@ def ingest_snapshot_file(
                     db_path,
                     {
                         "ts_utc": ts_utc,
-                        "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                        "observed_ts_utc": observed_ts_utc,
                         "snapshot_hash": snapshot_hash,
                         "kind": "chart",
                         "model_used": chart_report.get("model_used"),
@@ -699,7 +735,7 @@ def ingest_snapshot_file(
     # Context for prediction
     recent_predictions_raw = fetch_recent_predictions_before(
         db_path,
-        observed_ts_utc=parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+        observed_ts_utc=observed_ts_utc,
         limit=max(int(cfg.history_records or 0), int(cfg.local_history_records or 0)),
     )
     perf_summary_raw = None if bool(cfg.backtest_mode) else fetch_latest_performance_summary(db_path)
@@ -867,7 +903,7 @@ def ingest_snapshot_file(
 
     log_analyzer_report(
         Path(paths.logs_analyzer_reports_dir),
-        observed_ts_compact=parsed.observed_date_compact + parsed.observed_time_compact,
+        observed_ts_compact=observed_date_compact + observed_time_compact,
         report={"phase": "prediction", **(pred_report or {})},
     )
     # Usage telemetry (prediction + optional retry)
@@ -881,7 +917,7 @@ def ingest_snapshot_file(
             db_path,
             {
                 "ts_utc": ts_utc,
-                "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                "observed_ts_utc": observed_ts_utc,
                 "snapshot_hash": snapshot_hash,
                 "kind": "prediction",
                 "model_used": (pred_report or {}).get("model_used"),
@@ -908,7 +944,7 @@ def ingest_snapshot_file(
                 db_path,
                 {
                     "ts_utc": ts_utc,
-                    "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+                    "observed_ts_utc": observed_ts_utc,
                     "snapshot_hash": snapshot_hash,
                     "kind": "retry",
                     "model_used": (pred_report or {}).get("model_used"),
@@ -947,9 +983,9 @@ def ingest_snapshot_file(
             )
 
             ml_row = {
-                "timestamp": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
-                "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
-                "outcome_ts_utc": (parsed.observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
+                "timestamp": observed_ts_utc,
+                "observed_ts_utc": observed_ts_utc,
+                "outcome_ts_utc": (observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
         "features_version": features_version,
         "features_json": features_json,
                 "features_version": features_version,
@@ -978,9 +1014,9 @@ def ingest_snapshot_file(
             # Still insert a neutral ML row so dashboards remain consistent
             try:
                 ml_row = {
-                    "timestamp": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
-                    "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
-                    "outcome_ts_utc": (parsed.observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
+                    "timestamp": observed_ts_utc,
+                    "observed_ts_utc": observed_ts_utc,
+                    "outcome_ts_utc": (observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
         "features_version": features_version,
         "features_json": features_json,
                     "features_version": features_version,
@@ -1014,9 +1050,9 @@ def ingest_snapshot_file(
     }
 
     row = {
-        "timestamp": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
-        "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
-        "outcome_ts_utc": (parsed.observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
+        "timestamp": observed_ts_utc,
+        "observed_ts_utc": observed_ts_utc,
+        "outcome_ts_utc": (observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
         "features_version": features_version,
         "features_json": features_json,
         "ticker": parsed.ticker,
@@ -1061,7 +1097,7 @@ def ingest_snapshot_file(
 
     # Update state snapshot index (for scoring)
     state.setdefault("snapshot_index", {})
-    obs_iso = parsed.observed_dt_utc.replace(microsecond=0).isoformat()
+    obs_iso = observed_ts_utc
     state["snapshot_index"][obs_iso] = {
         "spot": float(spot),
         "file": snapshot_path.name,
@@ -1070,7 +1106,7 @@ def ingest_snapshot_file(
     # Append daily prediction log
     log_prediction_event(
         Path(paths.logs_predictions_dir),
-        observed_date_yyyy_mm_dd=parsed.observed_dt_utc.date().isoformat(),
+        observed_date_yyyy_mm_dd=observed_dt_utc.date().isoformat(),
         event={
             "prediction_id": pred_id,
             "timestamp": row["timestamp"],
