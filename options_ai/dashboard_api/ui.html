@@ -23,6 +23,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
+  <div id="errorBanner" style="display:none; background:#7f1d1d; color:#fff; padding:10px; border-radius:10px; margin-bottom:12px;"></div>
   <h1 style="margin: 0 0 12px 0;">OptionsPredicator Dashboard</h1>
   <div class="muted">This page polls the local API. If you’re reverse-proxying, adjust host/port accordingly.</div>
 
@@ -210,6 +211,30 @@
 <script>
 const api = '';
 
+function showError(where, err) {
+  const b = document.getElementById('errorBanner');
+  if (!b) return;
+  const msg = (err && (err.message || err.toString())) ? (err.message || err.toString()) : String(err);
+  const t = new Date().toISOString();
+  b.style.display = 'block';
+  b.textContent = `[${t}] ${where}: ${msg}`;
+}
+
+async function safe(where, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    console.error(where, e);
+    showError(where, e);
+    return null;
+  }
+}
+
+function chartsAvailable() {
+  return (typeof Chart !== 'undefined');
+}
+
+
 function fmtPct(x) {
   if (x === null || x === undefined) return '—';
   return (100.0 * x).toFixed(1) + '%';
@@ -262,7 +287,8 @@ async function refreshProcessing() {
 
 let dailyChart;
 let mlDailyChart;
-async function refreshML() {
+async function refreshML()
+   {
   const roll = await jget('/api/ml/metrics/rolling?n=50');
   document.getElementById('mlActionRate').textContent = fmtPct(roll.action_rate);
   document.getElementById('mlAccAction').textContent = fmtPct(roll.accuracy_actionable);
@@ -310,7 +336,8 @@ async function refreshTokens() {
   }
 }
 
-async function refreshMetrics() {
+async function refreshMetrics()
+   {
   const n = parseInt(document.getElementById('rollingN').value || '50', 10);
   const roll = await jget(`/api/metrics/rolling?n=${n}`);
   document.getElementById('metricsAsOf').textContent = roll.as_of ? `as_of ${roll.as_of}` : '';
