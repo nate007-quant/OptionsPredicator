@@ -309,6 +309,76 @@ async function refreshProcessing() {
 }
 
 let dailyChart;
+let llmBucketChart;
+async function refreshLlmBuckets() {
+  if (!chartsAvailable()) {
+    showError('charts', 'Chart.js not available (CDN blocked/offline).');
+    return;
+  }
+  const wd = parseInt(document.getElementById('llmWinDays')?.value || '15', 10);
+  const bm = parseInt(document.getElementById('llmBucketMin')?.value || '15', 10);
+  const ms = parseInt(document.getElementById('llmMinSamples')?.value || '5', 10);
+  const data = await jget(`/api/metrics/series_buckets?window_days=${wd}&bucket_minutes=${bm}&min_samples=${ms}`);
+  const labels = (data.series || []).map(x => x.bucket_start);
+  const overall = (data.series || []).map(x => x.overall_accuracy);
+  const excl = (data.series || []).map(x => x.accuracy_excluding_inconclusive);
+
+  const ctx = document.getElementById('llmBucketChart');
+  if (!llmBucketChart) {
+    llmBucketChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'overall_accuracy', data: overall, borderColor: '#0ea5e9', tension: 0.15 },
+          { label: 'accuracy_excl_inconclusive', data: excl, borderColor: '#22c55e', tension: 0.15 },
+        ]
+      },
+      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+    });
+  } else {
+    llmBucketChart.data.labels = labels;
+    llmBucketChart.data.datasets[0].data = overall;
+    llmBucketChart.data.datasets[1].data = excl;
+    llmBucketChart.update();
+  }
+}
+
+let mlBucketChart;
+async function refreshMlBuckets() {
+  if (!chartsAvailable()) {
+    showError('charts', 'Chart.js not available (CDN blocked/offline).');
+    return;
+  }
+  const wd = parseInt(document.getElementById('mlWinDays')?.value || '15', 10);
+  const bm = parseInt(document.getElementById('mlBucketMin')?.value || '15', 10);
+  const ms = parseInt(document.getElementById('mlMinSamples')?.value || '5', 10);
+  const data = await jget(`/api/ml/metrics/series_buckets?window_days=${wd}&bucket_minutes=${bm}&min_samples=${ms}`);
+  const labels = (data.series || []).map(x => x.bucket_start);
+  const ar = (data.series || []).map(x => x.action_rate);
+  const aa = (data.series || []).map(x => x.accuracy_actionable);
+
+  const ctx = document.getElementById('mlBucketChart');
+  if (!mlBucketChart) {
+    mlBucketChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'action_rate', data: ar, borderColor: '#f59e0b', tension: 0.15 },
+          { label: 'accuracy_actionable', data: aa, borderColor: '#a855f7', tension: 0.15 },
+        ]
+      },
+      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+    });
+  } else {
+    mlBucketChart.data.labels = labels;
+    mlBucketChart.data.datasets[0].data = ar;
+    mlBucketChart.data.datasets[1].data = aa;
+    mlBucketChart.update();
+  }
+}
+
 let mlDailyChart;
 let eodDailyChart;
 async function refreshEod() {
@@ -544,8 +614,8 @@ async function clearReprocess() {
 // wire up
 
 document.getElementById('refreshMetrics').onclick = refreshMetrics;
-if (document.getElementById('refreshLlmBuckets')) document.getElementById('refreshLlmBuckets').onclick = refreshLlmBuckets;
-if (document.getElementById('refreshMlBuckets')) document.getElementById('refreshMlBuckets').onclick = refreshMlBuckets;
+if (document.getElementById('refreshLlmBuckets')) document.getElementById('refreshLlmBuckets').onclick = () => safe('refreshLlmBuckets', () => refreshLlmBuckets());
+if (document.getElementById('refreshMlBuckets')) document.getElementById('refreshMlBuckets').onclick = () => safe('refreshMlBuckets', () => refreshMlBuckets());
 if (document.getElementById('refreshEod')) document.getElementById('refreshEod').onclick = () => safe('refreshEod', refreshEod);
 document.getElementById('refreshLogs').onclick = refreshLogs;
 document.getElementById('applyOverrides').onclick = applyOverrides;
@@ -592,22 +662,20 @@ async function safe(name, fn) {
 }
 
 (async () => {
-  if (typeof Chart === 'undefined') {
-    _setTopError('Chart.js failed to load (CDN blocked?). Charts will be blank.');
-  }
-  await safe('refreshConfig', refreshConfig);
-  await safe('refreshTokens', refreshTokens);
-  await safe('refreshLlmBuckets', refreshLlmBuckets);
-  await safe('refreshMetrics', refreshMetrics);
-  await safe('refreshLogs', refreshLogs);
-  await safe('refreshML', refreshML);
-  await safe('refreshMlBuckets', refreshMlBuckets);
-  await safe('refreshEod', refreshEod);
-  await safe('refreshProcessing', refreshProcessing);
-  setInterval(() => safe('refreshProcessing', refreshProcessing), 2000);
-  setInterval(() => safe('refreshConfig', refreshConfig), 5000);
-  setInterval(() => safe('refreshTokens', refreshTokens), 10000);
-  setInterval(() => safe('refreshML', refreshML), 20000);
+  await safe('refreshConfig', () => refreshConfig());
+  await safe('refreshTokens', () => refreshTokens());
+  await safe('refreshLlmBuckets', () => refreshLlmBuckets());
+  await safe('refreshMetrics', () => refreshMetrics());
+  await safe('refreshLogs', () => refreshLogs());
+  await safe('refreshML', () => refreshML());
+  await safe('refreshMlBuckets', () => refreshMlBuckets());
+  await safe('refreshEod', () => refreshEod());
+  await safe('refreshProcessing', () => refreshProcessing());
+
+  setInterval(() => safe('refreshProcessing', () => refreshProcessing()), 2000);
+  setInterval(() => safe('refreshConfig', () => refreshConfig()), 5000);
+  setInterval(() => safe('refreshTokens', () => refreshTokens()), 10000);
+  setInterval(() => safe('refreshML', () => refreshML()), 20000);
 })();
 </script>
 </body>
