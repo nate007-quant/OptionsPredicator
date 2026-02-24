@@ -194,6 +194,26 @@ def _migrate_to_v22(conn: sqlite3.Connection) -> None:
     conn.execute("COMMIT")
 
 
+def _ensure_event_time_columns(conn: sqlite3.Connection) -> None:
+    cols = _table_columns(conn, "predictions")
+
+    if "observed_ts_utc" not in cols:
+        conn.execute("ALTER TABLE predictions ADD COLUMN observed_ts_utc TEXT")
+    if "outcome_ts_utc" not in cols:
+        conn.execute("ALTER TABLE predictions ADD COLUMN outcome_ts_utc TEXT")
+
+    # Best-effort backfill:
+    # - observed_ts_utc defaults to legacy timestamp
+    # - outcome_ts_utc defaults to timestamp + 15 minutes (legacy default)
+    conn.execute("UPDATE predictions SET observed_ts_utc = COALESCE(observed_ts_utc, timestamp) WHERE observed_ts_utc IS NULL")
+    conn.execute(
+        "UPDATE predictions SET outcome_ts_utc = COALESCE(outcome_ts_utc, datetime(observed_ts_utc, '+15 minutes')) WHERE outcome_ts_utc IS NULL"
+    )
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_observed_ts_utc ON predictions(observed_ts_utc)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_outcome_ts_utc ON predictions(outcome_ts_utc)")
+
+
 def init_db(db_path: str, schema_sql_path: str) -> None:
     schema_sql = Path(schema_sql_path).read_text(encoding="utf-8")
     with connect(db_path) as conn:
@@ -207,6 +227,14 @@ def init_db(db_path: str, schema_sql_path: str) -> None:
 
         # Ensure v2.2 unique index exists (safe to run even if already present).
         try:
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt_model ON predictions(source_snapshot_hash, prompt_version, model_used)")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt_model ON predictions(source_snapshot_hash, prompt_version, model_used)"
+            )
+        except Exception:
+            pass
+
+        # v2.4 event-time columns + indexes
+        try:
+            _ensure_event_time_columns(conn)
         except Exception:
             pass

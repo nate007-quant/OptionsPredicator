@@ -1,11 +1,16 @@
--- Options AI v2.3 schema
+-- Options AI v2.4 schema
 
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
 
 CREATE TABLE IF NOT EXISTS predictions (
   id INTEGER PRIMARY KEY,
-  timestamp TEXT NOT NULL, -- ISO-8601 UTC
+  timestamp TEXT NOT NULL, -- ISO-8601 UTC (legacy)
+
+  -- v2.4 event-time fields (ISO-8601 UTC, no micros)
+  observed_ts_utc TEXT,
+  outcome_ts_utc TEXT,
+
   ticker TEXT NOT NULL,
   expiration_date TEXT NOT NULL,
   source_snapshot_file TEXT NOT NULL,
@@ -36,6 +41,8 @@ CREATE TABLE IF NOT EXISTS predictions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON predictions(timestamp);
+CREATE INDEX IF NOT EXISTS idx_predictions_observed_ts_utc ON predictions(observed_ts_utc);
+CREATE INDEX IF NOT EXISTS idx_predictions_outcome_ts_utc ON predictions(outcome_ts_utc);
 CREATE INDEX IF NOT EXISTS idx_predictions_result_null ON predictions(result);
 
 CREATE TABLE IF NOT EXISTS performance_summary (

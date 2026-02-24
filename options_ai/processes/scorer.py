@@ -77,9 +77,9 @@ def _find_outcome_price(state: dict[str, Any], target_dt: datetime) -> tuple[flo
 def score_due_predictions(*, cfg: Config, paths: Any, db_path: str, state: dict[str, Any]) -> int:
     _ensure_snapshot_index(state, paths)
 
+    # Eligible means: outcome time has passed.
     now = datetime.now(timezone.utc).replace(microsecond=0)
-    cutoff = now - timedelta(minutes=int(cfg.outcome_delay_minutes))
-    eligible = fetch_eligible_to_score(db_path, cutoff_ts_iso=cutoff.isoformat())
+    eligible = fetch_eligible_to_score(db_path, cutoff_ts_iso=now.isoformat())
 
     scored = 0
     for p in eligible:

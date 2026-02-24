@@ -4,7 +4,7 @@ import json
 import traceback
 import re
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,8 @@ from options_ai.config import Config
 from options_ai.processes.analyzer import run_chart_extraction_if_available, run_prediction
 from options_ai.queries import (
     fetch_latest_performance_summary,
-    fetch_recent_predictions,
+    fetch_recent_predictions_before,
+    fetch_gex_levels_before,
     hash_exists,
     insert_prediction,
 )
@@ -403,9 +404,24 @@ def ingest_snapshot_file(
 
     # --- Reduce LLM tokens: compact GEX + keep sticky day levels (v2.3+)
     day_key = parsed.observed_dt_utc.date().isoformat()
-    state.setdefault("day_levels", {})
-    state["day_levels"].setdefault(day_key, {"sticky_strikes": []})
-    sticky_list = list(state["day_levels"][day_key].get("sticky_strikes") or [])
+
+    # Order-invariant sticky strikes (event-time): derived from DB rows strictly before this snapshot.
+    # This eliminates in-memory state leakage and makes backtests reproducible.
+    sticky_unique: list[float] = []
+    try:
+        prior_levels = fetch_gex_levels_before(
+            db_path,
+            observed_ts_utc=parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+            day_key_utc=day_key,
+            limit=max(50, int(cfg.gex_sticky_day_max or 0) * 2),
+        )
+        # De-dup already done in query; cap to gex_sticky_day_max
+        if int(cfg.gex_sticky_day_max or 0) > 0:
+            sticky_unique = prior_levels[: int(cfg.gex_sticky_day_max or 0)]
+        else:
+            sticky_unique = prior_levels
+    except Exception:
+        sticky_unique = []
 
     # Extract full GEX maps + level strikes
     net_map = dict(signals.get("gex_net_by_strike") or {})
@@ -416,31 +432,6 @@ def ingest_snapshot_file(
     magnet = signals.get("gex_magnet_strike")
     flip = signals.get("gex_flip_strike")
 
-    # Update sticky strikes for the day: include any level strike seen earlier today (sticky-day)
-    for lv in [call_wall, put_wall, magnet, flip]:
-        if lv is None:
-            continue
-        try:
-            sticky_list.append(float(lv))
-        except Exception:
-            pass
-    # de-dup (preserve recency) + cap (keep most recent)
-    seen = set()
-    sticky_unique_rev = []
-    for s in reversed(sticky_list):
-        try:
-            sf = float(s)
-        except Exception:
-            continue
-        if sf in seen:
-            continue
-        seen.add(sf)
-        sticky_unique_rev.append(sf)
-        if int(cfg.gex_sticky_day_max or 0) and len(sticky_unique_rev) >= int(cfg.gex_sticky_day_max or 0):
-            break
-    sticky_unique = list(reversed(sticky_unique_rev))
-
-    state["day_levels"][day_key]["sticky_strikes"] = sticky_unique
 
     # Build compact model-facing signals
     compact_gex = build_compact_gex(
@@ -531,7 +522,7 @@ def ingest_snapshot_file(
 
 
     # Chart extraction routing + caching (chart is optional; failures should not stop prediction).
-    if (not bootstrap_mode) and chart_path and candidates and any(_chart_enabled_for_provider(cfg, c.provider) for c in candidates):
+    if (not bootstrap_mode) and chart_path and candidates and (not (bool(cfg.backtest_mode) and bool(cfg.backtest_disable_chart))) and any(_chart_enabled_for_provider(cfg, c.provider) for c in candidates):
         for c in candidates:
             if not _chart_enabled_for_provider(cfg, c.provider):
                 continue
@@ -614,8 +605,12 @@ def ingest_snapshot_file(
             )
 
     # Context for prediction
-    recent_predictions_raw = fetch_recent_predictions(db_path, limit=max(int(cfg.history_records or 0), int(cfg.local_history_records or 0)))
-    perf_summary_raw = fetch_latest_performance_summary(db_path)
+    recent_predictions_raw = fetch_recent_predictions_before(
+        db_path,
+        observed_ts_utc=parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+        limit=max(int(cfg.history_records or 0), int(cfg.local_history_records or 0)),
+    )
+    perf_summary_raw = None if bool(cfg.backtest_mode) else fetch_latest_performance_summary(db_path)
 
     # Phase 2: prediction (cached + routed)
     pred_obj: dict[str, Any] | None = None
@@ -791,6 +786,8 @@ def ingest_snapshot_file(
 
     row = {
         "timestamp": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+        "observed_ts_utc": parsed.observed_dt_utc.replace(microsecond=0).isoformat(),
+        "outcome_ts_utc": (parsed.observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
         "ticker": parsed.ticker,
         "expiration_date": parsed.expiration_date,
         "source_snapshot_file": snapshot_path.name,
