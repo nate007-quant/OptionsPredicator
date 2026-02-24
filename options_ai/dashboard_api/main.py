@@ -213,18 +213,28 @@ def create_app() -> FastAPI:
         return {"ok": True, "time": _now_central_iso(), "tz": "America/Chicago"}
 
     @app.get("/api/status/processing")
-    def status_processing(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
+    def status_processing(
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=10, le=200),
+        order: str = Query("oldest", pattern="^(oldest|newest)$"),
+    ) -> dict[str, Any]:
         incoming_dir = data_root / "incoming" / "SPX"
         processed_dir = data_root / "processed" / "SPX" / "snapshots"
-
         queue_items = []
+        total_count = 0
         if incoming_dir.exists():
-            for p in sorted(incoming_dir.glob("*.json"))[-limit:]:
+            items_all = []
+            for p in incoming_dir.glob("*.json"):
                 try:
                     st = p.stat()
-                    queue_items.append({"file": p.name, "size": st.st_size, "mtime": st.st_mtime})
+                    items_all.append({"file": p.name, "size": st.st_size, "mtime": st.st_mtime})
                 except Exception:
                     continue
+            items_all.sort(key=lambda x: x["mtime"], reverse=(order == "newest"))
+            total_count = len(items_all)
+            start = (int(page) - 1) * int(page_size)
+            end = start + int(page_size)
+            queue_items = items_all[start:end]
 
         # Optional current task state file (daemon writes this if enabled)
         current_task_path = data_root / "state" / "current_task.json"
@@ -291,7 +301,7 @@ def create_app() -> FastAPI:
         return {
             "incoming_dir": str(incoming_dir),
             "processed_dir": str(processed_dir),
-            "queue": {"count": len(queue_items), "items": queue_items},
+            "queue": {"total_count": int(total_count), "page": int(page), "page_size": int(page_size), "order": order, "count": len(queue_items), "items": queue_items},
             "processing": {"count": len(processing_items), "items": processing_items},
             "counters": {"total_predictions": total_predictions, "total_scored": total_scored, "unscored": unscored},
             "snapshot_index_newest_ts": _to_central_iso(newest_snapshot) if newest_snapshot else None,

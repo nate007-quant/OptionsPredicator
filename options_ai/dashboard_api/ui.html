@@ -36,7 +36,19 @@
         <div>Scored: <span id="totScored" class="pill">-</span></div>
         <div>Unscored: <span id="totUnscored" class="pill">-</span></div>
       </div>
-      <h3 style="margin: 10px 0 6px 0; font-size: 14px;">Queue (incoming)</h3>
+      <div class="row" style="justify-content:space-between; margin-top:10px;">
+        <h3 style="margin: 0; font-size: 14px;">Queue (incoming)</h3>
+        <div class="row muted">
+          <label>Order
+            <select id="queueOrder">
+              <option value="oldest" selected>Oldest first</option>
+              <option value="newest">Newest first</option>
+            </select>
+          </label>
+          <label>Page <input id="queuePage" type="number" min="1" value="1" style="width:70px;" /></label>
+          <label>Page size <input id="queuePageSize" type="number" min="10" max="200" value="50" style="width:80px;" /></label>
+        </div>
+      </div>
       <table>
         <thead><tr><th>file</th><th>size</th><th>mtime</th></tr></thead>
         <tbody id="queueTable"></tbody>
@@ -184,7 +196,10 @@ async function jpatch(path, obj) {
 }
 
 async function refreshProcessing() {
-  const data = await jget('/api/status/processing?limit=50');
+  const order = document.getElementById('queueOrder') ? document.getElementById('queueOrder').value : 'oldest';
+  const page = document.getElementById('queuePage') ? parseInt(document.getElementById('queuePage').value || '1', 10) : 1;
+  const page_size = document.getElementById('queuePageSize') ? parseInt(document.getElementById('queuePageSize').value || '50', 10) : 50;
+  const data = await jget(`/api/status/processing?page=${page}&page_size=${page_size}&order=${order}`);
   document.getElementById('queueCount').textContent = data.queue.count;
   document.getElementById('procCount').textContent = data.processing.count;
   document.getElementById('totPred').textContent = data.counters.total_predictions;
@@ -414,6 +429,10 @@ document.getElementById('logAuto').addEventListener('change', (ev) => {
     if (logTimer) clearInterval(logTimer);
   }
 });
+
+document.getElementById('queueOrder')?.addEventListener('change', () => refreshProcessing().catch(()=>{}));
+document.getElementById('queuePage')?.addEventListener('change', () => refreshProcessing().catch(()=>{}));
+document.getElementById('queuePageSize')?.addEventListener('change', () => refreshProcessing().catch(()=>{}));
 
 // initial load
 (async () => {
