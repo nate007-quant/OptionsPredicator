@@ -35,6 +35,7 @@ from options_ai.utils.logger import (
     log_routing,
 )
 from options_ai.utils.signals import OptionRow, compute_all_signals
+from options_ai.utils.gex_subset import build_compact_gex
 
 
 FILENAME_RE = re.compile(
@@ -358,6 +359,105 @@ def ingest_snapshot_file(
     else:
         signals = compute_all_signals(rows, spot, price_series_raw)
 
+    # --- Reduce LLM tokens: compact GEX + keep sticky day levels (v2.3+)
+    day_key = parsed.observed_dt_utc.date().isoformat()
+    state.setdefault("day_levels", {})
+    state["day_levels"].setdefault(day_key, {"sticky_strikes": []})
+    sticky_list = list(state["day_levels"][day_key].get("sticky_strikes") or [])
+
+    # Extract full GEX maps + level strikes
+    net_map = dict(signals.get("gex_net_by_strike") or {})
+    abs_map = dict(signals.get("gex_abs_by_strike") or {})
+
+    call_wall = signals.get("gex_call_wall_strike")
+    put_wall = signals.get("gex_put_wall_strike")
+    magnet = signals.get("gex_magnet_strike")
+    flip = signals.get("gex_flip_strike")
+
+    # Update sticky strikes for the day: always include levels + top-K abs strikes
+    top_abs = []
+    try:
+        items = []
+        for k, v in abs_map.items():
+            try:
+                items.append((float(k), float(v)))
+            except Exception:
+                continue
+        items.sort(key=lambda t: t[1], reverse=True)
+        top_abs = [s for s, _ in items[: int(cfg.gex_topk_abs_strikes or 0)]]
+    except Exception:
+        top_abs = []
+
+    for lv in [call_wall, put_wall, magnet, flip]:
+        if lv is None:
+            continue
+        try:
+            sticky_list.append(float(lv))
+        except Exception:
+            pass
+    for s in top_abs:
+        try:
+            sticky_list.append(float(s))
+        except Exception:
+            pass
+
+    # de-dup + cap
+    sticky_unique = []
+    seen = set()
+    for s in sticky_list:
+        try:
+            sf = float(s)
+        except Exception:
+            continue
+        if sf in seen:
+            continue
+        seen.add(sf)
+        sticky_unique.append(sf)
+        if len(sticky_unique) >= int(cfg.gex_sticky_day_max or 0):
+            break
+
+    state["day_levels"][day_key]["sticky_strikes"] = sticky_unique
+
+    # Build compact model-facing signals
+    compact_gex = build_compact_gex(
+        spot=float(spot),
+        net_map=net_map,
+        abs_map=abs_map,
+        call_wall=float(call_wall) if call_wall is not None else None,
+        put_wall=float(put_wall) if put_wall is not None else None,
+        magnet=float(magnet) if magnet is not None else None,
+        flip=float(flip) if flip is not None else None,
+        dist_call_wall=signals.get("gex_distance_to_call_wall"),
+        dist_put_wall=signals.get("gex_distance_to_put_wall"),
+        dist_magnet=signals.get("gex_distance_to_magnet"),
+        dist_flip=signals.get("gex_distance_to_flip"),
+        regime_label=signals.get("gex_regime_label"),
+        neighbors_each_level=int(cfg.gex_neighbor_strikes or 0),
+        topk_abs=int(cfg.gex_topk_abs_strikes or 0),
+        sticky_strikes=sticky_unique,
+        sticky_day_max=int(cfg.gex_sticky_day_max or 0),
+    )
+
+    # Strip large per-strike maps + move GEX into structured compact block
+    model_signals = {k: v for k, v in signals.items() if k not in {
+        "gex_net_by_strike",
+        "gex_abs_by_strike",
+        "gex_call_wall_strike",
+        "gex_put_wall_strike",
+        "gex_magnet_strike",
+        "gex_flip_strike",
+        "gex_regime_label",
+        "gex_distance_to_call_wall",
+        "gex_distance_to_put_wall",
+        "gex_distance_to_magnet",
+        "gex_distance_to_flip",
+    }}
+    model_signals["gex"] = {
+        "levels": compact_gex.levels,
+        "regime_label": compact_gex.regime_label,
+        "subset": compact_gex.subset,
+    }
+
     # S4 Snapshot summary
     if derived is not None and mode in {"none", "from_model"}:
         snapshot_summary = dict(derived.snapshot_summary)
@@ -372,7 +472,7 @@ def ingest_snapshot_file(
                 snapshot_hash,
                 DerivedCache(
                     normalized_rows=[_row_to_dict(r) for r in rows],
-                    signals=signals,
+                    signals=model_signals,
                     snapshot_summary=snapshot_summary,
                 ),
             )
@@ -548,7 +648,7 @@ def ingest_snapshot_file(
                 fn=lambda client: run_prediction(
                     codex=client,
                     snapshot_summary=snapshot_summary,
-                    signals=signals,
+                    signals=model_signals,
                     chart_description=chart_description,
                     recent_predictions=recent_predictions,
                     performance_summary=perf_summary,
@@ -644,7 +744,7 @@ def ingest_snapshot_file(
     )
 
     signals_payload = {
-        "computed": signals,
+        "computed": model_signals,
         "model_signals_used": pred_obj.get("signals_used"),
     }
 

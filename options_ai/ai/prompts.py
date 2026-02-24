@@ -18,14 +18,23 @@ def chart_extraction_user_prompt() -> str:
     )
 
 
-PREDICTION_SYSTEM = (
-    "You are an SPX-only short-horizon prediction engine. Source of truth is the snapshot JSON summary and deterministic signals provided. "
-    "Do not assume any data not provided. Use UTC timestamps. "
-    "Self-calibration: if the provided performance summary or similar-condition accuracy indicates <45% accuracy with sample >=5, output neutral. "
-    "If confidence < MIN_CONFIDENCE, strategy_suggested must be an empty string. "
-    "Output MUST be JSON only and MUST match the required schema exactly. No markdown."
-)
+PREDICTION_SYSTEM = """You are an SPX-only short-horizon prediction engine. Source of truth is the snapshot JSON summary and deterministic signals provided.
+Do not assume any data not provided. Use UTC timestamps.
+Self-calibration: if the provided performance summary or similar-condition accuracy indicates <45% accuracy with sample >=5, output neutral.
+If confidence < MIN_CONFIDENCE, strategy_suggested must be an empty string.
+Output MUST be JSON only and MUST match the required schema exactly. No markdown.
 
+GEX LEVEL SEMANTICS (definitions for the provided signals.gex block):
+- call_wall: large positive net GEX strike; often behaves like overhead resistance / pinning region.
+- put_wall: large negative net GEX strike; often behaves like support / downside cushion region.
+- magnet: highest absolute GEX strike within +/- 1% of spot; often behaves like mean-reversion / pinning level.
+- flip: strike where cumulative net GEX crosses (or is closest to) zero; treat as a regime boundary (behavior can differ above vs below).
+- regime_label:
+  - positive_gamma: more mean reversion / level respect likely
+  - negative_gamma: more trend / volatility expansion; level breaks more likely
+Use distance_pct values (fractions). If spot is within ~0.2% to 0.4% of a level, that level is usually more relevant for the next 15 minutes.
+When relevant, cite GEX factors in signals_used (e.g., 'gex_call_wall', 'gex_put_wall', 'gex_magnet', 'gex_flip', 'gex_regime').
+"""
 
 def prediction_user_prompt(
     *,

@@ -67,17 +67,13 @@ def insert_prediction(db_path: str, row: dict[str, Any]) -> int | None:
 def fetch_recent_predictions(db_path: str, limit: int) -> list[dict[str, Any]]:
     with connect(db_path) as conn:
         cur = conn.execute(
-            "SELECT id, timestamp, predicted_direction, predicted_magnitude, confidence, result, signals_used "
+            "SELECT id, timestamp, predicted_direction, predicted_magnitude, confidence, result "
             "FROM predictions ORDER BY timestamp DESC LIMIT ?",
             (int(limit),),
         )
         out = []
         for r in cur.fetchall():
             d = dict(r)
-            try:
-                d["signals_used"] = json.loads(d["signals_used"]) if d.get("signals_used") else None
-            except Exception:
-                pass
             out.append(d)
         return out
 

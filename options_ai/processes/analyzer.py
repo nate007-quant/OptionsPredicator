@@ -72,7 +72,12 @@ def run_prediction(
         min_confidence=min_confidence,
     )
 
-    raw_text, report = codex.generate_prediction(system_prompt=PREDICTION_SYSTEM, user_prompt=user_prompt)
+    report = {"prompt_chars": len(user_prompt)}
+    raw_text, rep0 = codex.generate_prediction(system_prompt=PREDICTION_SYSTEM, user_prompt=user_prompt)
+    try:
+        report.update(rep0 or {})
+    except Exception:
+        report["provider_report"] = rep0
 
     # Validate strict JSON, retry once
     last_err: str | None = None
