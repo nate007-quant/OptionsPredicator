@@ -251,6 +251,22 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
             processed_any = False
 
             for p in sorted(set(candidates)):
+                # Mid-loop override refresh so PAUSE_PROCESSING takes effect quickly (no need to wait for full queue drain)
+                try:
+                    overrides2 = load_overrides_file(overrides_path)
+                    if overrides2 != last_overrides:
+                        new_effective2 = apply_overrides(base_cfg, overrides2)
+                        if _should_rebuild_router(cfg_effective, new_effective2):
+                            router = ModelRouter(new_effective2, bootstrap_rate_limiter=limiter)
+                        cfg_effective = new_effective2
+                        last_overrides = overrides2
+                    if bool(cfg_effective.pause_processing):
+                        lg = get_logger()
+                        if lg:
+                            lg.info(component="Watcher", event="pause_processing_break", message="processing paused; stopping current queue scan", file_key="system")
+                        break
+                except Exception:
+                    pass
                 now = time.time()
 
                 next_ts = backoff.get(str(p))
