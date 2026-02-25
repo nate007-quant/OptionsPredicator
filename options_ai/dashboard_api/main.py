@@ -210,7 +210,19 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "time": _now_central_iso(), "tz": "America/Chicago"}
+        # light-weight status endpoint for UI app bar
+        reset_enabled = os.getenv("RESET_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+        overrides = load_overrides_file(overrides_path)
+        effective = apply_overrides(cfg, overrides)
+        paused = bool(getattr(effective, "pause_processing", False))
+        return {
+            "ok": True,
+            "time": _now_central_iso(),
+            "tz": "America/Chicago",
+            "reset_enabled": reset_enabled,
+            "paused": paused,
+            "service": "options_ai_dashboard_api",
+        }
 
     @app.get("/api/status/processing")
     def status_processing(

@@ -1,682 +1,1221 @@
 <!doctype html>
-<html>
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OptionsPredicator Dashboard</title>
+  <title>OptionsPredicator</title>
+
   <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; }
-    h2 { margin: 0 0 8px 0; font-size: 18px; }
+    :root {
+      --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      --radius: 12px;
+      --radius-sm: 10px;
+      --shadow: 0 8px 24px rgba(0,0,0,0.18);
+      --shadow-sm: 0 4px 14px rgba(0,0,0,0.14);
+      --space-1: 6px;
+      --space-2: 10px;
+      --space-3: 14px;
+      --space-4: 18px;
+      --space-5: 24px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+      --bg: #0b1020;
+      --surface: #111a33;
+      --surface-2: #0f1730;
+      --text: #e7ecff;
+      --muted: #a6b0d6;
+      --border: rgba(255,255,255,0.10);
+      --divider: rgba(255,255,255,0.06);
+
+      --primary: #60a5fa;
+      --primary-2: #2563eb;
+
+      --success: #22c55e;
+      --warn: #f59e0b;
+      --error: #ef4444;
+      --info: #38bdf8;
+
+      --btn-bg: rgba(255,255,255,0.08);
+      --btn-bg-hover: rgba(255,255,255,0.12);
+      --btn-border: rgba(255,255,255,0.14);
+    }
+
+    html[data-theme="light"] {
+      --bg: #f7f8fc;
+      --surface: #ffffff;
+      --surface-2: #f1f5ff;
+      --text: #0b1020;
+      --muted: #41507a;
+      --border: rgba(15, 23, 42, 0.14);
+      --divider: rgba(15, 23, 42, 0.08);
+
+      --btn-bg: rgba(15, 23, 42, 0.06);
+      --btn-bg-hover: rgba(15, 23, 42, 0.10);
+      --btn-border: rgba(15, 23, 42, 0.16);
+
+      --shadow: 0 10px 30px rgba(15,23,42,0.10);
+      --shadow-sm: 0 6px 18px rgba(15,23,42,0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .app {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      grid-template-rows: 56px 1fr;
+      height: 100vh;
+    }
+
+    .appbar {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 var(--space-4);
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+      backdrop-filter: blur(8px);
+    }
+
+    .brand {
+      display: flex;
+      gap: var(--space-3);
+      align-items: baseline;
+    }
+    .brand h1 {
+      font-size: 16px;
+      margin: 0;
+      letter-spacing: 0.2px;
+    }
+    .brand .sub {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .status {
+      display: flex;
+      gap: var(--space-3);
+      align-items: center;
+      font-size: 12px;
+      color: var(--muted);
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--warn);
+      box-shadow: 0 0 0 3px rgba(245,158,11,0.18);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.04);
+      color: var(--muted);
+    }
+    .badge strong { color: var(--text); font-weight: 600; }
+
+    .sidebar {
+      grid-row: 2;
+      padding: var(--space-4);
+      border-right: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+    }
+
+    .nav {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: var(--space-2);
+    }
+
+    .nav a {
+      padding: 10px 12px;
+      border-radius: 10px;
+      color: var(--muted);
+      border: 1px solid transparent;
+    }
+
+    .nav a.active {
+      color: var(--text);
+      background: rgba(96,165,250,0.12);
+      border-color: rgba(96,165,250,0.30);
+    }
+
+    .nav a:hover {
+      background: rgba(255,255,255,0.06);
+    }
+
+    .content {
+      grid-row: 2;
+      overflow: auto;
+      padding: var(--space-4);
+    }
+
+    .banner {
+      display: none;
+      margin-bottom: var(--space-3);
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(239,68,68,0.35);
+      background: rgba(239,68,68,0.12);
+      color: var(--text);
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-4);
+    }
+
+    .grid1 {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: var(--space-4);
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+
+    .card .card-h {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--divider);
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: var(--space-3);
+    }
+
+    .card .card-h h2 {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: 0.2px;
+    }
+
+    .card .card-h .hint {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .card .card-b {
+      padding: 14px;
+    }
+
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+    .pill {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    label { font-size: 12px; color: var(--muted); }
+
+    input, select {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--btn-border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      color: var(--text);
+      outline: none;
+    }
+    input:focus, select:focus {
+      border-color: rgba(96,165,250,0.55);
+      box-shadow: 0 0 0 3px rgba(96,165,250,0.18);
+    }
+
+    button {
+      background: var(--btn-bg);
+      border: 1px solid var(--btn-border);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    button:hover { background: var(--btn-bg-hover); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .btn-primary { background: rgba(96,165,250,0.18); border-color: rgba(96,165,250,0.35); }
+    .btn-danger { background: rgba(239,68,68,0.16); border-color: rgba(239,68,68,0.34); }
+
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { border-bottom: 1px solid #eee; padding: 6px; text-align: left; }
-    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    input, select { padding: 6px; }
-    button { padding: 6px 10px; }
-    pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; }
-    .muted { color: #666; font-size: 12px; }
-    .logs { max-height: 320px; overflow: auto; background: #0b1020; color: #dce4ff; padding: 8px; border-radius: 8px; }
-    .logs .line { border-bottom: 1px solid rgba(255,255,255,0.06); padding: 4px 0; }
-    .pill { display:inline-block; padding:2px 6px; border-radius: 999px; background:#f2f2f2; font-size: 12px; }
+    thead th {
+      position: sticky;
+      top: 0;
+      background: var(--surface);
+      border-bottom: 1px solid var(--divider);
+      text-align: left;
+      padding: 8px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    tbody td {
+      border-bottom: 1px solid var(--divider);
+      padding: 8px;
+    }
+    tbody tr:nth-child(odd) { background: rgba(255,255,255,0.02); }
+    tbody tr:hover { background: rgba(96,165,250,0.06); }
+
+    .logs {
+      max-height: 520px;
+      overflow: auto;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .logs .line { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+
+    .toast-wrap {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 1000;
+    }
+
+    .toast {
+      width: min(420px, calc(100vw - 40px));
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(17,26,51,0.92);
+      box-shadow: var(--shadow);
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .toast.success { border-color: rgba(34,197,94,0.35); }
+    .toast.error { border-color: rgba(239,68,68,0.35); }
+    .toast.warn { border-color: rgba(245,158,11,0.35); }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; grid-template-rows: 56px auto 1fr; }
+      .sidebar { grid-row: 2; border-right: none; border-bottom: 1px solid var(--border); }
+      .content { grid-row: 3; }
+      .grid2 { grid-template-columns: 1fr; }
+    }
   </style>
+
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
+
 <body>
-  <div id="errorBanner" style="display:none; background:#7f1d1d; color:#fff; padding:10px; border-radius:10px; margin-bottom:12px;"></div>
-  <h1 style="margin: 0 0 12px 0;">OptionsPredicator Dashboard</h1>
-  <div class="muted">This page polls the local API. If you’re reverse-proxying, adjust host/port accordingly.</div>
+  <div class="toast-wrap" id="toastWrap"></div>
 
-  <div class="grid" style="margin-top: 12px;">
-    <div class="card">
-      <h2>A) Processing</h2>
-      <div class="row muted">
-        <div>Queue: <span id="queueCount" class="pill">-</span></div>
-        <div>Processing: <span id="procCount" class="pill">-</span></div>
-        <div>Total predictions: <span id="totPred" class="pill">-</span></div>
-        <div>Scored: <span id="totScored" class="pill">-</span></div>
-        <div>Unscored: <span id="totUnscored" class="pill">-</span></div>
+  <div class="app">
+    <div class="appbar">
+      <div class="brand">
+        <h1>OptionsPredicator</h1>
+        <div class="sub">Dashboard</div>
       </div>
-      <div class="row" style="justify-content:space-between; margin-top:10px;">
-        <h3 style="margin: 0; font-size: 14px;">Queue (incoming)</h3>
-        <div class="row muted">
-          <label>Order
-            <select id="queueOrder">
-              <option value="oldest" selected>Oldest first</option>
-              <option value="newest">Newest first</option>
-            </select>
-          </label>
-          <label>Page <input id="queuePage" type="number" min="1" value="1" style="width:70px;" /></label>
-          <label>Page size <input id="queuePageSize" type="number" min="10" max="200" value="50" style="width:80px;" /></label>
-        </div>
+
+      <div class="status">
+        <div class="badge"><span class="dot" id="healthDot"></span> <strong id="healthText">Unknown</strong></div>
+        <div class="badge">Paused: <strong id="pausedText">—</strong></div>
+        <div class="badge">Last refresh: <strong id="lastRefresh">—</strong></div>
+        <button id="themeToggle">Theme</button>
       </div>
-      <table>
-        <thead><tr><th>file</th><th>size</th><th>mtime</th></tr></thead>
-        <tbody id="queueTable"></tbody>
-      </table>
-      <h3 style="margin: 10px 0 6px 0; font-size: 14px;">Currently processing</h3>
-      <div id="processingBox" class="muted">Not available</div>
     </div>
 
-    <div class="card">
-      <h2>B) Metrics</h2>
-      <div class="muted">Bucketed by observed_ts_utc (event time)</div>
-      <div class="card" style="margin-top:10px; border-style:dashed;">
-        <div style="display:flex; justify-content:space-between; align-items:baseline;">
-          <div>
-            <div class="muted">Tokens / Hour (est.)</div>
-            <div style="font-size:34px; font-weight:700;" id="tokTotal">—</div>
+    <aside class="sidebar">
+      <div class="badge" style="width:100%; justify-content:space-between;">
+        <span>Navigation</span>
+        <span style="font-family:var(--mono); font-size:11px;" id="apiTz">CT</span>
+      </div>
+      <nav class="nav" id="nav">
+        <a href="#overview" data-view="overview" class="active">Overview</a>
+        <a href="#processing" data-view="processing">Processing</a>
+        <a href="#metrics" data-view="metrics">Metrics</a>
+        <a href="#models" data-view="models">Models (LLM/ML)</a>
+        <a href="#logs" data-view="logs">Logs</a>
+        <a href="#controls" data-view="controls">Controls / Admin</a>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <div class="banner" id="errorBanner"></div>
+
+      <!-- OVERVIEW -->
+      <section class="view active" id="view-overview">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-h"><h2>Processing</h2><div class="hint">Queue + scoring status</div></div>
+            <div class="card-b">
+              <div class="row">
+                <div>Queue: <span id="queueCount" class="pill">-</span></div>
+                <div>Processing: <span id="procCount" class="pill">-</span></div>
+                <div>Total predictions: <span id="totPred" class="pill">-</span></div>
+                <div>Scored: <span id="totScored" class="pill">-</span></div>
+                <div>Unscored: <span id="totUnscored" class="pill">-</span></div>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <div class="badge">Newest snapshot_index: <strong id="newestSnap">—</strong></div>
+                <div class="badge">Oldest unscored: <strong id="oldestUnscored">—</strong></div>
+              </div>
+              <div style="margin-top:10px; color:var(--muted); font-size:12px;" id="processingBox">(idle)</div>
+            </div>
           </div>
-          <div style="text-align:right;">
-            <div class="muted" id="tokAvg">avg/file: —</div>
-            <div class="muted" id="tokTrend">trend: —</div>
+
+          <div class="card">
+            <div class="card-h"><h2>Tokens / Hour (est.)</h2><div class="hint">Estimated from chars (DeepSeek endpoint doesn’t return usage)</div></div>
+            <div class="card-b">
+              <div style="display:flex; justify-content:space-between; align-items:baseline;">
+                <div style="font-size:38px; font-weight:750;" id="tokTotal">—</div>
+                <div style="text-align:right;">
+                  <div class="hint" id="tokAvg">avg/file: —</div>
+                  <div class="hint" id="tokTrend">trend: —</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="muted" style="margin-top:6px;">Estimated from chars (DeepSeek endpoint doesn't return usage)</div>
-      </div>
 
-      <div class="row">
-        <label>Rolling N <input id="rollingN" type="number" min="10" max="5000" value="50" style="width: 90px;" /></label>
-        <button id="refreshMetrics">Refresh</button>
-        <span class="muted" id="metricsAsOf"></span>
-      </div>
-      <div class="row muted" style="margin-top: 8px;">
-        <div>Overall acc: <span id="rollOverall" class="pill">-</span></div>
-        <div>Excl inconc: <span id="rollExcl" class="pill">-</span></div>
-        <div>Hi-conf acc: <span id="rollHi" class="pill">-</span></div>
-        <div>Total: <span id="rollTotal" class="pill">-</span></div>
-      </div>
-      <div class="row" style="margin-top:10px;">
-        <label>Window days <input id="llmWinDays" type="number" min="1" max="60" value="15" style="width:80px;" /></label>
-        <label>Bucket
-          <select id="llmBucketMin">
-            <option value="5">5</option>
-            <option value="10">10</option>
-            <option value="15" selected>15</option>
-            <option value="30">30</option>
-            <option value="60">60</option>
-          </select>
-        </label>
-        <label>Min samples <input id="llmMinSamples" type="number" min="1" max="200" value="5" style="width:80px;" /></label>
-        <button id="refreshLlmBuckets">Refresh 15m</button>
-      </div>
-      <div style="margin-top: 10px;">
-        <canvas id="llmBucketChart" height="120"></canvas>
-      </div>
-      <div style="margin-top: 10px;">
-        <canvas id="dailyChart" height="120"></canvas>
-      </div>
-    </div>
+        <div class="grid2" style="margin-top: var(--space-4);">
+          <div class="card">
+            <div class="card-h"><h2>LLM Rolling (N)</h2><div class="hint">Bucketed by observed_ts_utc (event time)</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Rolling N <input id="rollingN" type="number" min="10" max="5000" value="50" style="width:90px;" /></label>
+                <button class="btn-primary" id="refreshMetrics">Refresh</button>
+                <span class="hint" id="metricsAsOf"></span>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <div>Overall: <span id="rollOverall" class="pill">—</span></div>
+                <div>Excl inconc: <span id="rollExcl" class="pill">—</span></div>
+                <div>Hi-conf: <span id="rollHi" class="pill">—</span></div>
+                <div>Total: <span id="rollTotal" class="pill">—</span></div>
+              </div>
+            </div>
+          </div>
 
-    <div class="card">
-      <h2>C) Logs</h2>
-      <div class="row">
-        <label>Log
-          <select id="logName">
-            <option value="errors">errors</option>
-            <option value="system">system</option>
-            <option value="routing">routing</option>
-            <option value="model">model</option>
-            <option value="scoring">scoring</option>
-            <option value="performance">performance</option>
-            <option value="bootstrap">bootstrap</option>
-          </select>
-        </label>
-        <label>Lines <input id="logLimit" type="number" min="10" max="2000" value="200" style="width: 90px;" /></label>
-        <label>Search <input id="logSearch" type="text" placeholder="filter (client-side)" /></label>
-        <label><input id="logAuto" type="checkbox" /> auto-refresh</label>
-        <button id="refreshLogs">Refresh</button>
-      </div>
-      <div class="logs" id="logBox" style="margin-top: 8px;"></div>
-    </div>
-
-    <div class="card">
-      <h2>E) ML Performance</h2>
-      <div class="muted">Bucketed by observed_ts_utc (event time)</div>
-      <div class="row muted" style="margin-top: 4px;">
-        <div>Action rate: <span id="mlActionRate" class="pill">—</span></div>
-        <div>Acc (actionable): <span id="mlAccAction" class="pill">—</span></div>
-        <div>Overall acc: <span id="mlOverall" class="pill">—</span></div>
-        <div>Scored: <span id="mlTotal" class="pill">—</span></div>
-      </div>
-      <div class="row" style="margin-top:10px;">
-        <label>Window days <input id="mlWinDays" type="number" min="1" max="60" value="15" style="width:80px;" /></label>
-        <label>Bucket
-          <select id="mlBucketMin">
-            <option value="5">5</option>
-            <option value="10">10</option>
-            <option value="15" selected>15</option>
-            <option value="30">30</option>
-            <option value="60">60</option>
-          </select>
-        </label>
-        <label>Min samples <input id="mlMinSamples" type="number" min="1" max="200" value="5" style="width:80px;" /></label>
-        <button id="refreshMlBuckets">Refresh 15m</button>
-      </div>
-      <div style="margin-top: 10px;">
-        <canvas id="mlBucketChart" height="120"></canvas>
-      </div>
-      <div style="margin-top: 10px;">
-        <canvas id="mlDailyChart" height="120"></canvas>
-      </div>
-        <div class="card">
-      <h2>F) ML EOD (Early 60m)</h2>
-      <div class="muted">Bucketed by trade_day (Central). Variants compare levels-as-of snapshot index 0 vs 1.</div>
-      <div class="row" style="margin-top:8px;">
-        <label>Variant
-          <select id="eodVariant">
-            <option value="lvl0" selected>lvl0 (first snapshot after open)</option>
-            <option value="lvl1">lvl1 (second snapshot after open)</option>
-          </select>
-        </label>
-        <label>Days <input id="eodDays" type="number" min="5" max="120" value="30" style="width:80px;" /></label>
-        <button id="refreshEod">Refresh</button>
-      </div>
-      <div class="row muted" style="margin-top:8px;">
-        <div>Action rate: <span id="eodActionRate" class="pill">—</span></div>
-        <div>Acc (actionable): <span id="eodAccAction" class="pill">—</span></div>
-        <div>Overall acc: <span id="eodOverall" class="pill">—</span></div>
-      </div>
-      <div style="margin-top:10px;">
-        <canvas id="eodDailyChart" height="120"></canvas>
-      </div>
-    </div>
-
-</div>
-
-    <div class="card">
-      <h2>D) Controls (runtime overrides)</h2>
-      <div class="row" style="margin-top: 6px;">
-        <label><input id="llmEnabled" type="checkbox" /> LLM_ENABLED</label>
-        <label><input id="mlEnabled" type="checkbox" /> ML_ENABLED</label>
-        <label><input id="chartEnabled" type="checkbox" /> CHART_ENABLED (requires LLM)</label>
-      </div>
-      <div class="row">
-        <label>REPROCESS_MODE
-          <select id="reprocessMode">
-            <option value="none">none</option>
-            <option value="from_model">from_model</option>
-            <option value="from_summary">from_summary</option>
-            <option value="from_signals">from_signals</option>
-            <option value="full">full</option>
-          </select>
-        </label>
-        <label>WATCH_POLL_SECONDS <input id="watchPoll" type="number" step="0.05" min="0.05" max="60" value="1" style="width: 90px;" /></label>
-        <label>FILE_STABLE_SECONDS <input id="fileStable" type="number" min="0" max="60" value="2" style="width: 90px;" /></label>
-        <label>OUTCOME_DELAY <input id="outcomeDelay" type="number" min="1" max="240" value="15" style="width: 90px;" /></label>
-      </div>
-      <div class="row" style="margin-top: 8px;">
-        <button id="applyOverrides">Apply</button>
-        <button id="clearReprocess">Clear REPROCESS override</button>
-        <span class="muted" id="cfgStatus"></span>
-      </div>
-            <div class="card" style="border-color:#ef4444; margin-top:12px;">
-        <h3 style="margin:0 0 8px 0; color:#b91c1c;">Full Reset (Danger)</h3>
-        <div class="muted" style="color:#b91c1c;">Irreversible. Deletes DB rows + files. Requires PAUSE_PROCESSING=true.</div>
-        <ul class="muted">
-          <li>DELETE FROM: predictions, performance_summary, system_events, model_usage</li>
-          <li>Delete under DATA_ROOT: incoming/, historical/, processed/, cache/, logs/, quarantine/, models/, state files</li>
-          <li>Run SQLite VACUUM</li>
-        </ul>
-        <div class="row">
-          <label><input id="pauseProcessing" type="checkbox" /> PAUSE_PROCESSING</label>
-          <input id="resetConfirm" type="text" placeholder="Type: RESET ALL DATA" style="min-width:220px;" />
-          <button id="runReset" style="background:#ef4444; color:white; border:none;">Run Full Reset</button>
+          <div class="card">
+            <div class="card-h"><h2>ML Rolling (N)</h2><div class="hint">Neutral-often / action gating</div></div>
+            <div class="card-b">
+              <div class="row" style="margin-top:4px;">
+                <div>Action rate: <span id="mlActionRate" class="pill">—</span></div>
+                <div>Acc (actionable): <span id="mlAccAction" class="pill">—</span></div>
+                <div>Overall acc: <span id="mlOverall" class="pill">—</span></div>
+                <div>Scored: <span id="mlTotal" class="pill">—</span></div>
+              </div>
+              <div class="hint" style="margin-top:10px;">See Models tab for charts.</div>
+            </div>
+          </div>
         </div>
-        <pre id="resetStatus" class="muted" style="margin-top:8px;">(reset output)</pre>
-      </div>
+      </section>
 
-<h3 style="margin: 10px 0 6px 0; font-size: 14px;">Effective config (snippet)</h3>
-      <pre id="cfgSnippet">Loading...</pre>
-    </div>
+      <!-- PROCESSING -->
+      <section class="view" id="view-processing">
+        <div class="grid1">
+          <div class="card">
+            <div class="card-h">
+              <h2>Processing</h2>
+              <div class="hint">Queue oldest-first + paging</div>
+            </div>
+            <div class="card-b">
+              <div class="row" style="justify-content:space-between;">
+                <div class="row">
+                  <div>Queue: <span class="pill" id="queueCount2">—</span></div>
+                  <div>Processing: <span class="pill" id="procCount2">—</span></div>
+                </div>
+                <div class="row">
+                  <label>Order
+                    <select id="queueOrder">
+                      <option value="oldest" selected>Oldest</option>
+                      <option value="newest">Newest</option>
+                    </select>
+                  </label>
+                  <label>Page <input id="queuePage" type="number" min="1" value="1" style="width:70px;" /></label>
+                  <label>Page size <input id="queuePageSize" type="number" min="10" max="200" value="50" style="width:80px;" /></label>
+                  <button id="refreshProcessingBtn">Refresh</button>
+                </div>
+              </div>
+
+              <div style="margin-top:10px;">
+                <table>
+                  <thead><tr><th>file</th><th>size</th><th>mtime</th></tr></thead>
+                  <tbody id="queueTable"></tbody>
+                </table>
+              </div>
+
+              <div style="margin-top:14px;" class="row">
+                <div class="badge">Newest snapshot_index: <strong id="newestSnap2">—</strong></div>
+                <div class="badge">Oldest unscored: <strong id="oldestUnscored2">—</strong></div>
+              </div>
+
+              <div style="margin-top:12px;" class="badge">Currently processing: <strong id="processingBox2">—</strong></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- METRICS -->
+      <section class="view" id="view-metrics">
+        <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>LLM Metrics</h2><div class="hint">Bucketed by observed_ts_utc (event time)</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Window days <input id="llmWinDays" type="number" min="1" max="60" value="15" style="width:80px;" /></label>
+                <label>Bucket
+                  <select id="llmBucketMin">
+                    <option value="5">5</option>
+                    <option value="10">10</option>
+                    <option value="15" selected>15</option>
+                    <option value="30">30</option>
+                    <option value="60">60</option>
+                  </select>
+                </label>
+                <label>Min samples <input id="llmMinSamples" type="number" min="1" max="200" value="5" style="width:80px;" /></label>
+                <button class="btn-primary" id="refreshLlmBuckets">Refresh 15m</button>
+              </div>
+              <div style="margin-top:12px;">
+                <canvas id="llmBucketChart" height="120"></canvas>
+              </div>
+
+              <div style="margin-top:16px;">
+                <canvas id="dailyChart" height="120"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- MODELS -->
+      <section class="view" id="view-models">
+        <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>ML (15m)</h2><div class="hint">Bucketed by observed_ts_utc</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Window days <input id="mlWinDays" type="number" min="1" max="60" value="15" style="width:80px;" /></label>
+                <label>Bucket
+                  <select id="mlBucketMin">
+                    <option value="5">5</option>
+                    <option value="10">10</option>
+                    <option value="15" selected>15</option>
+                    <option value="30">30</option>
+                    <option value="60">60</option>
+                  </select>
+                </label>
+                <label>Min samples <input id="mlMinSamples" type="number" min="1" max="200" value="5" style="width:80px;" /></label>
+                <button class="btn-primary" id="refreshMlBuckets">Refresh 15m</button>
+              </div>
+              <div style="margin-top:12px;">
+                <canvas id="mlBucketChart" height="120"></canvas>
+              </div>
+              <div style="margin-top:16px;">
+                <canvas id="mlDailyChart" height="120"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>ML EOD (Early 60m)</h2><div class="hint">trade_day bucket (Central)</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Variant
+                  <select id="eodVariant">
+                    <option value="lvl0" selected>lvl0</option>
+                    <option value="lvl1">lvl1</option>
+                  </select>
+                </label>
+                <label>Days <input id="eodDays" type="number" min="5" max="120" value="30" style="width:80px;" /></label>
+                <button class="btn-primary" id="refreshEod">Refresh</button>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <div>Action rate: <span id="eodActionRate" class="pill">—</span></div>
+                <div>Acc (actionable): <span id="eodAccAction" class="pill">—</span></div>
+                <div>Overall acc: <span id="eodOverall" class="pill">—</span></div>
+              </div>
+              <div style="margin-top:14px;">
+                <canvas id="eodDailyChart" height="120"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- LOGS -->
+      <section class="view" id="view-logs">
+        <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>Logs</h2><div class="hint">Tail-only (whitelisted)</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Log
+                  <select id="logName">
+                    <option value="errors">errors</option>
+                    <option value="system">system</option>
+                    <option value="routing">routing</option>
+                    <option value="model">model</option>
+                    <option value="scoring">scoring</option>
+                    <option value="performance">performance</option>
+                    <option value="bootstrap">bootstrap</option>
+                  </select>
+                </label>
+                <label>Lines <input id="logLimit" type="number" min="10" max="2000" value="200" style="width:90px;" /></label>
+                <label>Search <input id="logSearch" type="text" placeholder="filter (client-side)" /></label>
+                <label><input id="logAuto" type="checkbox" /> auto-refresh</label>
+                <button class="btn-primary" id="refreshLogs">Refresh</button>
+              </div>
+              <div class="logs" id="logBox" style="margin-top: 12px;"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CONTROLS -->
+      <section class="view" id="view-controls">
+        <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>Runtime Controls</h2><div class="hint">Always visible (may be gated/disabled)</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label><input id="llmEnabled" type="checkbox" /> LLM_ENABLED</label>
+                <label><input id="mlEnabled" type="checkbox" /> ML_ENABLED</label>
+                <label><input id="chartEnabled" type="checkbox" /> CHART_ENABLED (requires LLM)</label>
+                <label><input id="pauseProcessing" type="checkbox" /> PAUSE_PROCESSING</label>
+              </div>
+
+              <div class="row" style="margin-top:12px;">
+                <label>REPROCESS_MODE
+                  <select id="reprocessMode">
+                    <option value="none">none</option>
+                    <option value="from_model">from_model</option>
+                    <option value="from_summary">from_summary</option>
+                    <option value="from_signals">from_signals</option>
+                    <option value="full">full</option>
+                  </select>
+                </label>
+                <label>WATCH_POLL_SECONDS <input id="watchPoll" type="number" step="0.05" min="0.05" max="60" value="1" style="width:90px;" /></label>
+                <label>FILE_STABLE_SECONDS <input id="fileStable" type="number" min="0" max="60" value="2" style="width:90px;" /></label>
+                <label>OUTCOME_DELAY <input id="outcomeDelay" type="number" min="1" max="240" value="15" style="width:90px;" /></label>
+              </div>
+
+              <div class="row" style="margin-top:12px;">
+                <button class="btn-primary" id="applyOverrides">Apply</button>
+                <button id="clearReprocess">Clear REPROCESS override</button>
+                <span class="hint" id="cfgStatus"></span>
+              </div>
+
+              <div style="margin-top:12px;" class="badge">Effective config snippet: <strong id="cfgSnippetInline">(loading)</strong></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>Admin</h2><div class="hint">Danger zone</div></div>
+            <div class="card-b">
+              <div style="color:var(--muted); font-size:12px;">Irreversible. Deletes DB rows + files. Requires PAUSE_PROCESSING=true and typed confirmation.</div>
+              <div class="row" style="margin-top:12px;">
+                <input id="resetConfirm" type="text" placeholder="Type: RESET ALL DATA" style="min-width:240px;" />
+                <button class="btn-danger" id="runReset">Run Full Reset</button>
+                <span class="hint" id="resetGateText">(loading gate)</span>
+              </div>
+              <pre id="resetStatus" style="margin-top:10px; font-family: var(--mono); font-size: 12px; color: var(--muted);">(reset output)</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
   </div>
 
-<script>
-const api = '';
+  <script>
+    const api = '';
 
-function showError(where, err) {
-  const b = document.getElementById('errorBanner');
-  if (!b) return;
-  const msg = (err && (err.message || err.toString())) ? (err.message || err.toString()) : String(err);
-  const t = new Date().toISOString();
-  b.style.display = 'block';
-  b.textContent = `[${t}] ${where}: ${msg}`;
-}
+    function setTheme(theme) {
+      const t = theme === 'light' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('theme', t);
+    }
 
-async function safe(where, fn) {
-  try {
-    return await fn();
-  } catch (e) {
-    console.error(where, e);
-    showError(where, e);
-    return null;
-  }
-}
+    function initTheme() {
+      const saved = localStorage.getItem('theme');
+      setTheme(saved || 'dark');
+    }
 
-function chartsAvailable() {
-  return (typeof Chart !== 'undefined');
-}
+    function toast(msg, kind='success') {
+      const wrap = document.getElementById('toastWrap');
+      if (!wrap) return;
+      const el = document.createElement('div');
+      el.className = `toast ${kind}`;
+      el.textContent = msg;
+      wrap.appendChild(el);
+      setTimeout(() => el.remove(), 4500);
+    }
 
+    function showError(where, err) {
+      const b = document.getElementById('errorBanner');
+      if (!b) return;
+      const msg = (err && (err.message || err.toString())) ? (err.message || err.toString()) : String(err);
+      const t = new Date().toISOString();
+      b.style.display = 'block';
+      b.textContent = `[${t}] ${where}: ${msg}`;
+    }
 
-function fmtPct(x) {
-  if (x === null || x === undefined) return '—';
-  return (100.0 * x).toFixed(1) + '%';
-}
+    async function safe(where, fn) {
+      try {
+        const r = await fn();
+        // stamp last refresh if it succeeded
+        document.getElementById('lastRefresh').textContent = new Date().toLocaleString();
+        return r;
+      } catch (e) {
+        console.error(where, e);
+        showError(where, e);
+        return null;
+      }
+    }
 
-async function jget(path) {
-  const r = await fetch(api + path);
-  if (!r.ok) throw new Error(await r.text());
-  return await r.json();
-}
+    function chartsAvailable() {
+      return (typeof Chart !== 'undefined');
+    }
 
-async function jpatch(path, obj) {
-  const r = await fetch(api + path, {
-    method: 'PATCH',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(obj)
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return await r.json();
-}
+    function fmtPct(x) {
+      if (x === null || x === undefined) return '—';
+      return (100.0 * x).toFixed(1) + '%';
+    }
 
-async function refreshProcessing() {
-  const order = document.getElementById('queueOrder') ? document.getElementById('queueOrder').value : 'oldest';
-  const page = document.getElementById('queuePage') ? parseInt(document.getElementById('queuePage').value || '1', 10) : 1;
-  const page_size = document.getElementById('queuePageSize') ? parseInt(document.getElementById('queuePageSize').value || '50', 10) : 50;
-  const data = await jget(`/api/status/processing?page=${page}&page_size=${page_size}&order=${order}`);
-  document.getElementById('queueCount').textContent = data.queue.count;
-  document.getElementById('procCount').textContent = data.processing.count;
-  document.getElementById('totPred').textContent = data.counters.total_predictions;
-  document.getElementById('totScored').textContent = data.counters.total_scored;
-  document.getElementById('totUnscored').textContent = data.counters.unscored;
+    async function jget(path) {
+      const r = await fetch(api + path);
+      if (!r.ok) throw new Error(await r.text());
+      return await r.json();
+    }
 
-  const tb = document.getElementById('queueTable');
-  tb.innerHTML = '';
-  for (const it of data.queue.items.slice().reverse()) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
-    tb.appendChild(tr);
-  }
+    async function jpatch(path, obj) {
+      const r = await fetch(api + path, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(obj)
+      });
+      if (!r.ok) throw new Error(await r.text());
+      return await r.json();
+    }
 
-  const pb = document.getElementById('processingBox');
-  if (data.processing.items.length === 0) {
-    pb.textContent = 'Not available / idle (daemon writes state to /mnt/options_ai/state/current_task.json)';
-  } else {
-    const it = data.processing.items[0];
-    pb.innerHTML = `<div><b>${it.file}</b></div>` +
-      `<div class='muted'>stage=${it.stage} started_at=${it.started_at} elapsed=${(it.elapsed_seconds ?? 0).toFixed(1)}s</div>`;
-  }
-}
+    async function jpost(path, obj) {
+      const r = await fetch(api + path, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(obj)
+      });
+      const txt = await r.text();
+      if (!r.ok) throw new Error(txt);
+      try { return JSON.parse(txt); } catch { return {raw: txt}; }
+    }
 
-let dailyChart;
-let llmBucketChart;
-async function refreshLlmBuckets() {
-  if (!chartsAvailable()) {
-    showError('charts', 'Chart.js not available (CDN blocked/offline).');
-    return;
-  }
-  const wd = parseInt(document.getElementById('llmWinDays')?.value || '15', 10);
-  const bm = parseInt(document.getElementById('llmBucketMin')?.value || '15', 10);
-  const ms = parseInt(document.getElementById('llmMinSamples')?.value || '5', 10);
-  const data = await jget(`/api/metrics/series_buckets?window_days=${wd}&bucket_minutes=${bm}&min_samples=${ms}`);
-  const labels = (data.series || []).map(x => x.bucket_start);
-  const overall = (data.series || []).map(x => x.overall_accuracy);
-  const excl = (data.series || []).map(x => x.accuracy_excluding_inconclusive);
+    function setActiveView(view) {
+      document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
+      const v = document.getElementById(`view-${view}`);
+      if (v) v.classList.add('active');
 
-  const ctx = document.getElementById('llmBucketChart');
-  if (!llmBucketChart) {
-    llmBucketChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'overall_accuracy', data: overall, borderColor: '#0ea5e9', tension: 0.15 },
-          { label: 'accuracy_excl_inconclusive', data: excl, borderColor: '#22c55e', tension: 0.15 },
-        ]
-      },
-      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
-    });
-  } else {
-    llmBucketChart.data.labels = labels;
-    llmBucketChart.data.datasets[0].data = overall;
-    llmBucketChart.data.datasets[1].data = excl;
-    llmBucketChart.update();
-  }
-}
+      document.querySelectorAll('#nav a').forEach(a => a.classList.remove('active'));
+      const link = document.querySelector(`#nav a[data-view="${view}"]`);
+      if (link) link.classList.add('active');
+    }
 
-let mlBucketChart;
-async function refreshMlBuckets() {
-  if (!chartsAvailable()) {
-    showError('charts', 'Chart.js not available (CDN blocked/offline).');
-    return;
-  }
-  const wd = parseInt(document.getElementById('mlWinDays')?.value || '15', 10);
-  const bm = parseInt(document.getElementById('mlBucketMin')?.value || '15', 10);
-  const ms = parseInt(document.getElementById('mlMinSamples')?.value || '5', 10);
-  const data = await jget(`/api/ml/metrics/series_buckets?window_days=${wd}&bucket_minutes=${bm}&min_samples=${ms}`);
-  const labels = (data.series || []).map(x => x.bucket_start);
-  const ar = (data.series || []).map(x => x.action_rate);
-  const aa = (data.series || []).map(x => x.accuracy_actionable);
+    function routeFromHash() {
+      const h = (window.location.hash || '#overview').replace('#','');
+      const allowed = new Set(['overview','processing','metrics','models','logs','controls']);
+      setActiveView(allowed.has(h) ? h : 'overview');
+    }
 
-  const ctx = document.getElementById('mlBucketChart');
-  if (!mlBucketChart) {
-    mlBucketChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'action_rate', data: ar, borderColor: '#f59e0b', tension: 0.15 },
-          { label: 'accuracy_actionable', data: aa, borderColor: '#a855f7', tension: 0.15 },
-        ]
-      },
-      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
-    });
-  } else {
-    mlBucketChart.data.labels = labels;
-    mlBucketChart.data.datasets[0].data = ar;
-    mlBucketChart.data.datasets[1].data = aa;
-    mlBucketChart.update();
-  }
-}
+    // Health + gating
+    let resetEnabled = false;
 
-let mlDailyChart;
-let eodDailyChart;
-async function refreshEod() {
-  if (typeof Chart === 'undefined') {
-    _setTopError('Chart.js failed to load (CDN blocked?). Charts will be blank.');
-    return;
-  }
-  const variant = document.getElementById('eodVariant').value || 'lvl0';
-  const days = parseInt(document.getElementById('eodDays').value || '30', 10);
-  const data = await jget(`/api/ml_eod/metrics/daily?days=${days}&variant=${variant}`);
-  const series = (data.series || []).slice().reverse();
-  const labels = series.map(x => x.day);
-  const ar = series.map(x => x.action_rate);
-  const aa = series.map(x => x.accuracy_actionable);
+    async function refreshHealth() {
+      const data = await jget('/api/health');
+      const ok = !!data.ok;
+      resetEnabled = !!data.reset_enabled;
+      const paused = !!data.paused;
 
-  // headline (last day)
-  const last = (data.series || [])[0] || {};
-  document.getElementById('eodActionRate').textContent = fmtPct(last.action_rate);
-  document.getElementById('eodAccAction').textContent = fmtPct(last.accuracy_actionable);
-  document.getElementById('eodOverall').textContent = fmtPct(last.overall_accuracy);
+      document.getElementById('apiTz').textContent = data.tz === 'America/Chicago' ? 'CT' : (data.tz || '');
+      document.getElementById('pausedText').textContent = paused ? 'YES' : 'NO';
 
-  const ctx = document.getElementById('eodDailyChart');
-  if (!eodDailyChart) {
-    eodDailyChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'action_rate', data: ar, borderColor: '#f97316', tension: 0.2 },
-          { label: 'accuracy_actionable', data: aa, borderColor: '#06b6d4', tension: 0.2 },
-        ]
-      },
-      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
-    });
-  } else {
-    eodDailyChart.data.labels = labels;
-    eodDailyChart.data.datasets[0].data = ar;
-    eodDailyChart.data.datasets[1].data = aa;
-    eodDailyChart.update();
-  }
-}
+      const dot = document.getElementById('healthDot');
+      const ht = document.getElementById('healthText');
+      if (!ok) {
+        dot.style.background = 'var(--error)';
+        dot.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.18)';
+        ht.textContent = 'DOWN';
+      } else if (paused) {
+        dot.style.background = 'var(--warn)';
+        dot.style.boxShadow = '0 0 0 3px rgba(245,158,11,0.18)';
+        ht.textContent = 'OK (paused)';
+      } else {
+        dot.style.background = 'var(--success)';
+        dot.style.boxShadow = '0 0 0 3px rgba(34,197,94,0.18)';
+        ht.textContent = 'OK';
+      }
 
-
-async function refreshML()
-   {
-  const roll = await jget('/api/ml/metrics/rolling?n=50');
-  document.getElementById('mlActionRate').textContent = fmtPct(roll.action_rate);
-  document.getElementById('mlAccAction').textContent = fmtPct(roll.accuracy_actionable);
-  document.getElementById('mlOverall').textContent = fmtPct(roll.overall_accuracy);
-  document.getElementById('mlTotal').textContent = roll.total_scored;
-
-  const daily = await jget('/api/ml/metrics/daily?days=30');
-  const labels = daily.series.map(x => x.day).reverse();
-  const action = daily.series.map(x => x.action_rate).reverse();
-  const acc = daily.series.map(x => x.accuracy_actionable).reverse();
-
-  const ctx = document.getElementById('mlDailyChart');
-  if (!mlDailyChart) {
-    mlDailyChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'action_rate', data: action, borderColor: '#f59e0b', tension: 0.2 },
-          { label: 'accuracy_actionable', data: acc, borderColor: '#a855f7', tension: 0.2 },
-        ]
-      },
-      options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
-    });
-  } else {
-    mlDailyChart.data.labels = labels;
-    mlDailyChart.data.datasets[0].data = action;
-    mlDailyChart.data.datasets[1].data = acc;
-    mlDailyChart.update();
-  }
-}
-
-async function refreshTokens() {
-  const data = await jget('/api/usage/tokens?hours=24');
-  const s = data.summary || {};
-  document.getElementById('tokTotal').textContent = (s.est_total_tokens_last_60m ?? 0).toLocaleString();
-  const avg = s.avg_est_tokens_per_file_last_60m;
-  document.getElementById('tokAvg').textContent = 'avg/file: ' + (avg === null || avg === undefined ? '—' : Math.round(avg).toLocaleString());
-  const tr = s.trend_vs_prev_hour_pct;
-  if (tr === null || tr === undefined) {
-    document.getElementById('tokTrend').textContent = 'trend: —';
-  } else {
-    const pct = (100*tr).toFixed(1);
-    document.getElementById('tokTrend').textContent = 'trend: ' + (tr>=0?'+':'') + pct + '% vs prev hr';
-  }
-}
-
-async function refreshMetrics()
-   {
-  const n = parseInt(document.getElementById('rollingN').value || '50', 10);
-  const roll = await jget(`/api/metrics/rolling?n=${n}`);
-  document.getElementById('metricsAsOf').textContent = roll.as_of ? `as_of ${roll.as_of}` : '';
-  document.getElementById('rollOverall').textContent = fmtPct(roll.overall_accuracy);
-  document.getElementById('rollExcl').textContent = fmtPct(roll.accuracy_excluding_inconclusive);
-  document.getElementById('rollHi').textContent = fmtPct(roll.hi_accuracy);
-  document.getElementById('rollTotal').textContent = roll.total_scored;
-
-  const daily = await jget('/api/metrics/daily?days=30');
-  const labels = daily.series.map(x => x.day).reverse();
-  const overall = daily.series.map(x => x.overall_accuracy).reverse();
-  const excl = daily.series.map(x => x.accuracy_excluding_inconclusive).reverse();
-
-  const ctx = document.getElementById('dailyChart');
-  if (!dailyChart) {
-    dailyChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          { label: 'overall_accuracy', data: overall, borderColor: '#2563eb', tension: 0.2 },
-          { label: 'accuracy_excl_inconclusive', data: excl, borderColor: '#16a34a', tension: 0.2 },
-        ]
-      },
-      options: {
-        responsive: true,
-        scales: {
-          y: { min: 0, max: 1 }
+      const gateText = document.getElementById('resetGateText');
+      const btn = document.getElementById('runReset');
+      if (gateText && btn) {
+        if (!resetEnabled) {
+          gateText.textContent = 'RESET_ENABLED=false on server (enable in /opt/OptionsPredicator/.env)';
+          btn.disabled = true;
+        } else {
+          gateText.textContent = 'RESET_ENABLED=true (still requires PAUSE_PROCESSING + typed confirm)';
+          btn.disabled = false;
         }
       }
-    });
-  } else {
-    dailyChart.data.labels = labels;
-    dailyChart.data.datasets[0].data = overall;
-    dailyChart.data.datasets[1].data = excl;
-    dailyChart.update();
-  }
-}
 
-async function refreshLogs() {
-  const name = document.getElementById('logName').value;
-  const limit = parseInt(document.getElementById('logLimit').value || '200', 10);
-  const search = (document.getElementById('logSearch').value || '').toLowerCase();
-  const data = await jget(`/api/logs/tail?name=${encodeURIComponent(name)}&limit=${limit}`);
+      return data;
+    }
 
-  const box = document.getElementById('logBox');
-  box.innerHTML = '';
+    // Processing
+    async function refreshProcessing() {
+      const order = document.getElementById('queueOrder')?.value || 'oldest';
+      const page = parseInt(document.getElementById('queuePage')?.value || '1', 10);
+      const page_size = parseInt(document.getElementById('queuePageSize')?.value || '50', 10);
+      const data = await jget(`/api/status/processing?page=${page}&page_size=${page_size}&order=${order}`);
 
-  for (const l of data.lines) {
-    const raw = l.raw || '';
-    if (search && !raw.toLowerCase().includes(search)) continue;
-    const div = document.createElement('div');
-    div.className = 'line';
-    div.textContent = raw;
-    box.appendChild(div);
-  }
-  box.scrollTop = box.scrollHeight;
-}
+      // Overview counters
+      document.getElementById('queueCount').textContent = data.queue.count;
+      document.getElementById('procCount').textContent = data.processing.count;
+      document.getElementById('totPred').textContent = data.counters.total_predictions;
+      document.getElementById('totScored').textContent = data.counters.total_scored;
+      document.getElementById('totUnscored').textContent = data.counters.unscored;
 
-async function refreshConfig() {
-  const data = await jget('/api/config');
-  const eff = data.effective;
+      // Processing page counters
+      const qc2 = document.getElementById('queueCount2');
+      const pc2 = document.getElementById('procCount2');
+      if (qc2) qc2.textContent = data.queue.count;
+      if (pc2) pc2.textContent = data.processing.count;
 
-  document.getElementById('reprocessMode').value = eff.reprocess_mode;
-  document.getElementById('watchPoll').value = eff.watch_poll_seconds;
-  document.getElementById('fileStable').value = eff.file_stable_seconds;
-  document.getElementById('outcomeDelay').value = eff.outcome_delay_minutes;
+      document.getElementById('newestSnap').textContent = data.snapshot_index_newest_ts || '—';
+      document.getElementById('oldestUnscored').textContent = data.oldest_unscored_ts || '—';
+      const ns2 = document.getElementById('newestSnap2');
+      const ou2 = document.getElementById('oldestUnscored2');
+      if (ns2) ns2.textContent = data.snapshot_index_newest_ts || '—';
+      if (ou2) ou2.textContent = data.oldest_unscored_ts || '—';
 
-  if (document.getElementById('llmEnabled')) document.getElementById('llmEnabled').checked = !!eff.llm_enabled;
-  if (document.getElementById('mlEnabled')) document.getElementById('mlEnabled').checked = !!eff.ml_enabled;
-  if (document.getElementById('chartEnabled')) document.getElementById('chartEnabled').checked = !!eff.chart_enabled;
+      // Queue table
+      const tb = document.getElementById('queueTable');
+      tb.innerHTML = '';
+      for (const it of (data.queue.items || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
+        tb.appendChild(tr);
+      }
 
-  const snippet = {
-    reprocess_mode: eff.reprocess_mode,
-    watch_poll_seconds: eff.watch_poll_seconds,
-    file_stable_seconds: eff.file_stable_seconds,
-    outcome_delay_minutes: eff.outcome_delay_minutes,
-    model_force_local: eff.model_force_local,
-    model_force_remote: eff.model_force_remote,
-    local_model_enabled: eff.local_model_enabled,
-    chart_enabled: eff.chart_enabled,
-    prompt_version: eff.prompt_version,
-  };
-  document.getElementById('cfgSnippet').textContent = JSON.stringify(snippet, null, 2);
-}
+      // Currently processing
+      const pbox = document.getElementById('processingBox');
+      const pbox2 = document.getElementById('processingBox2');
+      if ((data.processing.items || []).length === 0) {
+        const msg = 'idle / not available';
+        if (pbox) pbox.textContent = msg;
+        if (pbox2) pbox2.textContent = msg;
+      } else {
+        const it = data.processing.items[0];
+        const msg = `${it.file} | stage=${it.stage} | started=${it.started_at} | elapsed=${(it.elapsed_seconds ?? 0).toFixed(1)}s`;
+        if (pbox) pbox.textContent = msg;
+        if (pbox2) pbox2.textContent = msg;
+      }
 
-async function applyOverrides() {
-  const payload = {
-    LLM_ENABLED: document.getElementById('llmEnabled') ? !!document.getElementById('llmEnabled').checked : undefined,
-    ML_ENABLED: document.getElementById('mlEnabled') ? !!document.getElementById('mlEnabled').checked : undefined,
-    CHART_ENABLED: document.getElementById('chartEnabled') ? !!document.getElementById('chartEnabled').checked : undefined,
-    PAUSE_PROCESSING: document.getElementById('pauseProcessing') ? !!document.getElementById('pauseProcessing').checked : undefined,
-    REPROCESS_MODE: document.getElementById('reprocessMode').value,
-    WATCH_POLL_SECONDS: parseFloat(document.getElementById('watchPoll').value),
-    FILE_STABLE_SECONDS: parseInt(document.getElementById('fileStable').value, 10),
-    OUTCOME_DELAY: parseInt(document.getElementById('outcomeDelay').value, 10),
-  };
-  const status = document.getElementById('cfgStatus');
-  status.textContent = 'Applying...';
-  try {
-    Object.keys(payload).forEach(k => payload[k] === undefined && delete payload[k]);
-    await jpatch('/api/config', payload);
-    status.textContent = 'Applied.';
-    await refreshConfig();
-  } catch (e) {
-    status.textContent = 'Error: ' + e;
-  }
-}
+      return data;
+    }
 
-async function runFullReset() {
-  const status = document.getElementById('resetStatus');
-  status.textContent = 'Running reset...';
-  try {
-    const confirm = (document.getElementById('resetConfirm').value || '');
-    const r = await fetch('/api/admin/reset_all', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({confirm})
-    });
-    const txt = await r.text();
-    status.textContent = txt;
-  } catch (e) {
-    status.textContent = 'Error: ' + e;
-  }
-}
+    // Tokens tile
+    async function refreshTokens() {
+      const data = await jget('/api/usage/tokens?hours=24');
+      const s = data.summary || {};
+      document.getElementById('tokTotal').textContent = (s.est_total_tokens_last_60m ?? 0).toLocaleString();
+      const avg = s.avg_est_tokens_per_file_last_60m;
+      document.getElementById('tokAvg').textContent = 'avg/file: ' + (avg === null || avg === undefined ? '—' : Math.round(avg).toLocaleString());
+      const tr = s.trend_vs_prev_hour_pct;
+      if (tr === null || tr === undefined) {
+        document.getElementById('tokTrend').textContent = 'trend: —';
+      } else {
+        const pct = (100*tr).toFixed(1);
+        document.getElementById('tokTrend').textContent = 'trend: ' + (tr>=0?'+':'') + pct + '% vs prev hr';
+      }
+      return data;
+    }
 
-async function clearReprocess() {
-  const status = document.getElementById('cfgStatus');
-  status.textContent = 'Clearing...';
-  try {
-    await jpatch('/api/config', {REPROCESS_MODE: null});
-    status.textContent = 'Cleared.';
-    await refreshConfig();
-  } catch (e) {
-    status.textContent = 'Error: ' + e;
-  }
-}
+    // LLM daily chart + rolling
+    let dailyChart;
+    async function refreshMetrics() {
+      if (!chartsAvailable()) {
+        showError('charts', 'Chart.js not available (CDN blocked/offline).');
+        return;
+      }
 
-// wire up
+      const n = parseInt(document.getElementById('rollingN').value || '50', 10);
+      const roll = await jget(`/api/metrics/rolling?n=${n}`);
+      document.getElementById('metricsAsOf').textContent = roll.as_of ? `as_of ${roll.as_of}` : '';
+      document.getElementById('rollOverall').textContent = fmtPct(roll.overall_accuracy);
+      document.getElementById('rollExcl').textContent = fmtPct(roll.accuracy_excluding_inconclusive);
+      document.getElementById('rollHi').textContent = fmtPct(roll.hi_accuracy);
+      document.getElementById('rollTotal').textContent = roll.total_scored;
 
-document.getElementById('refreshMetrics').onclick = refreshMetrics;
-if (document.getElementById('refreshLlmBuckets')) document.getElementById('refreshLlmBuckets').onclick = () => safe('refreshLlmBuckets', () => refreshLlmBuckets());
-if (document.getElementById('refreshMlBuckets')) document.getElementById('refreshMlBuckets').onclick = () => safe('refreshMlBuckets', () => refreshMlBuckets());
-if (document.getElementById('refreshEod')) document.getElementById('refreshEod').onclick = () => safe('refreshEod', refreshEod);
-document.getElementById('refreshLogs').onclick = refreshLogs;
-document.getElementById('applyOverrides').onclick = applyOverrides;
-document.getElementById('clearReprocess').onclick = clearReprocess;
-if (document.getElementById('runReset')) document.getElementById('runReset').onclick = runFullReset;
+      const daily = await jget('/api/metrics/daily?days=30');
+      const labels = daily.series.map(x => x.day).reverse();
+      const overall = daily.series.map(x => x.overall_accuracy).reverse();
+      const excl = daily.series.map(x => x.accuracy_excluding_inconclusive).reverse();
 
-let logTimer;
-document.getElementById('logAuto').addEventListener('change', (ev) => {
-  if (ev.target.checked) {
-    logTimer = setInterval(() => refreshLogs().catch(()=>{}), 5000);
-  } else {
-    if (logTimer) clearInterval(logTimer);
-  }
-});
+      const ctx = document.getElementById('dailyChart');
+      if (!dailyChart) {
+        dailyChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              { label: 'overall_accuracy', data: overall, borderColor: '#60a5fa', tension: 0.2 },
+              { label: 'accuracy_excl_inconclusive', data: excl, borderColor: '#22c55e', tension: 0.2 },
+            ]
+          },
+          options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+        });
+      } else {
+        dailyChart.data.labels = labels;
+        dailyChart.data.datasets[0].data = overall;
+        dailyChart.data.datasets[1].data = excl;
+        dailyChart.update();
+      }
 
-document.getElementById('queueOrder')?.addEventListener('change', () => refreshProcessing().catch(()=>{}));
-document.getElementById('queuePage')?.addEventListener('change', () => refreshProcessing().catch(()=>{}));
-document.getElementById('queuePageSize')?.addEventListener('change', () => refreshProcessing().catch(()=>{}));
+      return {roll, daily};
+    }
 
-// initial load
-function _setTopError(msg) {
-  let el = document.getElementById('topError');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'topError';
-    el.style.cssText = 'margin:10px 0; padding:8px; border:1px solid #fca5a5; background:#fef2f2; color:#991b1b; border-radius:8px; display:none;';
-    document.body.insertBefore(el, document.body.children[2] || document.body.firstChild);
-  }
-  if (!msg) { el.style.display = 'none'; el.textContent=''; return; }
-  el.style.display = 'block';
-  el.textContent = msg;
-}
+    // LLM bucket series
+    let llmBucketChart;
+    async function refreshLlmBuckets() {
+      if (!chartsAvailable()) {
+        showError('charts', 'Chart.js not available (CDN blocked/offline).');
+        return;
+      }
+      const wd = parseInt(document.getElementById('llmWinDays')?.value || '15', 10);
+      const bm = parseInt(document.getElementById('llmBucketMin')?.value || '15', 10);
+      const ms = parseInt(document.getElementById('llmMinSamples')?.value || '5', 10);
+      const data = await jget(`/api/metrics/series_buckets?window_days=${wd}&bucket_minutes=${bm}&min_samples=${ms}`);
+      const labels = (data.series || []).map(x => x.bucket_start);
+      const overall = (data.series || []).map(x => x.overall_accuracy);
+      const excl = (data.series || []).map(x => x.accuracy_excluding_inconclusive);
 
-async function safe(name, fn) {
-  if (typeof fn !== 'function') {
-    _setTopError(`Dashboard error: missing function ${name}`);
-    console.error('missing function', name, fn);
-    return;
-  }
-  try { await fn(); } catch (e) {
-    console.error(name, e);
-    _setTopError(`Dashboard error in ${name}: ${e}`);
-  }
-}
+      const ctx = document.getElementById('llmBucketChart');
+      if (!llmBucketChart) {
+        llmBucketChart = new Chart(ctx, {
+          type: 'line',
+          data: { labels, datasets: [
+            { label: 'overall_accuracy', data: overall, borderColor: '#38bdf8', tension: 0.15 },
+            { label: 'accuracy_excl_inconclusive', data: excl, borderColor: '#22c55e', tension: 0.15 },
+          ]},
+          options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+        });
+      } else {
+        llmBucketChart.data.labels = labels;
+        llmBucketChart.data.datasets[0].data = overall;
+        llmBucketChart.data.datasets[1].data = excl;
+        llmBucketChart.update();
+      }
 
-(async () => {
-  await safe('refreshConfig', () => refreshConfig());
-  await safe('refreshTokens', () => refreshTokens());
-  await safe('refreshLlmBuckets', () => refreshLlmBuckets());
-  await safe('refreshMetrics', () => refreshMetrics());
-  await safe('refreshLogs', () => refreshLogs());
-  await safe('refreshML', () => refreshML());
-  await safe('refreshMlBuckets', () => refreshMlBuckets());
-  await safe('refreshEod', () => refreshEod());
-  await safe('refreshProcessing', () => refreshProcessing());
+      return data;
+    }
 
-  setInterval(() => safe('refreshProcessing', () => refreshProcessing()), 2000);
-  setInterval(() => safe('refreshConfig', () => refreshConfig()), 5000);
-  setInterval(() => safe('refreshTokens', () => refreshTokens()), 10000);
-  setInterval(() => safe('refreshML', () => refreshML()), 20000);
-})();
-</script>
+    // ML charts
+    let mlDailyChart;
+    async function refreshML() {
+      if (!chartsAvailable()) {
+        showError('charts', 'Chart.js not available (CDN blocked/offline).');
+        return;
+      }
+
+      const roll = await jget('/api/ml/metrics/rolling?n=50');
+      document.getElementById('mlActionRate').textContent = fmtPct(roll.action_rate);
+      document.getElementById('mlAccAction').textContent = fmtPct(roll.accuracy_actionable);
+      document.getElementById('mlOverall').textContent = fmtPct(roll.overall_accuracy);
+      document.getElementById('mlTotal').textContent = roll.total_scored;
+
+      const daily = await jget('/api/ml/metrics/daily?days=30');
+      const labels = daily.series.map(x => x.day).reverse();
+      const action = daily.series.map(x => x.action_rate).reverse();
+      const acc = daily.series.map(x => x.accuracy_actionable).reverse();
+
+      const ctx = document.getElementById('mlDailyChart');
+      if (!mlDailyChart) {
+        mlDailyChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              { label: 'action_rate', data: action, borderColor: '#f59e0b', tension: 0.2 },
+              { label: 'accuracy_actionable', data: acc, borderColor: '#a855f7', tension: 0.2 },
+            ]
+          },
+          options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+        });
+      } else {
+        mlDailyChart.data.labels = labels;
+        mlDailyChart.data.datasets[0].data = action;
+        mlDailyChart.data.datasets[1].data = acc;
+        mlDailyChart.update();
+      }
+
+      return {roll, daily};
+    }
+
+    let mlBucketChart;
+    async function refreshMlBuckets() {
+      if (!chartsAvailable()) {
+        showError('charts', 'Chart.js not available (CDN blocked/offline).');
+        return;
+      }
+      const wd = parseInt(document.getElementById('mlWinDays')?.value || '15', 10);
+      const bm = parseInt(document.getElementById('mlBucketMin')?.value || '15', 10);
+      const ms = parseInt(document.getElementById('mlMinSamples')?.value || '5', 10);
+      const data = await jget(`/api/ml/metrics/series_buckets?window_days=${wd}&bucket_minutes=${bm}&min_samples=${ms}`);
+      const labels = (data.series || []).map(x => x.bucket_start);
+      const ar = (data.series || []).map(x => x.action_rate);
+      const aa = (data.series || []).map(x => x.accuracy_actionable);
+
+      const ctx = document.getElementById('mlBucketChart');
+      if (!mlBucketChart) {
+        mlBucketChart = new Chart(ctx, {
+          type: 'line',
+          data: { labels, datasets: [
+            { label: 'action_rate', data: ar, borderColor: '#f59e0b', tension: 0.15 },
+            { label: 'accuracy_actionable', data: aa, borderColor: '#a855f7', tension: 0.15 },
+          ]},
+          options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+        });
+      } else {
+        mlBucketChart.data.labels = labels;
+        mlBucketChart.data.datasets[0].data = ar;
+        mlBucketChart.data.datasets[1].data = aa;
+        mlBucketChart.update();
+      }
+      return data;
+    }
+
+    // EOD
+    let eodDailyChart;
+    async function refreshEod() {
+      if (!chartsAvailable()) {
+        showError('charts', 'Chart.js not available (CDN blocked/offline).');
+        return;
+      }
+      const variant = document.getElementById('eodVariant')?.value || 'lvl0';
+      const days = parseInt(document.getElementById('eodDays')?.value || '30', 10);
+      const data = await jget(`/api/ml_eod/metrics/daily?days=${days}&variant=${variant}`);
+      const series = (data.series || []).slice().reverse();
+      const labels = series.map(x => x.day);
+      const ar = series.map(x => x.action_rate);
+      const aa = series.map(x => x.accuracy_actionable);
+
+      const last = (data.series || [])[0] || {};
+      document.getElementById('eodActionRate').textContent = fmtPct(last.action_rate);
+      document.getElementById('eodAccAction').textContent = fmtPct(last.accuracy_actionable);
+      document.getElementById('eodOverall').textContent = fmtPct(last.overall_accuracy);
+
+      const ctx = document.getElementById('eodDailyChart');
+      if (!eodDailyChart) {
+        eodDailyChart = new Chart(ctx, {
+          type: 'line',
+          data: { labels, datasets: [
+            { label: 'action_rate', data: ar, borderColor: '#f97316', tension: 0.2 },
+            { label: 'accuracy_actionable', data: aa, borderColor: '#06b6d4', tension: 0.2 },
+          ]},
+          options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
+        });
+      } else {
+        eodDailyChart.data.labels = labels;
+        eodDailyChart.data.datasets[0].data = ar;
+        eodDailyChart.data.datasets[1].data = aa;
+        eodDailyChart.update();
+      }
+      return data;
+    }
+
+    // Logs
+    async function refreshLogs() {
+      const name = document.getElementById('logName').value;
+      const limit = parseInt(document.getElementById('logLimit').value || '200', 10);
+      const search = (document.getElementById('logSearch').value || '').toLowerCase();
+      const data = await jget(`/api/logs/tail?name=${encodeURIComponent(name)}&limit=${limit}`);
+
+      const box = document.getElementById('logBox');
+      box.innerHTML = '';
+      for (const l of (data.lines || [])) {
+        const raw = l.raw || '';
+        if (search && !raw.toLowerCase().includes(search)) continue;
+        const div = document.createElement('div');
+        div.className = 'line';
+        div.textContent = raw;
+        box.appendChild(div);
+      }
+      box.scrollTop = box.scrollHeight;
+      return data;
+    }
+
+    // Config + overrides
+    async function refreshConfig() {
+      const data = await jget('/api/config');
+      const eff = data.effective;
+
+      document.getElementById('reprocessMode').value = eff.reprocess_mode;
+      document.getElementById('watchPoll').value = eff.watch_poll_seconds;
+      document.getElementById('fileStable').value = eff.file_stable_seconds;
+      document.getElementById('outcomeDelay').value = eff.outcome_delay_minutes;
+
+      document.getElementById('llmEnabled').checked = !!eff.llm_enabled;
+      document.getElementById('mlEnabled').checked = !!eff.ml_enabled;
+      document.getElementById('chartEnabled').checked = !!eff.chart_enabled;
+      document.getElementById('pauseProcessing').checked = !!eff.pause_processing;
+
+      const snippet = {
+        pause_processing: eff.pause_processing,
+        reprocess_mode: eff.reprocess_mode,
+        watch_poll_seconds: eff.watch_poll_seconds,
+        file_stable_seconds: eff.file_stable_seconds,
+        outcome_delay_minutes: eff.outcome_delay_minutes,
+        llm_enabled: eff.llm_enabled,
+        ml_enabled: eff.ml_enabled,
+        chart_enabled: eff.chart_enabled,
+        prompt_version: eff.prompt_version,
+      };
+      document.getElementById('cfgSnippetInline').textContent = JSON.stringify(snippet);
+
+      // Sync paused badge in appbar
+      document.getElementById('pausedText').textContent = eff.pause_processing ? 'YES' : 'NO';
+
+      return data;
+    }
+
+    async function applyOverrides() {
+      const payload = {
+        LLM_ENABLED: !!document.getElementById('llmEnabled').checked,
+        ML_ENABLED: !!document.getElementById('mlEnabled').checked,
+        CHART_ENABLED: !!document.getElementById('chartEnabled').checked,
+        PAUSE_PROCESSING: !!document.getElementById('pauseProcessing').checked,
+        REPROCESS_MODE: document.getElementById('reprocessMode').value,
+        WATCH_POLL_SECONDS: parseFloat(document.getElementById('watchPoll').value),
+        FILE_STABLE_SECONDS: parseInt(document.getElementById('fileStable').value, 10),
+        OUTCOME_DELAY: parseInt(document.getElementById('outcomeDelay').value, 10),
+      };
+
+      const status = document.getElementById('cfgStatus');
+      status.textContent = 'Applying...';
+      await jpatch('/api/config', payload);
+      status.textContent = 'Applied.';
+      toast('Overrides applied', 'success');
+      await refreshConfig();
+    }
+
+    async function clearReprocess() {
+      const status = document.getElementById('cfgStatus');
+      status.textContent = 'Clearing...';
+      await jpatch('/api/config', {REPROCESS_MODE: null});
+      status.textContent = 'Cleared.';
+      toast('REPROCESS_MODE cleared', 'success');
+      await refreshConfig();
+    }
+
+    async function runFullReset() {
+      const out = document.getElementById('resetStatus');
+      out.textContent = 'Running reset...';
+
+      const confirm = document.getElementById('resetConfirm').value || '';
+      const r = await jpost('/api/admin/reset_all', {confirm});
+      out.textContent = JSON.stringify(r, null, 2);
+      toast('Reset completed (check output)', 'warn');
+
+      // refresh UI after reset
+      await safe('refreshConfig', () => refreshConfig());
+      await safe('refreshProcessing', () => refreshProcessing());
+      await safe('refreshLogs', () => refreshLogs());
+    }
+
+    // wiring
+    document.getElementById('themeToggle').onclick = () => {
+      const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+      setTheme(cur === 'dark' ? 'light' : 'dark');
+    };
+
+    document.getElementById('refreshMetrics').onclick = () => safe('refreshMetrics', () => refreshMetrics());
+    document.getElementById('refreshLlmBuckets').onclick = () => safe('refreshLlmBuckets', () => refreshLlmBuckets());
+    document.getElementById('refreshMlBuckets').onclick = () => safe('refreshMlBuckets', () => refreshMlBuckets());
+    document.getElementById('refreshEod').onclick = () => safe('refreshEod', () => refreshEod());
+    document.getElementById('refreshLogs').onclick = () => safe('refreshLogs', () => refreshLogs());
+    document.getElementById('applyOverrides').onclick = () => safe('applyOverrides', () => applyOverrides());
+    document.getElementById('clearReprocess').onclick = () => safe('clearReprocess', () => clearReprocess());
+    document.getElementById('runReset').onclick = () => safe('runReset', () => runFullReset());
+
+    document.getElementById('refreshProcessingBtn').onclick = () => safe('refreshProcessing', () => refreshProcessing());
+
+    // routing
+    window.addEventListener('hashchange', routeFromHash);
+
+    // initial load
+    (async () => {
+      initTheme();
+      routeFromHash();
+
+      await safe('health', () => refreshHealth());
+      await safe('config', () => refreshConfig());
+      await safe('tokens', () => refreshTokens());
+      await safe('processing', () => refreshProcessing());
+      await safe('llmBuckets', () => refreshLlmBuckets());
+      await safe('llmMetrics', () => refreshMetrics());
+      await safe('ml', () => refreshML());
+      await safe('mlBuckets', () => refreshMlBuckets());
+      await safe('eod', () => refreshEod());
+      await safe('logs', () => refreshLogs());
+
+      // intervals
+      setInterval(() => safe('health', () => refreshHealth()), 5000);
+      setInterval(() => safe('config', () => refreshConfig()), 5000);
+      setInterval(() => safe('processing', () => refreshProcessing()), 2000);
+      setInterval(() => safe('tokens', () => refreshTokens()), 10000);
+      setInterval(() => safe('ml', () => refreshML()), 20000);
+
+      // logs auto-refresh
+      let logTimer;
+      document.getElementById('logAuto').addEventListener('change', (ev) => {
+        if (ev.target.checked) {
+          logTimer = setInterval(() => safe('logs', () => refreshLogs()), 5000);
+        } else {
+          if (logTimer) clearInterval(logTimer);
+        }
+      });
+
+      // queue controls
+      document.getElementById('queueOrder')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
+      document.getElementById('queuePage')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
+      document.getElementById('queuePageSize')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
+
+    })();
+  </script>
 </body>
 </html>
