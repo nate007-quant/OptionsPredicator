@@ -359,10 +359,9 @@
       <nav class="nav" id="nav">
         <a href="#overview" data-view="overview" class="active">Overview</a>
         <a href="#processing" data-view="processing">Processing</a>
-        <a href="#metrics" data-view="metrics">Metrics</a>
-        <a href="#models" data-view="models">Models (LLM/ML)</a>
+        <a href="#timeseries" data-view="timeseries">Time Series</a>
         <a href="#logs" data-view="logs">Logs</a>
-        <a href="#controls" data-view="controls">Controls / Admin</a>
+        <a href="#controls" data-view="controls">Controls & Admin</a>
       </nav>
     </aside>
 
@@ -482,9 +481,12 @@
         </div>
       </section>
 
-      <!-- METRICS -->
-      <section class="view" id="view-metrics">
+      <!-- TIME SERIES -->
+      <section class="view" id="view-timeseries">
         <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>LLM Metrics</h2><div class="hint">15m buckets + daily (event time)</div></div>
+            <div class="card-b">
           <div class="card">
             <div class="card-h"><h2>LLM Metrics</h2><div class="hint">Bucketed by observed_ts_utc (event time)</div></div>
             <div class="card-b">
@@ -511,12 +513,13 @@
               </div>
             </div>
           </div>
-        </div>
-      </section>
+        
+            </div>
+          </div>
 
-      <!-- MODELS -->
-      <section class="view" id="view-models">
-        <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>ML Metrics</h2><div class="hint">15m buckets + daily + EOD (Central)</div></div>
+            <div class="card-b">
           <div class="card">
             <div class="card-h"><h2>ML (15m)</h2><div class="hint">Bucketed by observed_ts_utc</div></div>
             <div class="card-b">
@@ -564,6 +567,9 @@
               <div style="margin-top:14px;">
                 <canvas id="eodDailyChart" height="120"></canvas>
               </div>
+            </div>
+          </div>
+        
             </div>
           </div>
         </div>
@@ -748,7 +754,7 @@
 
     function routeFromHash() {
       const h = (window.location.hash || '#overview').replace('#','');
-      const allowed = new Set(['overview','processing','metrics','models','logs','controls']);
+      const allowed = new Set(['overview','processing','timeseries','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
