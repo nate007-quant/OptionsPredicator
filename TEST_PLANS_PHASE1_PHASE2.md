@@ -204,3 +204,29 @@ SELECT to_regclass('spx.gex_levels_0dte'),
        to_regclass('spx.debit_spread_candidates_0dte'),
        to_regclass('spx.debit_spread_labels_0dte');
 ```
+
+---
+
+## Test Plan F — Debit spread ML scoring (train + score)
+
+This validates that the ML ranker can train on historical debit spread labels and produce predictions for the latest snapshot.
+
+### F1) Run ML smoke test (synthetic)
+
+```bash
+cd /opt/OptionsPredicator
+source .venv/bin/activate
+python scripts/debit_spreads_ml_smoke_test.py --dsn "$SPX_CHAIN_DATABASE_URL" --cleanup
+```
+
+**Pass criteria**:
+- Script prints `PASS debit_spreads_ml_smoke_test`
+- Rows exist in `spx.debit_spread_scores_0dte` for horizon=30
+
+### F2) Verify scores table
+
+```sql
+SELECT max(snapshot_ts) AS latest_ts, count(*) AS n
+FROM spx.debit_spread_scores_0dte
+WHERE horizon_minutes = 30;
+```

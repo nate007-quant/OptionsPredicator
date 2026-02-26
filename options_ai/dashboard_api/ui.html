@@ -615,6 +615,7 @@
                       <th>k_long</th>
                       <th>k_short</th>
                       <th>debit</th>
+                      <th>pred(30m)</th>
                       <th>chg(30m)</th>
                       <th>long_symbol</th>
                       <th>short_symbol</th>
@@ -885,6 +886,7 @@
           <td>${it.k_long === null || it.k_long === undefined ? '—' : fmtNum(it.k_long, 0)}</td>
           <td>${it.k_short === null || it.k_short === undefined ? '—' : fmtNum(it.k_short, 0)}</td>
           <td>${it.debit_points === null || it.debit_points === undefined ? '—' : fmtNum(it.debit_points, 2)}</td>
+          <td>${it.pred_change === null || it.pred_change === undefined ? '—' : fmtNum(it.pred_change, 2)}</td>
           <td>${it.change === null || it.change === undefined ? (it.is_missing_future ? '—' : '…') : fmtNum(it.change, 2)}</td>
           <td style="font-family:var(--mono); font-size:11px;">${it.long_symbol || ''}</td>
           <td style="font-family:var(--mono); font-size:11px;">${it.short_symbol || ''}</td>
