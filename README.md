@@ -51,3 +51,65 @@ pytest -q
 ## Spec
 
 The repository includes the original `SPEC_OPTIONS_AI_v1_3.txt`. The implementation has advanced beyond v1.3; see `.env.example` and current source for active knobs/behavior.
+
+## SPX Options Chain → TimescaleDB ingestion (Rev3)
+
+This repo also includes an **early-stage ingester** that watches a drop directory (default `/mnt/SPX`) for SPX options chain snapshot JSON files and upserts the chain into **Postgres + TimescaleDB**.
+
+### Configure
+
+Set these in `.env` (see `.env.example`):
+
+- `INPUT_DIR=/mnt/SPX`
+- `ARCHIVE_ROOT=/mnt/options_ai` (writable)
+- `SPX_CHAIN_DATABASE_URL=postgresql://spx:spxpass@localhost:5432/spxdb`
+- `FILENAME_TZ=America/Chicago`
+
+### Run
+
+```bash
+source .venv/bin/activate
+python -m options_ai.spx_chain_main
+```
+
+### File handling
+
+- On successful DB commit: moves (or copies) JSON to `ARCHIVE_ROOT/archive/YYYYMMDD/<filename>`
+- On parse/validation/DB error: moves (or copies) JSON to `ARCHIVE_ROOT/bad/<filename>` and writes `ARCHIVE_ROOT/bad/<filename>.error.txt`
+- If the process cannot delete/rename files in `INPUT_DIR`, it will copy and record processed filenames in `ARCHIVE_ROOT/state/processed.log`.
+
+### One-command stack + auto-start on reboot
+
+TimescaleDB runs in Docker with `restart: unless-stopped`, and the ingester can be run under systemd.
+
+**Bring up TimescaleDB (one command):**
+
+```bash
+docker compose -f docker-compose.timescale.yml up -d
+```
+
+**Then start the ingester:**
+
+```bash
+source .venv/bin/activate
+python -m options_ai.spx_chain_main
+```
+
+**Auto-start on reboot (recommended):**
+
+1) Install both systemd units:
+
+```bash
+sudo cp systemd/spx_chain_ingester.service /etc/systemd/system/spx_chain_ingester.service
+sudo cp systemd/optionspredicator-stack.service /etc/systemd/system/optionspredicator-stack.service
+sudo systemctl daemon-reload
+```
+
+2) Enable services:
+
+```bash
+sudo systemctl enable --now spx_chain_ingester
+sudo systemctl enable --now optionspredicator-stack
+```
+
+`optionspredicator-stack` is a convenience unit that runs docker compose for TimescaleDB and then starts `spx_chain_ingester`.

@@ -1,0 +1,16 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: spx_timescaledb
+    environment:
+      POSTGRES_DB: ${TIMESCALE_DB:-spxdb}
+      POSTGRES_USER: ${TIMESCALE_USER:-spx}
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD:-spxpass}
+    ports:
+      - "${TIMESCALE_PORT:-5432}:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  timescale_data:
