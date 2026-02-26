@@ -624,6 +624,20 @@
                 <div class="badge">MAGNET: <strong id="lvlMagnet">—</strong></div>
               </div>
             </div>
+          <div class="card">
+            <div class="card-h"><h2>Daily Pick (first 30m)</h2><div class="hint">1 trade/day (objective: p(bigwin) then pred(30m); requires pred(30m) > 0)</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Window (min) <input id="dailyPickWindow" type="number" min="5" max="180" value="30" style="width:90px;" /></label>
+                <label>Min p(bigwin) <input id="dailyPickMinP" type="number" step="0.01" min="0" max="1" value="0.00" style="width:90px;" /></label>
+                <label>Min pred(30m) <input id="dailyPickMinPred" type="number" step="0.01" value="0.00" style="width:90px;" /></label>
+                <button class="btn-primary" id="refreshDailyPick">Refresh</button>
+                <span class="hint" id="dailyPickNote"></span>
+              </div>
+              <pre id="dailyPickBox" style="margin-top:10px; font-family: var(--mono); font-size: 12px; color: var(--muted);">(loading)</pre>
+            </div>
+          </div>
+
           </div>
 
           <div class="card">
@@ -895,6 +909,19 @@
     }
 
     // Debit spreads (TimescaleDB)
+    async function refreshDailyPick() {
+      const win = parseInt(document.getElementById('dailyPickWindow')?.value || '30', 10);
+      const minP = parseFloat(document.getElementById('dailyPickMinP')?.value || '0');
+      const minPred = parseFloat(document.getElementById('dailyPickMinPred')?.value || '0');
+      const data = await jget(`/api/debit_spreads/daily_pick?window_minutes=${win}&min_p_bigwin=${minP}&min_pred_change=${minPred}`);
+      const box = document.getElementById('dailyPickBox');
+      if (box) box.textContent = JSON.stringify(data, null, 2);
+      const note = document.getElementById('dailyPickNote');
+      if (note) note.textContent = data.pick ? 'PICKED' : 'no pick (filters too strict or no data)';
+      return data;
+    }
+
+
     async function refreshDebitHistory() {
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const onlyReco = document.getElementById('debitHistOnlyReco')?.checked ? '1' : '0';
@@ -1348,6 +1375,7 @@
     document.getElementById('refreshEod')?.addEventListener('click', () => safe('refreshEod', () => refreshEod()));
     document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
+    document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('refreshDebitHistoryBtn')?.addEventListener('click', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('debitHistOnlyReco')?.addEventListener('change', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
@@ -1369,6 +1397,7 @@
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
       await safe('debit', () => refreshDebitSpreads());
+      await safe('daily_pick', () => refreshDailyPick());
       await safe('debit_history', () => refreshDebitHistory());
       await safe('llmBuckets', () => refreshLlmBuckets());
       await safe('llmMetrics', () => refreshMetrics());
@@ -1384,6 +1413,7 @@
       setInterval(() => safe('tokens', () => refreshTokens()), 10000);
       setInterval(() => safe('ml', () => refreshML()), 20000);
       setInterval(() => safe('debit', () => refreshDebitSpreads()), 10000);
+      setInterval(() => safe('daily_pick', () => refreshDailyPick()), 30000);
       setInterval(() => safe('debit_history', () => refreshDebitHistory()), 30000);
 
       // logs auto-refresh

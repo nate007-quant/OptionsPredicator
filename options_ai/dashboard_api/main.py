@@ -903,6 +903,185 @@ def create_app() -> FastAPI:
         }
 
 
+    
+
+    @app.get("/api/debit_spreads/daily_pick")
+    def debit_spreads_daily_pick(
+        day_local: str | None = Query(None, description="YYYY-MM-DD in America/Chicago"),
+        window_minutes: int = Query(int(os.getenv("DAILY_PICK_WINDOW_MINUTES", "30")), ge=5, le=180),
+        session_start: str = Query(os.getenv("DAILY_PICK_SESSION_START_CT", "08:30"), description="CT time HH:MM"),
+        min_p_bigwin: float = Query(float(os.getenv("DAILY_PICK_MIN_P_BIGWIN", "0.0")), ge=0.0, le=1.0),
+        min_pred_change: float = Query(float(os.getenv("DAILY_PICK_MIN_PRED_CHANGE", "0.0"))),
+        allowed_anchors: str | None = Query(os.getenv("DAILY_PICK_ALLOWED_ANCHORS", "" ) or None, description="comma list e.g. ATM,CALL_WALL,PUT_WALL,MAGNET"),
+        allowed_spreads: str | None = Query(os.getenv("DAILY_PICK_ALLOWED_SPREAD_TYPES", "") or None, description="comma list e.g. CALL,PUT"),
+    ) -> dict[str, Any]:
+        """Pick a single best trade per day from the first N minutes of the session.
+
+        Objective #2: rank by p_bigwin desc, pred_change desc, debit asc, and require pred_change > 0.
+        """
+        dsn = _pg_dsn()
+        if not dsn:
+            raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
+
+        # Determine day in CT
+        if day_local:
+            try:
+                # validate format
+                _ = datetime.fromisoformat(day_local)
+            except Exception:
+                raise HTTPException(status_code=400, detail="day_local must be YYYY-MM-DD")
+            day_ct = day_local
+        else:
+            day_ct = datetime.now(tz=CENTRAL_TZ).date().isoformat()
+
+        # Compute CT time window
+        try:
+            hh, mm = session_start.strip().split(":", 1)
+            start_h = int(hh)
+            start_m = int(mm)
+        except Exception:
+            raise HTTPException(status_code=400, detail="session_start must be HH:MM")
+
+        start_time = f"{start_h:02d}:{start_m:02d}:00"
+        # end time within same day
+        dt0 = datetime(2000, 1, 1, start_h, start_m, 0)
+        dt1 = dt0 + timedelta(minutes=int(window_minutes))
+        end_time = dt1.time().strftime("%H:%M:%S")
+
+        anchors = None
+        if allowed_anchors:
+            anchors = [a.strip().upper() for a in allowed_anchors.split(",") if a.strip()]
+        spreads = None
+        if allowed_spreads:
+            spreads = [s.strip().upper() for s in allowed_spreads.split(",") if s.strip()]
+
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH eligible AS (
+                      SELECT
+                        c.snapshot_ts,
+                        (c.snapshot_ts AT TIME ZONE 'America/Chicago')::date AS d_local,
+                        (c.snapshot_ts AT TIME ZONE 'America/Chicago')::time AS t_local,
+                        c.anchor_type,
+                        c.spread_type,
+                        c.anchor_strike,
+                        c.k_long,
+                        c.k_short,
+                        c.debit_points,
+                        c.long_symbol,
+                        c.short_symbol,
+                        s.pred_change,
+                        s.p_bigwin
+                      FROM spx.debit_spread_candidates_0dte c
+                      JOIN spx.chain_features_0dte f
+                        ON f.snapshot_ts = c.snapshot_ts
+                      JOIN spx.debit_spread_scores_0dte s
+                        ON s.snapshot_ts = c.snapshot_ts
+                       AND s.horizon_minutes = 30
+                       AND s.anchor_type = c.anchor_type
+                       AND s.spread_type = c.spread_type
+                      WHERE c.tradable = true
+                        AND f.low_quality = false
+                        AND (c.snapshot_ts AT TIME ZONE 'America/Chicago')::date = %s::date
+                        AND (c.snapshot_ts AT TIME ZONE 'America/Chicago')::time >= %s::time
+                        AND (c.snapshot_ts AT TIME ZONE 'America/Chicago')::time < %s::time
+                        AND s.p_bigwin IS NOT NULL
+                        AND s.pred_change IS NOT NULL
+                        AND s.p_bigwin >= %s
+                        AND s.pred_change > 0
+                        AND s.pred_change >= %s
+                    ),
+                    ranked_per_snapshot AS (
+                      SELECT
+                        *,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY snapshot_ts
+                          ORDER BY
+                            p_bigwin DESC NULLS LAST,
+                            pred_change DESC NULLS LAST,
+                            debit_points ASC NULLS LAST
+                        ) AS rn_snap
+                      FROM eligible
+                      WHERE (%s::text[] IS NULL OR anchor_type = ANY(%s::text[]))
+                        AND (%s::text[] IS NULL OR spread_type = ANY(%s::text[]))
+                    ),
+                    ranked_day AS (
+                      SELECT
+                        *,
+                        ROW_NUMBER() OVER (
+                          ORDER BY
+                            p_bigwin DESC NULLS LAST,
+                            pred_change DESC NULLS LAST,
+                            debit_points ASC NULLS LAST,
+                            snapshot_ts ASC
+                        ) AS rn_day
+                      FROM ranked_per_snapshot
+                      WHERE rn_snap = 1
+                    )
+                    SELECT
+                      snapshot_ts,
+                      anchor_type,
+                      spread_type,
+                      anchor_strike,
+                      k_long,
+                      k_short,
+                      debit_points,
+                      long_symbol,
+                      short_symbol,
+                      pred_change,
+                      p_bigwin
+                    FROM ranked_day
+                    WHERE rn_day = 1
+                    LIMIT 1
+                    """,
+                    (
+                        day_ct,
+                        start_time,
+                        end_time,
+                        float(min_p_bigwin),
+                        float(min_pred_change),
+                        anchors,
+                        anchors,
+                        spreads,
+                        spreads,
+                    ),
+                )
+                r = cur.fetchone()
+
+        pick = None
+        if r:
+            pick = {
+                "snapshot_ts": _to_central_iso(r[0]),
+                "anchor_type": r[1],
+                "spread_type": r[2],
+                "anchor_strike": float(r[3]) if r[3] is not None else None,
+                "k_long": float(r[4]) if r[4] is not None else None,
+                "k_short": float(r[5]) if r[5] is not None else None,
+                "debit_points": float(r[6]) if r[6] is not None else None,
+                "long_symbol": r[7],
+                "short_symbol": r[8],
+                "pred_change": float(r[9]) if r[9] is not None else None,
+                "p_bigwin": float(r[10]) if r[10] is not None else None,
+            }
+
+        return {
+            "day_local": day_ct,
+            "session_start": start_time,
+            "window_end": end_time,
+            "criteria": {
+                "objective": "p_bigwin desc, pred_change desc, debit asc",
+                "require_pred_positive": True,
+                "min_p_bigwin": float(min_p_bigwin),
+                "min_pred_change": float(min_pred_change),
+                "allowed_anchors": anchors,
+                "allowed_spreads": spreads,
+            },
+            "pick": pick,
+            "tz": "America/Chicago",
+        }
+
     @app.get("/api/debit_spreads/history")
     def debit_spreads_history(
         limit: int = Query(100, ge=1, le=500),
