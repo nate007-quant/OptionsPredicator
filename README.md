@@ -113,3 +113,31 @@ sudo systemctl enable --now optionspredicator-stack
 ```
 
 `optionspredicator-stack` is a convenience unit that runs docker compose for TimescaleDB and then starts `spx_chain_ingester`.
+
+## Phase 2 + Debit Spreads + ML (TimescaleDB pipeline)
+
+This repo now includes an end-to-end **TimescaleDB-backed dataset builder** for:
+
+- Phase 1: raw chain ingestion (`spx.option_chain`)
+- Phase 2: 0DTE feature vectors + labels (`spx.chain_features_0dte`, `spx.chain_labels_0dte`)
+- Debit spreads: multi-anchor candidates + labels + ML scores
+
+Key docs:
+- `TEST_PLANS_PHASE1_PHASE2.md` — rerunnable test plans (smoke tests + production checks)
+- `docs/STACK_AND_SERVICES.md` — service inventory + boot behavior
+- `docs/DB_TABLES_TIMESCALE.md` — Timescale table reference
+- `CHANGELOG.md`
+
+### Dashboard
+
+Dashboard API/UI is served by FastAPI on port **8088** via:
+- `systemd/options_ai_dashboard_api.service`
+
+It includes a **Debit Spreads** view that shows:
+- 0DTE levels (ATM / call wall / put wall / magnet)
+- top **tradable** candidates
+- ML scores:
+  - `pred(30m)` expected change in debit points
+  - `p(bigwin)` probability of hitting your configured win multiple
+- recent realized outcomes (historical)
+
