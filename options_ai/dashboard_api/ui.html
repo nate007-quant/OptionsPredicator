@@ -358,6 +358,7 @@
       </div>
       <nav class="nav" id="nav">
         <a href="#overview" data-view="overview" class="active">Overview</a>
+        <a href="#debit" data-view="debit">Debit Spreads</a>
         <a href="#processing" data-view="processing">Processing</a>
         <a href="#timeseries" data-view="timeseries">Time Series</a>
         <a href="#logs" data-view="logs">Logs</a>
@@ -575,7 +576,59 @@
         </div>
       </section>
 
-      <!-- LOGS -->
+      
+
+      <!-- DEBIT SPREADS -->
+      <section class="view" id="view-debit">
+        <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>0DTE Levels</h2><div class="hint">ATM / Call Wall / Put Wall / Magnet</div></div>
+            <div class="card-b">
+              <div class="row">
+                <div class="badge">Snapshot: <strong id="debitSnapshot">—</strong></div>
+                <div class="badge">Exp: <strong id="debitExp">—</strong></div>
+                <div class="badge">Spot: <strong id="debitSpot">—</strong></div>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <div class="badge">ATM: <strong id="lvlAtm">—</strong></div>
+                <div class="badge">CALL_WALL: <strong id="lvlCallWall">—</strong></div>
+                <div class="badge">PUT_WALL: <strong id="lvlPutWall">—</strong></div>
+                <div class="badge">MAGNET: <strong id="lvlMagnet">—</strong></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>Top Tradable Candidates</h2><div class="hint">tradable=true (ranked by 30m change when available, else debit)</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Limit <input id="debitLimit" type="number" min="1" max="100" value="12" style="width:90px;" /></label>
+                <button class="btn-primary" id="refreshDebit">Refresh</button>
+                <span class="hint" id="debitNote"></span>
+              </div>
+              <div style="margin-top:12px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>anchor</th>
+                      <th>type</th>
+                      <th>k_long</th>
+                      <th>k_short</th>
+                      <th>debit</th>
+                      <th>chg(30m)</th>
+                      <th>long_symbol</th>
+                      <th>short_symbol</th>
+                    </tr>
+                  </thead>
+                  <tbody id="debitTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+<!-- LOGS -->
       <section class="view" id="view-logs">
         <div class="grid1">
           <div class="card">
@@ -710,6 +763,13 @@
       return (typeof Chart !== 'undefined');
     }
 
+    function fmtNum(x, nd=2) {
+      if (x === null || x === undefined) return '—';
+      const v = Number(x);
+      if (!isFinite(v)) return '—';
+      return v.toFixed(nd);
+    }
+
     function fmtPct(x) {
       if (x === null || x === undefined) return '—';
       return (100.0 * x).toFixed(1) + '%';
@@ -754,7 +814,7 @@
 
     function routeFromHash() {
       const h = (window.location.hash || '#overview').replace('#','');
-      const allowed = new Set(['overview','processing','timeseries','logs','controls']);
+      const allowed = new Set(['overview','debit','processing','timeseries','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
@@ -801,7 +861,46 @@
       return data;
     }
 
-    // Processing
+    // Debit spreads (TimescaleDB)
+    async function refreshDebitSpreads() {
+      const lim = parseInt(document.getElementById('debitLimit')?.value || '12', 10);
+      const data = await jget(`/api/debit_spreads/top?limit=${lim}`);
+
+      document.getElementById('debitSnapshot').textContent = data.snapshot_ts || '—';
+      const lev = data.levels || {};
+      document.getElementById('debitExp').textContent = lev.expiration_date || '—';
+      document.getElementById('debitSpot').textContent = (lev.spot === null || lev.spot === undefined) ? '—' : fmtNum(lev.spot, 2);
+      document.getElementById('lvlAtm').textContent = (lev.atm === null || lev.atm === undefined) ? '—' : fmtNum(lev.atm, 0);
+      document.getElementById('lvlCallWall').textContent = (lev.call_wall === null || lev.call_wall === undefined) ? '—' : fmtNum(lev.call_wall, 0);
+      document.getElementById('lvlPutWall').textContent = (lev.put_wall === null || lev.put_wall === undefined) ? '—' : fmtNum(lev.put_wall, 0);
+      document.getElementById('lvlMagnet').textContent = (lev.magnet === null || lev.magnet === undefined) ? '—' : fmtNum(lev.magnet, 0);
+
+      const tb = document.getElementById('debitTable');
+      tb.innerHTML = '';
+      for (const it of (data.candidates || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.k_long === null || it.k_long === undefined ? '—' : fmtNum(it.k_long, 0)}</td>
+          <td>${it.k_short === null || it.k_short === undefined ? '—' : fmtNum(it.k_short, 0)}</td>
+          <td>${it.debit_points === null || it.debit_points === undefined ? '—' : fmtNum(it.debit_points, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? (it.is_missing_future ? '—' : '…') : fmtNum(it.change, 2)}</td>
+          <td style="font-family:var(--mono); font-size:11px;">${it.long_symbol || ''}</td>
+          <td style="font-family:var(--mono); font-size:11px;">${it.short_symbol || ''}</td>
+        `;
+        tb.appendChild(tr);
+      }
+
+      const note = document.getElementById('debitNote');
+      if (note) {
+        note.textContent = (data.snapshot_ts ? 'latest snapshot' : 'no data yet');
+      }
+
+      return data;
+    }
+
+// Processing
     async function refreshProcessing() {
       const order = document.getElementById('queueOrder')?.value || 'oldest';
       const page = parseInt(document.getElementById('queuePage')?.value || '1', 10);
@@ -1174,6 +1273,7 @@
     document.getElementById('refreshMlBuckets').onclick = () => safe('refreshMlBuckets', () => refreshMlBuckets());
     document.getElementById('refreshEod').onclick = () => safe('refreshEod', () => refreshEod());
     document.getElementById('refreshLogs').onclick = () => safe('refreshLogs', () => refreshLogs());
+    document.getElementById('refreshDebit').onclick = () => safe('refreshDebitSpreads', () => refreshDebitSpreads());
     document.getElementById('applyOverrides').onclick = () => safe('applyOverrides', () => applyOverrides());
     document.getElementById('clearReprocess').onclick = () => safe('clearReprocess', () => clearReprocess());
     document.getElementById('runReset').onclick = () => safe('runReset', () => runFullReset());
@@ -1192,6 +1292,7 @@
       await safe('config', () => refreshConfig());
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
+      await safe('debit', () => refreshDebitSpreads());
       await safe('llmBuckets', () => refreshLlmBuckets());
       await safe('llmMetrics', () => refreshMetrics());
       await safe('ml', () => refreshML());
@@ -1205,6 +1306,7 @@
       setInterval(() => safe('processing', () => refreshProcessing()), 2000);
       setInterval(() => safe('tokens', () => refreshTokens()), 10000);
       setInterval(() => safe('ml', () => refreshML()), 20000);
+      setInterval(() => safe('debit', () => refreshDebitSpreads()), 10000);
 
       // logs auto-refresh
       let logTimer;

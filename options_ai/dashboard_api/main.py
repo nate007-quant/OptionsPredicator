@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+try:
+    import psycopg
+except Exception:  # pragma: no cover
+    psycopg = None  # type: ignore
+
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import HTMLResponse
 
@@ -24,6 +29,20 @@ from options_ai.queries import fetch_tokens_summary, fetch_tokens_hourly_series
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
+
+def _pg_dsn() -> str | None:
+    dsn = os.getenv("SPX_CHAIN_DATABASE_URL", "").strip()
+    return dsn or None
+
+
+def _pg_connect(dsn: str):
+    if psycopg is None:
+        raise HTTPException(status_code=500, detail="psycopg not installed on server")
+    try:
+        return psycopg.connect(dsn)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"timescale connect failed: {e}")
+
 
 
 
@@ -788,6 +807,81 @@ def create_app() -> FastAPI:
             "effective": asdict(effective),
             "allowlist": allowlist_public_spec(),
             "written_to": str(overrides_path),
+            "tz": "America/Chicago",
+        }
+
+    @app.get("/api/debit_spreads/top")
+    def debit_spreads_top(limit: int = Query(12, ge=1, le=100)) -> dict[str, Any]:
+        dsn = _pg_dsn()
+        if not dsn:
+            raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
+
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_candidates_0dte")
+                r = cur.fetchone()
+                latest = r[0] if r else None
+                if latest is None:
+                    return {"snapshot_ts": None, "levels": None, "candidates": [], "tz": "America/Chicago"}
+
+                cur.execute("SELECT atm_strike, spot, expiration_date FROM spx.chain_features_0dte WHERE snapshot_ts=%s", (latest,))
+                feat = cur.fetchone()
+                atm_strike = float(feat[0]) if feat and feat[0] is not None else None
+                spot = float(feat[1]) if feat and feat[1] is not None else None
+                exp_date = feat[2] if feat and feat[2] is not None else None
+
+                cur.execute("SELECT call_wall, put_wall, magnet FROM spx.gex_levels_0dte WHERE snapshot_ts=%s", (latest,))
+                lev = cur.fetchone()
+                levels = None
+                if lev:
+                    levels = {"atm": atm_strike, "call_wall": float(lev[0]) if lev[0] is not None else None, "put_wall": float(lev[1]) if lev[1] is not None else None, "magnet": float(lev[2]) if lev[2] is not None else None, "spot": spot, "expiration_date": str(exp_date) if exp_date is not None else None}
+                else:
+                    levels = {"atm": atm_strike, "call_wall": None, "put_wall": None, "magnet": None, "spot": spot, "expiration_date": str(exp_date) if exp_date is not None else None}
+
+                # Join candidates with 30m labels if present; rank by label change desc when available.
+                cur.execute(
+                    """
+                    SELECT
+                      c.anchor_type, c.spread_type, c.anchor_strike,
+                      c.k_long, c.k_short, c.debit_points,
+                      c.long_symbol, c.short_symbol,
+                      l.horizon_minutes, l.change, l.is_missing_future
+                    FROM spx.debit_spread_candidates_0dte c
+                    LEFT JOIN spx.debit_spread_labels_0dte l
+                      ON l.snapshot_ts = c.snapshot_ts
+                     AND l.anchor_type = c.anchor_type
+                     AND l.spread_type = c.spread_type
+                     AND l.horizon_minutes = 30
+                    WHERE c.snapshot_ts = %s
+                      AND c.tradable = true
+                    ORDER BY
+                      CASE WHEN l.change IS NULL THEN 1 ELSE 0 END ASC,
+                      l.change DESC NULLS LAST,
+                      c.debit_points ASC NULLS LAST
+                    LIMIT %s
+                    """,
+                    (latest, int(limit)),
+                )
+                items = []
+                for rr in cur.fetchall():
+                    items.append({
+                        "anchor_type": rr[0],
+                        "spread_type": rr[1],
+                        "anchor_strike": float(rr[2]) if rr[2] is not None else None,
+                        "k_long": float(rr[3]) if rr[3] is not None else None,
+                        "k_short": float(rr[4]) if rr[4] is not None else None,
+                        "debit_points": float(rr[5]) if rr[5] is not None else None,
+                        "long_symbol": rr[6],
+                        "short_symbol": rr[7],
+                        "horizon_minutes": int(rr[8]) if rr[8] is not None else 30,
+                        "change": float(rr[9]) if rr[9] is not None else None,
+                        "is_missing_future": bool(rr[10]) if rr[10] is not None else None,
+                    })
+
+        return {
+            "snapshot_ts": _to_central_iso(latest),
+            "levels": levels,
+            "candidates": items,
             "tz": "America/Chicago",
         }
 
