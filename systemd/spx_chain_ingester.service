@@ -1,0 +1,37 @@
+# SPX Options Chain -> TimescaleDB ingester service
+#
+# Install:
+#   sudo cp systemd/spx_chain_ingester.service /etc/systemd/system/spx_chain_ingester.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spx_chain_ingester
+#
+# Logs:
+#   journalctl -u spx_chain_ingester -f
+#
+# Notes:
+# - Ensure the venv exists at WORKDIR/.venv and .env is configured.
+# - Requires write access to ARCHIVE_ROOT and read access to INPUT_DIR.
+
+[Unit]
+Description=SPX Options Chain TimescaleDB ingester
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.spx_chain_main
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

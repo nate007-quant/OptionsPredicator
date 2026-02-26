@@ -51,3 +51,29 @@ pytest -q
 ## Spec
 
 The repository includes the original `SPEC_OPTIONS_AI_v1_3.txt`. The implementation has advanced beyond v1.3; see `.env.example` and current source for active knobs/behavior.
+
+## SPX Options Chain → TimescaleDB ingestion (Rev3)
+
+This repo also includes an **early-stage ingester** that watches a drop directory (default `/mnt/SPX`) for SPX options chain snapshot JSON files and upserts the chain into **Postgres + TimescaleDB**.
+
+### Configure
+
+Set these in `.env` (see `.env.example`):
+
+- `INPUT_DIR=/mnt/SPX`
+- `ARCHIVE_ROOT=/mnt/options_ai` (writable)
+- `SPX_CHAIN_DATABASE_URL=postgresql://spx:spxpass@localhost:5432/spxdb`
+- `FILENAME_TZ=America/Chicago`
+
+### Run
+
+```bash
+source .venv/bin/activate
+python -m options_ai.spx_chain_main
+```
+
+### File handling
+
+- On successful DB commit: moves (or copies) JSON to `ARCHIVE_ROOT/archive/YYYYMMDD/<filename>`
+- On parse/validation/DB error: moves (or copies) JSON to `ARCHIVE_ROOT/bad/<filename>` and writes `ARCHIVE_ROOT/bad/<filename>.error.txt`
+- If the process cannot delete/rename files in `INPUT_DIR`, it will copy and record processed filenames in `ARCHIVE_ROOT/state/processed.log`.
