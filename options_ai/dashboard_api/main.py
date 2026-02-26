@@ -898,133 +898,133 @@ def create_app() -> FastAPI:
         }
 
 
-        @app.get("/api/debit_spreads/history")
-        def debit_spreads_history(
-            limit: int = Query(100, ge=1, le=500),
-            horizon_minutes: int = Query(30, ge=5, le=120),
-            only_recommended: bool = Query(False),
-        ) -> dict[str, Any]:
-            """Historical realized debit spread outcomes.
+    @app.get("/api/debit_spreads/history")
+    def debit_spreads_history(
+        limit: int = Query(100, ge=1, le=500),
+        horizon_minutes: int = Query(30, ge=5, le=120),
+        only_recommended: bool = Query(False),
+    ) -> dict[str, Any]:
+        """Historical realized debit spread outcomes.
 
-            If only_recommended=true, returns **one** candidate per snapshot_ts (the "trade I'd take")
-            based on current ranking: p_bigwin desc, pred_change desc, debit_points asc.
-            """
-            dsn = _pg_dsn()
-            if not dsn:
-                raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
+        If only_recommended=true, returns **one** candidate per snapshot_ts (the "trade I'd take")
+        based on current ranking: p_bigwin desc, pred_change desc, debit_points asc.
+        """
+        dsn = _pg_dsn()
+        if not dsn:
+            raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
 
-            mult_atm = float(os.getenv("DEBIT_BIGWIN_MULT_ATM", "2.0"))
-            mult_wall = float(os.getenv("DEBIT_BIGWIN_MULT_WALL", "4.0"))
+        mult_atm = float(os.getenv("DEBIT_BIGWIN_MULT_ATM", "2.0"))
+        mult_wall = float(os.getenv("DEBIT_BIGWIN_MULT_WALL", "4.0"))
 
-            with _pg_connect(dsn) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        WITH ranked AS (
-                          SELECT
-                            l.snapshot_ts,
-                            l.anchor_type,
-                            l.spread_type,
-                            l.horizon_minutes,
-                            l.debit_t,
-                            l.debit_tH,
-                            l.change,
-                            c.debit_points,
-                            c.k_long,
-                            c.k_short,
-                            s.pred_change,
-                            s.p_bigwin,
-                            ROW_NUMBER() OVER (
-                              PARTITION BY l.snapshot_ts
-                              ORDER BY
-                                CASE WHEN s.p_bigwin IS NULL THEN 1 ELSE 0 END ASC,
-                                s.p_bigwin DESC NULLS LAST,
-                                CASE WHEN s.pred_change IS NULL THEN 1 ELSE 0 END ASC,
-                                s.pred_change DESC NULLS LAST,
-                                c.debit_points ASC NULLS LAST
-                            ) AS rn
-                          FROM spx.debit_spread_labels_0dte l
-                          JOIN spx.debit_spread_candidates_0dte c
-                            ON c.snapshot_ts = l.snapshot_ts
-                           AND c.anchor_type = l.anchor_type
-                           AND c.spread_type = l.spread_type
-                          LEFT JOIN spx.debit_spread_scores_0dte s
-                            ON s.snapshot_ts = l.snapshot_ts
-                           AND s.anchor_type = l.anchor_type
-                           AND s.spread_type = l.spread_type
-                           AND s.horizon_minutes = l.horizon_minutes
-                          WHERE l.horizon_minutes = %s
-                            AND l.is_missing_future = false
-                            AND c.tradable = true
-                        )
-                        SELECT
-                          snapshot_ts,
-                          anchor_type,
-                          spread_type,
-                          horizon_minutes,
-                          debit_t,
-                          debit_tH,
-                          change,
-                          debit_points,
-                          k_long,
-                          k_short,
-                          pred_change,
-                          p_bigwin
-                        FROM ranked
-                        WHERE (NOT %s) OR rn = 1
-                        ORDER BY snapshot_ts DESC
-                        LIMIT %s
-                        """,
-                        (int(horizon_minutes), bool(only_recommended), int(limit)),
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH ranked AS (
+                      SELECT
+                        l.snapshot_ts,
+                        l.anchor_type,
+                        l.spread_type,
+                        l.horizon_minutes,
+                        l.debit_t,
+                        l.debit_tH,
+                        l.change,
+                        c.debit_points,
+                        c.k_long,
+                        c.k_short,
+                        s.pred_change,
+                        s.p_bigwin,
+                        ROW_NUMBER() OVER (
+                          PARTITION BY l.snapshot_ts
+                          ORDER BY
+                            CASE WHEN s.p_bigwin IS NULL THEN 1 ELSE 0 END ASC,
+                            s.p_bigwin DESC NULLS LAST,
+                            CASE WHEN s.pred_change IS NULL THEN 1 ELSE 0 END ASC,
+                            s.pred_change DESC NULLS LAST,
+                            c.debit_points ASC NULLS LAST
+                        ) AS rn
+                      FROM spx.debit_spread_labels_0dte l
+                      JOIN spx.debit_spread_candidates_0dte c
+                        ON c.snapshot_ts = l.snapshot_ts
+                       AND c.anchor_type = l.anchor_type
+                       AND c.spread_type = l.spread_type
+                      LEFT JOIN spx.debit_spread_scores_0dte s
+                        ON s.snapshot_ts = l.snapshot_ts
+                       AND s.anchor_type = l.anchor_type
+                       AND s.spread_type = l.spread_type
+                       AND s.horizon_minutes = l.horizon_minutes
+                      WHERE l.horizon_minutes = %s
+                        AND l.is_missing_future = false
+                        AND c.tradable = true
                     )
+                    SELECT
+                      snapshot_ts,
+                      anchor_type,
+                      spread_type,
+                      horizon_minutes,
+                      debit_t,
+                      debit_tH,
+                      change,
+                      debit_points,
+                      k_long,
+                      k_short,
+                      pred_change,
+                      p_bigwin
+                    FROM ranked
+                    WHERE (NOT %s) OR rn = 1
+                    ORDER BY snapshot_ts DESC
+                    LIMIT %s
+                    """,
+                    (int(horizon_minutes), bool(only_recommended), int(limit)),
+                )
 
-                    items = []
-                    for r in cur.fetchall():
-                        snapshot_ts = r[0]
-                        anchor_type = str(r[1])
-                        spread_type = str(r[2])
-                        debit_t = float(r[4]) if r[4] is not None else None
-                        debit_tH = float(r[5]) if r[5] is not None else None
-                        change = float(r[6]) if r[6] is not None else None
+                items = []
+                for r in cur.fetchall():
+                    snapshot_ts = r[0]
+                    anchor_type = str(r[1])
+                    spread_type = str(r[2])
+                    debit_t = float(r[4]) if r[4] is not None else None
+                    debit_tH = float(r[5]) if r[5] is not None else None
+                    change = float(r[6]) if r[6] is not None else None
 
-                        req_mult = mult_atm if anchor_type.upper() == 'ATM' else mult_wall
+                    req_mult = mult_atm if anchor_type.upper() == 'ATM' else mult_wall
 
-                        width = None
-                        if r[8] is not None and r[9] is not None:
-                            width = abs(float(r[9]) - float(r[8]))
+                    width = None
+                    if r[8] is not None and r[9] is not None:
+                        width = abs(float(r[9]) - float(r[8]))
 
-                        bigwin = None
-                        if debit_t is not None and debit_tH is not None and debit_t > 0:
-                            bigwin = bool(debit_tH >= req_mult * debit_t)
+                    bigwin = None
+                    if debit_t is not None and debit_tH is not None and debit_t > 0:
+                        bigwin = bool(debit_tH >= req_mult * debit_t)
 
-                        bigwin_possible = None
-                        if debit_t is not None and width is not None and debit_t > 0:
-                            bigwin_possible = bool(width >= req_mult * debit_t)
+                    bigwin_possible = None
+                    if debit_t is not None and width is not None and debit_t > 0:
+                        bigwin_possible = bool(width >= req_mult * debit_t)
 
-                        roi = None
-                        if change is not None and debit_t is not None and debit_t > 0:
-                            roi = float(change) / float(debit_t)
+                    roi = None
+                    if change is not None and debit_t is not None and debit_t > 0:
+                        roi = float(change) / float(debit_t)
 
-                        items.append({
-                            "snapshot_ts": _to_central_iso(snapshot_ts),
-                            "anchor_type": anchor_type,
-                            "spread_type": spread_type,
-                            "horizon_minutes": int(r[3]) if r[3] is not None else int(horizon_minutes),
-                            "debit_t": debit_t,
-                            "debit_tH": debit_tH,
-                            "change": change,
-                            "roi": roi,
-                            "req_mult": float(req_mult),
-                            "bigwin": bigwin,
-                            "bigwin_possible": bigwin_possible,
-                            "debit_points": float(r[7]) if r[7] is not None else None,
-                            "k_long": float(r[8]) if r[8] is not None else None,
-                            "k_short": float(r[9]) if r[9] is not None else None,
-                            "pred_change": float(r[10]) if r[10] is not None else None,
-                            "p_bigwin": float(r[11]) if r[11] is not None else None,
-                        })
+                    items.append({
+                        "snapshot_ts": _to_central_iso(snapshot_ts),
+                        "anchor_type": anchor_type,
+                        "spread_type": spread_type,
+                        "horizon_minutes": int(r[3]) if r[3] is not None else int(horizon_minutes),
+                        "debit_t": debit_t,
+                        "debit_tH": debit_tH,
+                        "change": change,
+                        "roi": roi,
+                        "req_mult": float(req_mult),
+                        "bigwin": bigwin,
+                        "bigwin_possible": bigwin_possible,
+                        "debit_points": float(r[7]) if r[7] is not None else None,
+                        "k_long": float(r[8]) if r[8] is not None else None,
+                        "k_short": float(r[9]) if r[9] is not None else None,
+                        "pred_change": float(r[10]) if r[10] is not None else None,
+                        "p_bigwin": float(r[11]) if r[11] is not None else None,
+                    })
 
-            return {"items": items, "tz": "America/Chicago"}
+        return {"items": items, "tz": "America/Chicago"}
 
 
 
