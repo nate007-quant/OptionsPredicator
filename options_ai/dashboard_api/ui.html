@@ -434,6 +434,34 @@
               <div class="hint" style="margin-top:10px;">See Models tab for charts.</div>
             </div>
           </div>
+
+
+          <div class="card" style="margin-top: var(--space-4);">
+            <div class="card-h">
+              <h2>Trade History (30m)</h2>
+              <div class="hint">Realized outcomes; optional “only trades I'd take” filter</div>
+            </div>
+            <div class="card-b">
+              <div class="row">
+                <label>Limit <input id="debitHistLimit" type="number" min="1" max="500" value="100" style="width:90px;" /></label>
+                <label><input id="debitHistOnlyReco" type="checkbox" /> Only trades I'd take</label>
+                <button class="btn-primary" id="refreshDebitHistoryBtn">Refresh</button>
+                <span class="hint" id="debitHistSummary"></span>
+              </div>
+              <div style="margin-top:12px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>snapshot</th><th>anchor</th><th>type</th>
+                      <th>debit_t</th><th>debit_tH</th><th>chg</th><th>roi</th>
+                      <th>p(bigwin)</th><th>pred(30m)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="debitHistTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -829,11 +857,14 @@
       resetEnabled = !!data.reset_enabled;
       const paused = !!data.paused;
 
-      document.getElementById('apiTz').textContent = data.tz === 'America/Chicago' ? 'CT' : (data.tz || '');
-      document.getElementById('pausedText').textContent = paused ? 'YES' : 'NO';
+      const apiTzEl = document.getElementById('apiTz');
+      if (apiTzEl) apiTzEl.textContent = data.tz === 'America/Chicago' ? 'CT' : (data.tz || '');
+      const pausedEl = document.getElementById('pausedText');
+      if (pausedEl) pausedEl.textContent = paused ? 'YES' : 'NO';
 
       const dot = document.getElementById('healthDot');
       const ht = document.getElementById('healthText');
+      if (!dot || !ht) return data;
       if (!ok) {
         dot.style.background = 'var(--error)';
         dot.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.18)';
@@ -1301,24 +1332,24 @@
     }
 
     // wiring
-    document.getElementById('themeToggle').onclick = () => {
+    document.getElementById('themeToggle')?.addEventListener('click', () => {
       const cur = document.documentElement.getAttribute('data-theme') || 'dark';
       setTheme(cur === 'dark' ? 'light' : 'dark');
-    };
+    });
 
-    document.getElementById('refreshMetrics').onclick = () => safe('refreshMetrics', () => refreshMetrics());
-    document.getElementById('refreshLlmBuckets').onclick = () => safe('refreshLlmBuckets', () => refreshLlmBuckets());
-    document.getElementById('refreshMlBuckets').onclick = () => safe('refreshMlBuckets', () => refreshMlBuckets());
-    document.getElementById('refreshEod').onclick = () => safe('refreshEod', () => refreshEod());
-    document.getElementById('refreshLogs').onclick = () => safe('refreshLogs', () => refreshLogs());
+    document.getElementById('refreshMetrics')?.addEventListener('click', () => safe('refreshMetrics', () => refreshMetrics()));
+    document.getElementById('refreshLlmBuckets')?.addEventListener('click', () => safe('refreshLlmBuckets', () => refreshLlmBuckets()));
+    document.getElementById('refreshMlBuckets')?.addEventListener('click', () => safe('refreshMlBuckets', () => refreshMlBuckets()));
+    document.getElementById('refreshEod')?.addEventListener('click', () => safe('refreshEod', () => refreshEod()));
+    document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDebitHistoryBtn')?.addEventListener('click', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('debitHistOnlyReco')?.addEventListener('change', () => safe('debit_history', () => refreshDebitHistory()));
-    document.getElementById('applyOverrides').onclick = () => safe('applyOverrides', () => applyOverrides());
-    document.getElementById('clearReprocess').onclick = () => safe('clearReprocess', () => clearReprocess());
-    document.getElementById('runReset').onclick = () => safe('runReset', () => runFullReset());
+    document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
+    document.getElementById('clearReprocess')?.addEventListener('click', () => safe('clearReprocess', () => clearReprocess()));
+    document.getElementById('runReset')?.addEventListener('click', () => safe('runReset', () => runFullReset()));
 
-    document.getElementById('refreshProcessingBtn').onclick = () => safe('refreshProcessing', () => refreshProcessing());
+    document.getElementById('refreshProcessingBtn')?.addEventListener('click', () => safe('refreshProcessing', () => refreshProcessing()));
 
     // routing
     window.addEventListener('hashchange', routeFromHash);
