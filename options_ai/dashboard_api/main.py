@@ -45,6 +45,27 @@ def _pg_connect(dsn: str):
         raise HTTPException(status_code=503, detail=f"timescale connect failed: {e}")
 
 
+def _anchor_policy_sets(policy_in: str | None = None) -> tuple[str, list[str] | None, list[str] | None]:
+    """Directional anchor policy.
+
+    Returns: (policy_name, call_allowed_anchors, put_allowed_anchors)
+
+    Policies:
+    - any: no restriction
+    - opposite_wall: CALL spreads anchored at PUT_WALL/MAGNET/ATM; PUT spreads anchored at CALL_WALL/MAGNET/ATM
+    - same_wall: CALL spreads anchored at CALL_WALL/MAGNET/ATM; PUT spreads anchored at PUT_WALL/MAGNET/ATM
+    """
+    policy = (policy_in or os.getenv('DEBIT_ANCHOR_POLICY', 'any')).strip().lower()
+    if policy in {'', 'any'}:
+        return 'any', None, None
+    if policy == 'opposite_wall':
+        return policy, ['PUT_WALL', 'MAGNET', 'ATM'], ['CALL_WALL', 'MAGNET', 'ATM']
+    if policy == 'same_wall':
+        return policy, ['CALL_WALL', 'MAGNET', 'ATM'], ['PUT_WALL', 'MAGNET', 'ATM']
+    # fail closed to "any" but report policy
+    return 'any', None, None
+
+
 
 
 def _safe_data_root(p: Path) -> Path:
@@ -343,6 +364,7 @@ def create_app() -> FastAPI:
             "snapshot_index_newest_ts": _to_central_iso(newest_snapshot) if newest_snapshot else None,
             "oldest_unscored_ts": _to_central_iso(oldest_unscored) if oldest_unscored else None,
             "tz": "America/Chicago",
+            "anchor_policy": anchor_policy,
         }
 
     @app.get("/api/metrics/daily")
@@ -821,6 +843,9 @@ def create_app() -> FastAPI:
         if not dsn:
             raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
 
+
+        anchor_policy, call_anchors, put_anchors = _anchor_policy_sets()
+
         with _pg_connect(dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_candidates_0dte")
@@ -875,7 +900,7 @@ def create_app() -> FastAPI:
                       c.debit_points ASC NULLS LAST
                     LIMIT %s
                     """,
-                    (latest, int(limit)),
+                    (latest, call_anchors, put_anchors, call_anchors, put_anchors, int(limit)),
                 )
                 items = []
                 for rr in cur.fetchall():
@@ -955,6 +980,8 @@ def create_app() -> FastAPI:
         if allowed_spreads:
             spreads = [s.strip().upper() for s in allowed_spreads.split(",") if s.strip()]
 
+        anchor_policy, call_anchors, put_anchors = _anchor_policy_sets()
+
         with _pg_connect(dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -992,6 +1019,11 @@ def create_app() -> FastAPI:
                         AND s.p_bigwin >= %s
                         AND s.pred_change > 0
                         AND s.pred_change >= %s
+                        AND (
+                          (%s::text[] IS NULL AND %s::text[] IS NULL)
+                          OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
+                          OR (c.spread_type='PUT' AND c.anchor_type = ANY(%s::text[]))
+                        )
                     ),
                     ranked_per_snapshot AS (
                       SELECT
@@ -1042,6 +1074,10 @@ def create_app() -> FastAPI:
                         end_time,
                         float(min_p_bigwin),
                         float(min_pred_change),
+                        call_anchors,
+                        put_anchors,
+                        call_anchors,
+                        put_anchors,
                         anchors,
                         anchors,
                         spreads,
@@ -1077,6 +1113,7 @@ def create_app() -> FastAPI:
                 "min_pred_change": float(min_pred_change),
                 "allowed_anchors": anchors,
                 "allowed_spreads": spreads,
+                "anchor_policy": anchor_policy,
             },
             "pick": pick,
             "tz": "America/Chicago",
@@ -1099,6 +1136,8 @@ def create_app() -> FastAPI:
 
         mult_atm = float(os.getenv("DEBIT_BIGWIN_MULT_ATM", "2.0"))
         mult_wall = float(os.getenv("DEBIT_BIGWIN_MULT_WALL", "4.0"))
+
+        anchor_policy, call_anchors, put_anchors = _anchor_policy_sets()
 
         with _pg_connect(dsn) as conn:
             with conn.cursor() as cur:
@@ -1140,6 +1179,11 @@ def create_app() -> FastAPI:
                       WHERE l.horizon_minutes = %s
                         AND l.is_missing_future = false
                         AND c.tradable = true
+                        AND (
+                          (%s::text[] IS NULL AND %s::text[] IS NULL)
+                          OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
+                          OR (c.spread_type='PUT' AND c.anchor_type = ANY(%s::text[]))
+                        )
                     )
                     SELECT
                       snapshot_ts,
@@ -1159,7 +1203,7 @@ def create_app() -> FastAPI:
                     ORDER BY snapshot_ts DESC
                     LIMIT %s
                     """,
-                    (int(horizon_minutes), bool(only_recommended), int(limit)),
+                    (int(horizon_minutes), call_anchors, put_anchors, call_anchors, put_anchors, bool(only_recommended), int(limit)),
                 )
 
                 items = []
@@ -1208,7 +1252,7 @@ def create_app() -> FastAPI:
                         "p_bigwin": float(r[11]) if r[11] is not None else None,
                     })
 
-        return {"items": items, "tz": "America/Chicago"}
+        return {"items": items, "tz": "America/Chicago", "anchor_policy": anchor_policy}
 
 
 
