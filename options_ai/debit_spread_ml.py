@@ -473,6 +473,129 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
     return upserted
 
 
+def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int, limit: int) -> list[datetime]:
+    """Return recent snapshot_ts values that have tradable candidates but no scores yet."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT c.snapshot_ts
+            FROM spx.debit_spread_candidates_0dte c
+            JOIN spx.chain_features_0dte f
+              ON f.snapshot_ts = c.snapshot_ts
+            WHERE c.tradable = true
+              AND f.low_quality = false
+              AND NOT EXISTS (
+                SELECT 1
+                FROM spx.debit_spread_scores_0dte s
+                WHERE s.snapshot_ts = c.snapshot_ts
+                  AND s.horizon_minutes = %s
+              )
+            ORDER BY c.snapshot_ts DESC
+            LIMIT %s
+            """,
+            (int(horizon_minutes), int(limit)),
+        )
+        return [r[0] for r in cur.fetchall()]
+
+
+def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedModel, *, snapshot_ts: datetime) -> int:
+    """Score tradable candidates for a specific snapshot_ts."""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              c.anchor_type, c.spread_type,
+              c.debit_points, c.anchor_strike, c.k_long, c.k_short,
+              f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
+              f.contract_count, f.valid_iv_count, f.valid_mid_count
+            FROM spx.debit_spread_candidates_0dte c
+            JOIN spx.chain_features_0dte f
+              ON f.snapshot_ts = c.snapshot_ts
+            WHERE c.snapshot_ts = %s
+              AND c.tradable = true
+              AND f.low_quality = false
+            """,
+            (snapshot_ts,),
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        return 0
+
+    X_list = []
+    keys = []
+
+    for rr in rows:
+        d = {
+            "anchor_type": rr[0],
+            "spread_type": rr[1],
+            "debit_points": _as_float(rr[2]),
+            "anchor_strike": _as_float(rr[3]),
+            "k_long": _as_float(rr[4]),
+            "k_short": _as_float(rr[5]),
+            "spot": _as_float(rr[6]),
+            "atm_iv": _as_float(rr[7]),
+            "skew_25d": _as_float(rr[8]),
+            "bf_25d": _as_float(rr[9]),
+            "pcr_volume": _as_float(rr[10]),
+            "pcr_oi": _as_float(rr[11]),
+            "contract_count": _as_float(rr[12]),
+            "valid_iv_count": _as_float(rr[13]),
+            "valid_mid_count": _as_float(rr[14]),
+        }
+
+        nums = [d.get(k) for k in _NUM_FEATURES]
+        num_mask = [v is None for v in nums]
+
+        x, _names = _row_to_features(d)
+        m = np.zeros_like(x, dtype=bool)
+        m[: len(_NUM_FEATURES)] = np.array(num_mask, dtype=bool)
+
+        X_list.append(_apply_impute(x.reshape(1, -1), m.reshape(1, -1), tm.impute)[0])
+        keys.append((str(d["anchor_type"]), str(d["spread_type"])))
+
+    X = np.vstack(X_list)
+
+    preds = tm.model.predict(X)
+    p_big = None
+    if tm.clf is not None:
+        try:
+            p_big = tm.clf.predict_proba(X)[:, 1]
+        except Exception:
+            p_big = None
+
+    upserted = 0
+    with conn.cursor() as cur:
+        for idx, ((anchor_type, spread_type), pred) in enumerate(zip(keys, preds, strict=True)):
+            pb = float(p_big[idx]) if p_big is not None else None
+            cur.execute(
+                UPSERT_SCORE_SQL,
+                {
+                    "snapshot_ts": snapshot_ts,
+                    "horizon_minutes": int(cfg.horizon_minutes),
+                    "anchor_type": anchor_type,
+                    "spread_type": spread_type,
+                    "pred_change": float(pred),
+                    "p_bigwin": pb,
+                    "model_version": str(cfg.model_version),
+                    "trained_at": tm.trained_at,
+                },
+            )
+            upserted += 1
+        conn.commit()
+
+    return upserted
+
+
+def score_recent_backfill(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedModel, *, limit: int = 200) -> int:
+    """Backfill scores for recent snapshots that are missing scores."""
+    total = 0
+    for ts in _snapshots_missing_scores(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(limit)):
+        total += _score_snapshot(conn, cfg, tm, snapshot_ts=ts)
+    return total
+
+
 def run_daemon(cfg: DebitMLConfig) -> None:
     last_train_ts = 0.0
 
@@ -489,7 +612,8 @@ def run_daemon(cfg: DebitMLConfig) -> None:
                 if tm is not None:
                     last_train_ts = now
                     n = score_latest_snapshot(conn, cfg, tm)
-                    if n:
+                    n2 = score_recent_backfill(conn, cfg, tm, limit=200)
+                    if n or n2:
                         did = True
         except Exception:
             pass
