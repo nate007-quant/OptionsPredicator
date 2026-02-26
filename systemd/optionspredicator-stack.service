@@ -1,0 +1,36 @@
+# OptionsPredicator ingestion stack (TimescaleDB + SPX chain ingester)
+#
+# Install:
+#   sudo cp systemd/optionspredicator-stack.service /etc/systemd/system/optionspredicator-stack.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now optionspredicator-stack
+#
+# Logs:
+#   journalctl -u optionspredicator-stack -f
+#
+# Notes:
+# - Assumes docker is installed and the user can run docker.
+# - Starts TimescaleDB via docker-compose and the Python ingester via systemd.
+
+[Unit]
+Description=OptionsPredicator ingestion stack
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/OptionsPredicator
+
+# Bring up TimescaleDB container
+ExecStart=/usr/bin/docker compose -f /opt/OptionsPredicator/docker-compose.timescale.yml up -d
+
+# Ensure the Python ingester is also enabled/started (safe if already running)
+ExecStartPost=/bin/systemctl start spx_chain_ingester.service
+
+ExecStop=/usr/bin/docker compose -f /opt/OptionsPredicator/docker-compose.timescale.yml down
+
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
