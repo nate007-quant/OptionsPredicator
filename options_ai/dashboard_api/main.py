@@ -364,7 +364,6 @@ def create_app() -> FastAPI:
             "snapshot_index_newest_ts": _to_central_iso(newest_snapshot) if newest_snapshot else None,
             "oldest_unscored_ts": _to_central_iso(oldest_unscored) if oldest_unscored else None,
             "tz": "America/Chicago",
-            "anchor_policy": anchor_policy,
         }
 
     @app.get("/api/metrics/daily")
@@ -1118,7 +1117,6 @@ def create_app() -> FastAPI:
                 "min_pred_change": float(min_pred_change),
                 "allowed_anchors": anchors,
                 "allowed_spreads": spreads,
-                "anchor_policy": anchor_policy,
             },
             "pick": pick,
             "tz": "America/Chicago",
@@ -1257,7 +1255,6 @@ def create_app() -> FastAPI:
                         "p_bigwin": float(r[11]) if r[11] is not None else None,
                     })
 
-        return {"items": items, "tz": "America/Chicago", "anchor_policy": anchor_policy}
 
 
 
