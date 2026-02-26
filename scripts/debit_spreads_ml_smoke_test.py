@@ -165,7 +165,7 @@ def main() -> int:
             _ = compute_labels_for_snapshot(conn, snapshot_ts=ts, cfg=cfg)
         conn.commit()
 
-        mlcfg = DebitMLConfig(db_dsn=args.dsn, horizon_minutes=30, min_train_rows=50, max_train_rows=50000, retrain_seconds=0, models_dir="/tmp/debit_ml_test_models")
+        mlcfg = DebitMLConfig(db_dsn=args.dsn, horizon_minutes=30, min_train_rows=50, max_train_rows=50000, retrain_seconds=0, models_dir="/tmp/debit_ml_test_models", bigwin_mult_atm=1.1, bigwin_mult_wall=1.1)
         tm = train_if_needed(conn, mlcfg, force=True)
         _require(tm is not None, "Expected model to train")
 
@@ -176,6 +176,11 @@ def main() -> int:
             cur.execute("SELECT count(*) FROM spx.debit_spread_scores_0dte WHERE horizon_minutes=30")
             ct = int(cur.fetchone()[0])
             _require(ct > 0, "Expected score rows")
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM spx.debit_spread_scores_0dte WHERE horizon_minutes=30 AND p_bigwin IS NOT NULL")
+            pb = int(cur.fetchone()[0])
+            _require(pb > 0, f"Expected some p_bigwin values, got {pb}")
+
 
         if args.cleanup:
             with conn.cursor() as cur:

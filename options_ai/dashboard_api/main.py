@@ -846,7 +846,8 @@ def create_app() -> FastAPI:
                       c.k_long, c.k_short, c.debit_points,
                       c.long_symbol, c.short_symbol,
                       l.horizon_minutes, l.change, l.is_missing_future,
-                      s.pred_change
+                      s.pred_change,
+                      s.p_bigwin
                     FROM spx.debit_spread_candidates_0dte c
                     LEFT JOIN spx.debit_spread_labels_0dte l
                       ON l.snapshot_ts = c.snapshot_ts
@@ -861,8 +862,10 @@ def create_app() -> FastAPI:
                     WHERE c.snapshot_ts = %s
                       AND c.tradable = true
                     ORDER BY
-                      CASE WHEN s.pred_change IS NULL THEN 1 ELSE 0 END ASC,
-                      s.pred_change DESC NULLS LAST,
+                      CASE WHEN s.pred_change,
+                      s.p_bigwin IS NULL THEN 1 ELSE 0 END ASC,
+                      s.pred_change,
+                      s.p_bigwin DESC NULLS LAST,
                       CASE WHEN l.change IS NULL THEN 1 ELSE 0 END ASC,
                       l.change DESC NULLS LAST,
                       c.debit_points ASC NULLS LAST
@@ -885,6 +888,7 @@ def create_app() -> FastAPI:
                         "change": float(rr[9]) if rr[9] is not None else None,
                         "is_missing_future": bool(rr[10]) if rr[10] is not None else None,
                         "pred_change": float(rr[11]) if rr[11] is not None else None,
+                        "p_bigwin": float(rr[12]) if rr[12] is not None else None,
                     })
 
         return {

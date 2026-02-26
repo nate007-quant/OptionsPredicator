@@ -10,7 +10,7 @@ from typing import Any
 import joblib
 import numpy as np
 import psycopg
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, LogisticRegression
 
 
 ANCHOR_TYPES = ("ATM", "CALL_WALL", "PUT_WALL", "MAGNET")
@@ -22,6 +22,9 @@ class DebitMLConfig:
     db_dsn: str
 
     horizon_minutes: int = 30
+
+    bigwin_mult_atm: float = 2.0
+    bigwin_mult_wall: float = 4.0
 
     # training controls
     min_train_rows: int = 300
@@ -45,6 +48,7 @@ CREATE TABLE IF NOT EXISTS spx.debit_spread_scores_0dte (
   spread_type TEXT NOT NULL,
 
   pred_change NUMERIC,
+  p_bigwin NUMERIC,
   model_version TEXT NOT NULL,
   trained_at TIMESTAMPTZ,
   computed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -53,19 +57,23 @@ CREATE TABLE IF NOT EXISTS spx.debit_spread_scores_0dte (
 );
 
 CREATE INDEX IF NOT EXISTS debit_spread_scores_ts_idx ON spx.debit_spread_scores_0dte (snapshot_ts DESC);
+
+-- Forward-compatible: add new columns if the table already existed
+ALTER TABLE spx.debit_spread_scores_0dte ADD COLUMN IF NOT EXISTS p_bigwin NUMERIC;
 """
 
 
 UPSERT_SCORE_SQL = """
 INSERT INTO spx.debit_spread_scores_0dte (
   snapshot_ts, horizon_minutes, anchor_type, spread_type,
-  pred_change, model_version, trained_at
+  pred_change, p_bigwin, model_version, trained_at
 ) VALUES (
   %(snapshot_ts)s, %(horizon_minutes)s, %(anchor_type)s, %(spread_type)s,
-  %(pred_change)s, %(model_version)s, %(trained_at)s
+  %(pred_change)s, %(p_bigwin)s, %(model_version)s, %(trained_at)s
 )
 ON CONFLICT (snapshot_ts, horizon_minutes, anchor_type, spread_type) DO UPDATE SET
   pred_change = EXCLUDED.pred_change,
+  p_bigwin = EXCLUDED.p_bigwin,
   model_version = EXCLUDED.model_version,
   trained_at = EXCLUDED.trained_at,
   computed_at = now();
@@ -85,6 +93,14 @@ def _as_float(x: Any) -> float | None:
         return float(x)
     except Exception:
         return None
+
+
+def _bigwin_required_mult(anchor_type: str, *, mult_atm: float, mult_wall: float) -> float:
+    a = (anchor_type or '').upper()
+    if a == 'ATM':
+        return float(mult_atm)
+    # CALL_WALL, PUT_WALL, MAGNET treated as wall-style
+    return float(mult_wall)
 
 
 def _onehot(val: str, choices: tuple[str, ...]) -> list[float]:
@@ -183,7 +199,7 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
         cur.execute(
             """
             SELECT
-              l.change,
+              l.change, l.debit_t, l.debit_tH,
               c.anchor_type, c.spread_type,
               c.debit_points, c.anchor_strike, c.k_long, c.k_short,
               f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
@@ -210,21 +226,23 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
             rows.append(
                 {
                     "y": _as_float(r[0]),
-                    "anchor_type": r[1],
-                    "spread_type": r[2],
-                    "debit_points": _as_float(r[3]),
-                    "anchor_strike": _as_float(r[4]),
-                    "k_long": _as_float(r[5]),
-                    "k_short": _as_float(r[6]),
-                    "spot": _as_float(r[7]),
-                    "atm_iv": _as_float(r[8]),
-                    "skew_25d": _as_float(r[9]),
-                    "bf_25d": _as_float(r[10]),
-                    "pcr_volume": _as_float(r[11]),
-                    "pcr_oi": _as_float(r[12]),
-                    "contract_count": _as_float(r[13]),
-                    "valid_iv_count": _as_float(r[14]),
-                    "valid_mid_count": _as_float(r[15]),
+                    "debit_t": _as_float(r[1]),
+                    "debit_tH": _as_float(r[2]),
+                    "anchor_type": r[3],
+                    "spread_type": r[4],
+                    "debit_points": _as_float(r[5]),
+                    "anchor_strike": _as_float(r[6]),
+                    "k_long": _as_float(r[7]),
+                    "k_short": _as_float(r[8]),
+                    "spot": _as_float(r[9]),
+                    "atm_iv": _as_float(r[10]),
+                    "skew_25d": _as_float(r[11]),
+                    "bf_25d": _as_float(r[12]),
+                    "pcr_volume": _as_float(r[13]),
+                    "pcr_oi": _as_float(r[14]),
+                    "contract_count": _as_float(r[15]),
+                    "valid_iv_count": _as_float(r[16]),
+                    "valid_mid_count": _as_float(r[17]),
                 }
             )
         return rows
@@ -233,6 +251,7 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
 @dataclass
 class _TrainedModel:
     model: Ridge
+    clf: LogisticRegression | None
     impute: np.ndarray
     feature_names: list[str]
     trained_at: datetime
@@ -258,6 +277,7 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
                     if age < float(cfg.retrain_seconds):
                         return _TrainedModel(
                             model=obj["model"],
+                            clf=obj.get("clf"),
                             impute=obj["impute"],
                             feature_names=list(obj.get("feature_names") or []),
                             trained_at=trained_at,
@@ -277,6 +297,7 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
     X_list = []
     mask_list = []
     y_list = []
+    y_bigwin = []
     feat_names: list[str] | None = None
 
     for r in rows:
@@ -300,6 +321,14 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
         mask_list.append(m)
         y_list.append(float(r["y"]))
 
+        debit_t = _as_float(r.get("debit_t"))
+        debit_tH = _as_float(r.get("debit_tH"))
+        mult = _bigwin_required_mult(str(r.get("anchor_type") or ""), mult_atm=cfg.bigwin_mult_atm, mult_wall=cfg.bigwin_mult_wall)
+        big = 0
+        if debit_t is not None and debit_tH is not None and debit_t > 0:
+            big = 1 if float(debit_tH) >= float(mult) * float(debit_t) else 0
+        y_bigwin.append(int(big))
+
     X_raw = np.vstack(X_list)
     mask = np.vstack(mask_list)
     y = np.array(y_list, dtype=np.float64)
@@ -310,10 +339,20 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
     model = Ridge(alpha=1.0, random_state=0)
     model.fit(X, y)
 
+    clf = None
+    try:
+        ys = np.array(y_bigwin, dtype=np.int64)
+        if ys.min() != ys.max():
+            clf = LogisticRegression(max_iter=2000)
+            clf.fit(X, ys)
+    except Exception:
+        clf = None
+
     trained_at = datetime.now(timezone.utc).replace(microsecond=0)
 
     obj = {
         "model": model,
+        "clf": clf,
         "impute": impute,
         "feature_names": feat_names or [],
         "trained_at": trained_at,
@@ -325,6 +364,7 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
 
     return _TrainedModel(
         model=model,
+        clf=clf,
         impute=impute,
         feature_names=feat_names or [],
         trained_at=trained_at,
@@ -403,10 +443,17 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
     X = _apply_impute(X_raw, mask, tm.impute)
 
     preds = tm.model.predict(X)
+    p_big = None
+    if tm.clf is not None:
+        try:
+            p_big = tm.clf.predict_proba(X)[:, 1]
+        except Exception:
+            p_big = None
 
     upserted = 0
     with conn.cursor() as cur:
-        for (anchor_type, spread_type), pred in zip(keys, preds, strict=True):
+        for idx, ((anchor_type, spread_type), pred) in enumerate(zip(keys, preds, strict=True)):
+            pb = float(p_big[idx]) if p_big is not None else None
             cur.execute(
                 UPSERT_SCORE_SQL,
                 {
@@ -415,6 +462,7 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
                     "anchor_type": anchor_type,
                     "spread_type": spread_type,
                     "pred_change": float(pred),
+                    "p_bigwin": pb,
                     "model_version": str(cfg.model_version),
                     "trained_at": tm.trained_at,
                 },
@@ -457,6 +505,8 @@ def load_config_from_env() -> DebitMLConfig:
     return DebitMLConfig(
         db_dsn=dsn,
         horizon_minutes=int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")),
+        bigwin_mult_atm=float(os.getenv("DEBIT_BIGWIN_MULT_ATM", "2.0")),
+        bigwin_mult_wall=float(os.getenv("DEBIT_BIGWIN_MULT_WALL", "4.0")),
         min_train_rows=int(os.getenv("DEBIT_ML_MIN_TRAIN_ROWS", "300")),
         max_train_rows=int(os.getenv("DEBIT_ML_MAX_TRAIN_ROWS", "50000")),
         retrain_seconds=int(os.getenv("DEBIT_ML_RETRAIN_SECONDS", "900")),

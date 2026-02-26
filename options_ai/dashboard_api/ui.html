@@ -615,6 +615,7 @@
                       <th>k_long</th>
                       <th>k_short</th>
                       <th>debit</th>
+                      <th>p(bigwin)</th>
                       <th>pred(30m)</th>
                       <th>chg(30m)</th>
                       <th>long_symbol</th>
@@ -862,6 +863,35 @@
       return data;
     }
 
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
+
     // Debit spreads (TimescaleDB)
     async function refreshDebitSpreads() {
       const lim = parseInt(document.getElementById('debitLimit')?.value || '12', 10);
@@ -886,6 +916,7 @@
           <td>${it.k_long === null || it.k_long === undefined ? '—' : fmtNum(it.k_long, 0)}</td>
           <td>${it.k_short === null || it.k_short === undefined ? '—' : fmtNum(it.k_short, 0)}</td>
           <td>${it.debit_points === null || it.debit_points === undefined ? '—' : fmtNum(it.debit_points, 2)}</td>
+          <td>${it.p_bigwin === null || it.p_bigwin === undefined ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%'}</td>
           <td>${it.pred_change === null || it.pred_change === undefined ? '—' : fmtNum(it.pred_change, 2)}</td>
           <td>${it.change === null || it.change === undefined ? (it.is_missing_future ? '—' : '…') : fmtNum(it.change, 2)}</td>
           <td style="font-family:var(--mono); font-size:11px;">${it.long_symbol || ''}</td>
@@ -901,6 +932,35 @@
 
       return data;
     }
+
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
 
 // Processing
     async function refreshProcessing() {
@@ -955,6 +1015,35 @@
       return data;
     }
 
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
+
     // Tokens tile
     async function refreshTokens() {
       const data = await jget('/api/usage/tokens?hours=24');
@@ -971,6 +1060,35 @@
       }
       return data;
     }
+
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
 
     // LLM daily chart + rolling
     let dailyChart;
@@ -1051,6 +1169,35 @@
       return data;
     }
 
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
+
     // ML charts
     let mlDailyChart;
     async function refreshML() {
@@ -1126,6 +1273,35 @@
       return data;
     }
 
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
+
     // EOD
     let eodDailyChart;
     async function refreshEod() {
@@ -1165,6 +1341,35 @@
       return data;
     }
 
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
+
     // Logs
     async function refreshLogs() {
       const name = document.getElementById('logName').value;
@@ -1185,6 +1390,35 @@
       box.scrollTop = box.scrollHeight;
       return data;
     }
+
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
 
     // Config + overrides
     async function refreshConfig() {
@@ -1219,6 +1453,35 @@
 
       return data;
     }
+
+    async function refreshDebitHistory() {
+      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const tb = document.getElementById('debitHistTable');
+      tb.innerHTML = '';
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
+        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${tgt}</td>
+          <td>${big}</td>
+          <td>${pbig}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return data;
+    }
+
 
     async function applyOverrides() {
       const payload = {
@@ -1276,6 +1539,7 @@
     document.getElementById('refreshEod').onclick = () => safe('refreshEod', () => refreshEod());
     document.getElementById('refreshLogs').onclick = () => safe('refreshLogs', () => refreshLogs());
     document.getElementById('refreshDebit').onclick = () => safe('refreshDebitSpreads', () => refreshDebitSpreads());
+    document.getElementById('refreshDebitHist').onclick = () => safe('refreshDebitHistory', () => refreshDebitHistory());
     document.getElementById('applyOverrides').onclick = () => safe('applyOverrides', () => applyOverrides());
     document.getElementById('clearReprocess').onclick = () => safe('clearReprocess', () => clearReprocess());
     document.getElementById('runReset').onclick = () => safe('runReset', () => runFullReset());
@@ -1295,6 +1559,7 @@
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
       await safe('debit', () => refreshDebitSpreads());
+      await safe('debitHist', () => refreshDebitHistory());
       await safe('llmBuckets', () => refreshLlmBuckets());
       await safe('llmMetrics', () => refreshMetrics());
       await safe('ml', () => refreshML());
@@ -1309,6 +1574,7 @@
       setInterval(() => safe('tokens', () => refreshTokens()), 10000);
       setInterval(() => safe('ml', () => refreshML()), 20000);
       setInterval(() => safe('debit', () => refreshDebitSpreads()), 10000);
+      setInterval(() => safe('debitHist', () => refreshDebitHistory()), 30000);
 
       // logs auto-refresh
       let logTimer;

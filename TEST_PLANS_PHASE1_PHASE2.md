@@ -230,3 +230,6 @@ SELECT max(snapshot_ts) AS latest_ts, count(*) AS n
 FROM spx.debit_spread_scores_0dte
 WHERE horizon_minutes = 30;
 ```
+
+
+Notes: If `p_bigwin` is present in `spx.debit_spread_scores_0dte`, the UI will display it as the model-estimated probability of achieving your configured big-win multiple (ATM=2x, WALL/MAGNET=4x by default) by the horizon.
