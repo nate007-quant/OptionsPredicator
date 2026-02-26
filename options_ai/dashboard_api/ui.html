@@ -627,6 +627,34 @@
               </div>
             </div>
           </div>
+
+
+          <div class="card">
+            <div class="card-h">
+              <h2>Trade History (30m)</h2>
+              <div class="hint">Realized outcomes; optional “only trades I'd take” filter</div>
+            </div>
+            <div class="card-b">
+              <div class="row">
+                <label>Limit <input id="debitHistLimit" type="number" min="1" max="500" value="100" style="width:90px;" /></label>
+                <label><input id="debitHistOnlyReco" type="checkbox" /> Only trades I'd take</label>
+                <button class="btn-primary" id="refreshDebitHistoryBtn">Refresh</button>
+                <span class="hint" id="debitHistSummary"></span>
+              </div>
+              <div style="margin-top:12px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>snapshot</th><th>anchor</th><th>type</th>
+                      <th>debit_t</th><th>debit_tH</th><th>chg</th><th>roi</th>
+                      <th>p(bigwin)</th><th>pred(30m)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="debitHistTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -865,12 +893,35 @@
 
     async function refreshDebitHistory() {
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
+      const onlyReco = document.getElementById('debitHistOnlyReco')?.checked ? '1' : '0';
+      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30&only_recommended=${onlyReco}`);
       const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
+      if (!tb) return data;
+      tb.innerHTML = '';
+
+      for (const it of (data.items || [])) {
+        const tr = document.createElement('tr');
+        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
+        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
+        const pred = (it.pred_change === null || it.pred_change === undefined) ? '—' : fmtNum(it.pred_change, 2);
+        tr.innerHTML = `
+          <td>${it.snapshot_ts || ''}</td>
+          <td>${it.anchor_type || ''}</td>
+          <td>${it.spread_type || ''}</td>
+          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
+          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
+          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
+          <td>${roi}</td>
+          <td>${pbig}</td>
+          <td>${pred}</td>
+        `;
+        tb.appendChild(tr);
       }
+
+      const sum = document.getElementById('debitHistSummary');
+      if (sum) sum.textContent = `${(data.items||[]).length} rows`;
+      return data;
+    }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -940,14 +991,6 @@
       return data;
     }
 
-    async function refreshDebitHistory() {
-      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
-      const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1026,14 +1069,6 @@
       return data;
     }
 
-    async function refreshDebitHistory() {
-      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
-      const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1076,14 +1111,6 @@
       return data;
     }
 
-    async function refreshDebitHistory() {
-      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
-      const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1188,14 +1215,6 @@
       return data;
     }
 
-    async function refreshDebitHistory() {
-      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
-      const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1296,14 +1315,6 @@
       return data;
     }
 
-    async function refreshDebitHistory() {
-      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
-      const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1368,14 +1379,6 @@
       return data;
     }
 
-    async function refreshDebitHistory() {
-      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
-      const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1422,14 +1425,6 @@
       return data;
     }
 
-    async function refreshDebitHistory() {
-      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
-      const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1489,14 +1484,6 @@
       return data;
     }
 
-    async function refreshDebitHistory() {
-      const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
-      const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
-      const tb = document.getElementById('debitHistTable');
-      if (!tb) {
-        // UI section not present (cached/partial HTML); don't throw
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1578,7 +1565,8 @@
     document.getElementById('refreshEod')?.addEventListener('click', () => safe('refreshEod', () => refreshEod()));
     document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
-    document.getElementById('refreshDebitHist')?.addEventListener('click', () => safe('refreshDebitHistory', () => refreshDebitHistory()));
+    document.getElementById('refreshDebitHistoryBtn')?.addEventListener('click', () => safe('debit_history', () => refreshDebitHistory()));
+    document.getElementById('debitHistOnlyReco')?.addEventListener('change', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
     document.getElementById('clearReprocess')?.addEventListener('click', () => safe('clearReprocess', () => clearReprocess()));
     document.getElementById('runReset')?.addEventListener('click', () => safe('runReset', () => runFullReset()));
