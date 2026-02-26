@@ -1528,23 +1528,23 @@
     }
 
     // wiring
-    document.getElementById('themeToggle').onclick = () => {
+    document.getElementById('themeToggle')?.addEventListener('click', () => {
       const cur = document.documentElement.getAttribute('data-theme') || 'dark';
       setTheme(cur === 'dark' ? 'light' : 'dark');
-    };
+    });
 
-    document.getElementById('refreshMetrics').onclick = () => safe('refreshMetrics', () => refreshMetrics());
-    document.getElementById('refreshLlmBuckets').onclick = () => safe('refreshLlmBuckets', () => refreshLlmBuckets());
-    document.getElementById('refreshMlBuckets').onclick = () => safe('refreshMlBuckets', () => refreshMlBuckets());
-    document.getElementById('refreshEod').onclick = () => safe('refreshEod', () => refreshEod());
-    document.getElementById('refreshLogs').onclick = () => safe('refreshLogs', () => refreshLogs());
-    document.getElementById('refreshDebit').onclick = () => safe('refreshDebitSpreads', () => refreshDebitSpreads());
-    document.getElementById('refreshDebitHist').onclick = () => safe('refreshDebitHistory', () => refreshDebitHistory());
-    document.getElementById('applyOverrides').onclick = () => safe('applyOverrides', () => applyOverrides());
-    document.getElementById('clearReprocess').onclick = () => safe('clearReprocess', () => clearReprocess());
-    document.getElementById('runReset').onclick = () => safe('runReset', () => runFullReset());
+    document.getElementById('refreshMetrics')?.addEventListener('click', () => safe('refreshMetrics', () => refreshMetrics()));
+    document.getElementById('refreshLlmBuckets')?.addEventListener('click', () => safe('refreshLlmBuckets', () => refreshLlmBuckets()));
+    document.getElementById('refreshMlBuckets')?.addEventListener('click', () => safe('refreshMlBuckets', () => refreshMlBuckets()));
+    document.getElementById('refreshEod')?.addEventListener('click', () => safe('refreshEod', () => refreshEod()));
+    document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
+    document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
+    document.getElementById('refreshDebitHist')?.addEventListener('click', () => safe('refreshDebitHistory', () => refreshDebitHistory()));
+    document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
+    document.getElementById('clearReprocess')?.addEventListener('click', () => safe('clearReprocess', () => clearReprocess()));
+    document.getElementById('runReset')?.addEventListener('click', () => safe('runReset', () => runFullReset()));
 
-    document.getElementById('refreshProcessingBtn').onclick = () => safe('refreshProcessing', () => refreshProcessing());
+    document.getElementById('refreshProcessingBtn')?.addEventListener('click', () => safe('refreshProcessing', () => refreshProcessing()));
 
     // routing
     window.addEventListener('hashchange', routeFromHash);
