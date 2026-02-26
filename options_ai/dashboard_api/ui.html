@@ -924,7 +924,12 @@
       }
 
       const sum = document.getElementById('debitHistSummary');
-      if (sum) sum.textContent = `${(data.items||[]).length} rows`;
+      if (sum) {
+        const items = (data.items||[]);
+        const uniq = new Set(items.map(x => x.snapshot_ts)).size;
+        const mode = (onlyReco === '1') ? 'recommended' : 'all';
+        sum.textContent = `${items.length} rows / ${uniq} snapshots (${mode})`;
+      }
       return data;
     }
 
