@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
