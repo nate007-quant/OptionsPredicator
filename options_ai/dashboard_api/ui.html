@@ -867,6 +867,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -907,6 +911,9 @@
       document.getElementById('lvlMagnet').textContent = (lev.magnet === null || lev.magnet === undefined) ? '—' : fmtNum(lev.magnet, 0);
 
       const tb = document.getElementById('debitTable');
+      if (!tb) {
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.candidates || [])) {
         const tr = document.createElement('tr');
@@ -937,6 +944,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1019,6 +1030,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1065,6 +1080,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1173,6 +1192,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1277,6 +1300,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1345,6 +1372,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1395,6 +1426,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -1458,6 +1493,10 @@
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30`);
       const tb = document.getElementById('debitHistTable');
+      if (!tb) {
+        // UI section not present (cached/partial HTML); don't throw
+        return data;
+      }
       tb.innerHTML = '';
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
