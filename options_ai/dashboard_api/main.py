@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi import Response
 
 from options_ai.config import load_config
 from options_ai.runtime_overrides import (
@@ -223,7 +224,11 @@ def create_app() -> FastAPI:
     app = FastAPI(title="OptionsPredicator Dashboard API", version="0.1")
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
+    def index(response: Response) -> str:
+        # Prevent stale UI JS/HTML from being cached between rapid deployments
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
         html_path = Path(__file__).with_name("ui.html")
         return html_path.read_text(encoding="utf-8")
 
