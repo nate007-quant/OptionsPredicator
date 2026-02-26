@@ -627,34 +627,6 @@
               </div>
             </div>
           </div>
-
-
-          <div class="card">
-            <div class="card-h">
-              <h2>Trade History (30m)</h2>
-              <div class="hint">Realized outcomes; optional “only trades I'd take” filter</div>
-            </div>
-            <div class="card-b">
-              <div class="row">
-                <label>Limit <input id="debitHistLimit" type="number" min="1" max="500" value="100" style="width:90px;" /></label>
-                <label><input id="debitHistOnlyReco" type="checkbox" /> Only trades I'd take</label>
-                <button class="btn-primary" id="refreshDebitHistoryBtn">Refresh</button>
-                <span class="hint" id="debitHistSummary"></span>
-              </div>
-              <div style="margin-top:12px;">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>snapshot</th><th>anchor</th><th>type</th>
-                      <th>debit_t</th><th>debit_tH</th><th>chg</th><th>roi</th>
-                      <th>p(bigwin)</th><th>pred(30m)</th>
-                    </tr>
-                  </thead>
-                  <tbody id="debitHistTable"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -891,10 +863,12 @@
       return data;
     }
 
+    // Debit spreads (TimescaleDB)
     async function refreshDebitHistory() {
       const lim = parseInt(document.getElementById('debitHistLimit')?.value || '100', 10);
       const onlyReco = document.getElementById('debitHistOnlyReco')?.checked ? '1' : '0';
       const data = await jget(`/api/debit_spreads/history?limit=${lim}&horizon_minutes=30&only_recommended=${onlyReco}`);
+
       const tb = document.getElementById('debitHistTable');
       if (!tb) return data;
       tb.innerHTML = '';
@@ -922,32 +896,8 @@
       if (sum) sum.textContent = `${(data.items||[]).length} rows`;
       return data;
     }
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
 
 
-    // Debit spreads (TimescaleDB)
     async function refreshDebitSpreads() {
       const lim = parseInt(document.getElementById('debitLimit')?.value || '12', 10);
       const data = await jget(`/api/debit_spreads/top?limit=${lim}`);
@@ -962,9 +912,6 @@
       document.getElementById('lvlMagnet').textContent = (lev.magnet === null || lev.magnet === undefined) ? '—' : fmtNum(lev.magnet, 0);
 
       const tb = document.getElementById('debitTable');
-      if (!tb) {
-        return data;
-      }
       tb.innerHTML = '';
       for (const it of (data.candidates || [])) {
         const tr = document.createElement('tr');
@@ -990,31 +937,6 @@
 
       return data;
     }
-
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
-
 
 // Processing
     async function refreshProcessing() {
@@ -1069,31 +991,6 @@
       return data;
     }
 
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
-
-
     // Tokens tile
     async function refreshTokens() {
       const data = await jget('/api/usage/tokens?hours=24');
@@ -1110,31 +1007,6 @@
       }
       return data;
     }
-
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
-
 
     // LLM daily chart + rolling
     let dailyChart;
@@ -1215,31 +1087,6 @@
       return data;
     }
 
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
-
-
     // ML charts
     let mlDailyChart;
     async function refreshML() {
@@ -1315,31 +1162,6 @@
       return data;
     }
 
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
-
-
     // EOD
     let eodDailyChart;
     async function refreshEod() {
@@ -1379,31 +1201,6 @@
       return data;
     }
 
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
-
-
     // Logs
     async function refreshLogs() {
       const name = document.getElementById('logName').value;
@@ -1424,31 +1221,6 @@
       box.scrollTop = box.scrollHeight;
       return data;
     }
-
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
-
 
     // Config + overrides
     async function refreshConfig() {
@@ -1483,31 +1255,6 @@
 
       return data;
     }
-
-      tb.innerHTML = '';
-      for (const it of (data.items || [])) {
-        const tr = document.createElement('tr');
-        const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
-        const tgt = it.req_mult ? (Number(it.req_mult).toFixed(1) + 'x') : '—';
-        const big = (it.bigwin === null || it.bigwin === undefined) ? '—' : (it.bigwin ? 'YES' : 'no');
-        const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
-        tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
-          <td>${it.anchor_type || ''}</td>
-          <td>${it.spread_type || ''}</td>
-          <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
-          <td>${it.debit_tH === null || it.debit_tH === undefined ? '—' : fmtNum(it.debit_tH, 2)}</td>
-          <td>${it.change === null || it.change === undefined ? '—' : fmtNum(it.change, 2)}</td>
-          <td>${roi}</td>
-          <td>${tgt}</td>
-          <td>${big}</td>
-          <td>${pbig}</td>
-        `;
-        tb.appendChild(tr);
-      }
-      return data;
-    }
-
 
     async function applyOverrides() {
       const payload = {
@@ -1554,24 +1301,24 @@
     }
 
     // wiring
-    document.getElementById('themeToggle')?.addEventListener('click', () => {
+    document.getElementById('themeToggle').onclick = () => {
       const cur = document.documentElement.getAttribute('data-theme') || 'dark';
       setTheme(cur === 'dark' ? 'light' : 'dark');
-    });
+    };
 
-    document.getElementById('refreshMetrics')?.addEventListener('click', () => safe('refreshMetrics', () => refreshMetrics()));
-    document.getElementById('refreshLlmBuckets')?.addEventListener('click', () => safe('refreshLlmBuckets', () => refreshLlmBuckets()));
-    document.getElementById('refreshMlBuckets')?.addEventListener('click', () => safe('refreshMlBuckets', () => refreshMlBuckets()));
-    document.getElementById('refreshEod')?.addEventListener('click', () => safe('refreshEod', () => refreshEod()));
-    document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
+    document.getElementById('refreshMetrics').onclick = () => safe('refreshMetrics', () => refreshMetrics());
+    document.getElementById('refreshLlmBuckets').onclick = () => safe('refreshLlmBuckets', () => refreshLlmBuckets());
+    document.getElementById('refreshMlBuckets').onclick = () => safe('refreshMlBuckets', () => refreshMlBuckets());
+    document.getElementById('refreshEod').onclick = () => safe('refreshEod', () => refreshEod());
+    document.getElementById('refreshLogs').onclick = () => safe('refreshLogs', () => refreshLogs());
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDebitHistoryBtn')?.addEventListener('click', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('debitHistOnlyReco')?.addEventListener('change', () => safe('debit_history', () => refreshDebitHistory()));
-    document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
-    document.getElementById('clearReprocess')?.addEventListener('click', () => safe('clearReprocess', () => clearReprocess()));
-    document.getElementById('runReset')?.addEventListener('click', () => safe('runReset', () => runFullReset()));
+    document.getElementById('applyOverrides').onclick = () => safe('applyOverrides', () => applyOverrides());
+    document.getElementById('clearReprocess').onclick = () => safe('clearReprocess', () => clearReprocess());
+    document.getElementById('runReset').onclick = () => safe('runReset', () => runFullReset());
 
-    document.getElementById('refreshProcessingBtn')?.addEventListener('click', () => safe('refreshProcessing', () => refreshProcessing()));
+    document.getElementById('refreshProcessingBtn').onclick = () => safe('refreshProcessing', () => refreshProcessing());
 
     // routing
     window.addEventListener('hashchange', routeFromHash);
@@ -1586,7 +1333,7 @@
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
       await safe('debit', () => refreshDebitSpreads());
-      await safe('debitHist', () => refreshDebitHistory());
+      await safe('debit_history', () => refreshDebitHistory());
       await safe('llmBuckets', () => refreshLlmBuckets());
       await safe('llmMetrics', () => refreshMetrics());
       await safe('ml', () => refreshML());
@@ -1601,7 +1348,7 @@
       setInterval(() => safe('tokens', () => refreshTokens()), 10000);
       setInterval(() => safe('ml', () => refreshML()), 20000);
       setInterval(() => safe('debit', () => refreshDebitSpreads()), 10000);
-      setInterval(() => safe('debitHist', () => refreshDebitHistory()), 30000);
+      setInterval(() => safe('debit_history', () => refreshDebitHistory()), 30000);
 
       // logs auto-refresh
       let logTimer;
