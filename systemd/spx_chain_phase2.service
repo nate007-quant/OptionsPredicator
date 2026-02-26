@@ -1,0 +1,33 @@
+# Phase 2: 0DTE feature + multi-label builder (TimescaleDB)
+#
+# Install:
+#   sudo cp systemd/spx_chain_phase2.service /etc/systemd/system/spx_chain_phase2.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spx_chain_phase2
+#
+# Logs:
+#   journalctl -u spx_chain_phase2 -f
+
+[Unit]
+Description=SPX 0DTE chain feature/label builder (Phase 2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.phase2_main
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
