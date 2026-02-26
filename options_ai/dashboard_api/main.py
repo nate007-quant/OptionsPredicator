@@ -890,6 +890,11 @@ def create_app() -> FastAPI:
                      AND s.horizon_minutes = 30
                     WHERE c.snapshot_ts = %s
                       AND c.tradable = true
+                      AND (
+                        (%s::text[] IS NULL AND %s::text[] IS NULL)
+                        OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
+                        OR (c.spread_type='PUT' AND c.anchor_type = ANY(%s::text[]))
+                      )
                     ORDER BY
                       CASE WHEN s.p_bigwin IS NULL THEN 1 ELSE 0 END ASC,
                       s.p_bigwin DESC NULLS LAST,
