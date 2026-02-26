@@ -1,0 +1,33 @@
+# Multi-anchor debit spread builder (0DTE)
+#
+# Install:
+#   sudo cp systemd/spx_debit_spreads.service /etc/systemd/system/spx_debit_spreads.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spx_debit_spreads
+#
+# Logs:
+#   journalctl -u spx_debit_spreads -f
+
+[Unit]
+Description=SPX 0DTE multi-anchor debit spread candidates + labels
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.debit_spreads_main
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

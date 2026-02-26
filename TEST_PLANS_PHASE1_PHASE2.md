@@ -172,3 +172,35 @@ This is supported. The ingester will:
 - Phase 2 uses upserts:
   - `chain_features_0dte`: PK `(snapshot_ts)`
   - `chain_labels_0dte`: PK `(snapshot_ts, horizon_minutes)`
+
+---
+
+## Test Plan E — Multi-anchor debit spreads (candidates + labels)
+
+This validates the **multi-anchor debit spread system**:
+
+- Computes GEX levels (call wall / put wall / magnet) from gamma*OI.
+- Builds adjacent-strike debit spread candidates at each anchor.
+- Labels each candidate by horizon (default 30m) using debit change.
+
+### E1) Run smoke test
+
+```bash
+cd /opt/OptionsPredicator
+source .venv/bin/activate
+python scripts/debit_spreads_smoke_test.py --dsn "$SPX_CHAIN_DATABASE_URL" --cleanup
+```
+
+**Pass criteria**:
+- Script prints `PASS debit_spreads_smoke_test`.
+- Synthetic data produces:
+  - non-empty candidates at `spx.debit_spread_candidates_0dte`
+  - non-empty labels at `spx.debit_spread_labels_0dte`
+
+### E2) Verify tables
+
+```sql
+SELECT to_regclass('spx.gex_levels_0dte'),
+       to_regclass('spx.debit_spread_candidates_0dte'),
+       to_regclass('spx.debit_spread_labels_0dte');
+```
