@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from typing import Any, Literal
 
 from zoneinfo import ZoneInfo
@@ -14,12 +14,17 @@ AnchorMode = Literal["ATM", "WALLS", "MAGNET", "ALL"]
 AnchorPolicy = Literal["any", "opposite_wall", "same_wall"]
 PriceMode = Literal["mid"]
 
+StrategyMode = Literal["anchor_based", "structural_walls"]
+LongLegMoneyness = Literal["ATM", "1_ITM"]
+RotationFilter = Literal["none", "spot_delta_5m"]
+
 
 @dataclass(frozen=True)
 class DebitBacktestConfig:
     start_day: date
     end_day: date
 
+    # --- shared / defaults ---
     horizon_minutes: int = 30
 
     entry_mode: EntryMode = "time_range"
@@ -31,13 +36,6 @@ class DebitBacktestConfig:
     max_trades_per_day: int = 1
     one_trade_at_a_time: bool = True
 
-    anchor_mode: AnchorMode = "ATM"
-    anchor_policy: AnchorPolicy = "any"
-
-    min_p_bigwin: float = 0.0
-    min_pred_change: float = 0.0
-
-    allowed_spreads: tuple[str, ...] = ("CALL", "PUT")
     max_debit_points: float = 5.0
 
     stop_loss_pct: float = 0.50
@@ -47,8 +45,30 @@ class DebitBacktestConfig:
     price_mode: PriceMode = "mid"
 
     tz_local: str = "America/Chicago"
-
     include_missing_exits: bool = False
+
+    # --- anchor-based mode knobs ---
+    strategy_mode: StrategyMode = "anchor_based"
+    anchor_mode: AnchorMode = "ATM"
+    anchor_policy: AnchorPolicy = "any"
+    min_p_bigwin: float = 0.0
+    min_pred_change: float = 0.0
+    allowed_spreads: tuple[str, ...] = ("CALL", "PUT")
+
+    # --- structural walls mode knobs ---
+    enable_pw_trade: bool = True
+    enable_cw_trade: bool = True
+    long_leg_moneyness: LongLegMoneyness = "ATM"
+    max_width_points: float = 25.0
+    min_width_points: float = 5.0
+    proximity_min_points: float = 0.0
+    proximity_max_points: float = 30.0
+    rotation_filter: RotationFilter = "spot_delta_5m"
+    prefer_pw_on_tie: bool = True
+
+    # 0=at/below wall, 1=one strike beyond wall, etc.
+    short_put_offset_steps: int = 0
+    short_call_offset_steps: int = 0
 
 
 def _parse_hhmm(s: str) -> time:
@@ -95,6 +115,10 @@ def _mid(bid: float | None, ask: float | None, mid: float | None) -> float | Non
     return None
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return float(min(max(float(x), float(lo)), float(hi)))
+
+
 def _max_drawdown(equity: list[float]) -> float:
     peak = 0.0
     mdd = 0.0
@@ -125,6 +149,147 @@ def _fetch_snapshots_in_window(
             (tz_local, day_local.isoformat(), tz_local, start_t.strftime("%H:%M:%S"), tz_local, end_t.strftime("%H:%M:%S")),
         )
         return [r[0] for r in cur.fetchall()]
+
+
+def _fetch_spot_and_exp(conn: psycopg.Connection, *, snapshot_ts: datetime) -> tuple[float | None, date | None]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT spot, expiration_date
+            FROM spx.chain_features_0dte
+            WHERE snapshot_ts = %s
+            """,
+            (snapshot_ts,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None, None
+        return (float(r[0]) if r[0] is not None else None, r[1])
+
+
+def _fetch_walls(conn: psycopg.Connection, *, snapshot_ts: datetime) -> tuple[float | None, float | None]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT put_wall, call_wall
+            FROM spx.gex_levels_0dte
+            WHERE snapshot_ts = %s
+            """,
+            (snapshot_ts,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None, None
+        return (float(r[0]) if r[0] is not None else None, float(r[1]) if r[1] is not None else None)
+
+
+def _fetch_strikes(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_date: date) -> list[float]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT strike
+            FROM spx.option_chain
+            WHERE snapshot_ts = %s AND expiration_date = %s AND strike IS NOT NULL
+            ORDER BY strike ASC
+            """,
+            (snapshot_ts, expiration_date),
+        )
+        return [float(r[0]) for r in cur.fetchall()]
+
+
+def _nearest_strike(strikes: list[float], target: float) -> float | None:
+    if not strikes:
+        return None
+    best = None
+    best_k = None
+    for k in strikes:
+        d = abs(float(k) - float(target))
+        cand = (d, float(k))
+        if best is None or cand < best:
+            best = cand
+            best_k = float(k)
+    return best_k
+
+
+def _next_up(strikes: list[float], k: float) -> float | None:
+    for s in strikes:
+        if float(s) > float(k):
+            return float(s)
+    return None
+
+
+def _next_dn(strikes: list[float], k: float) -> float | None:
+    for s in reversed(strikes):
+        if float(s) < float(k):
+            return float(s)
+    return None
+
+
+def _step_dn(strikes: list[float], k: float, steps: int) -> float | None:
+    out = float(k)
+    for _ in range(int(steps)):
+        nxt = _next_dn(strikes, out)
+        if nxt is None:
+            return None
+        out = nxt
+    return out
+
+
+def _step_up(strikes: list[float], k: float, steps: int) -> float | None:
+    out = float(k)
+    for _ in range(int(steps)):
+        nxt = _next_up(strikes, out)
+        if nxt is None:
+            return None
+        out = nxt
+    return out
+
+
+def _pick_contract_at_strike(
+    conn: psycopg.Connection,
+    *,
+    snapshot_ts: datetime,
+    expiration_date: date,
+    side: str,
+    strike: float,
+) -> tuple[str, float] | None:
+    """Pick a contract symbol + mid for a given side/strike.
+
+    Prefers rows with a valid stored mid; falls back to bid/ask midpoint.
+    Skips negative mids.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT option_symbol, bid, ask, mid
+            FROM spx.option_chain
+            WHERE snapshot_ts = %s
+              AND expiration_date = %s
+              AND side = %s
+              AND strike = %s
+            """,
+            (snapshot_ts, expiration_date, side, float(strike)),
+        )
+
+        best = None
+        best_sym = None
+        best_mid = None
+        for sym, bid, ask, md in cur.fetchall():
+            m = _mid(bid, ask, md)
+            if m is None:
+                continue
+            if m < 0:
+                continue
+            score = 0 if md is not None else 1
+            cand = (score, float(m))
+            if best is None or cand < best:
+                best = cand
+                best_sym = str(sym)
+                best_mid = float(m)
+
+        if best_sym is None or best_mid is None:
+            return None
+        return best_sym, best_mid
 
 
 def _fetch_candidates_for_window(
@@ -294,8 +459,198 @@ def _fetch_option_mids(
         out: dict[tuple[datetime, str], float | None] = {}
         for r in cur.fetchall():
             ts, sym, bid, ask, md = r
-            out[(ts, sym)] = _mid(bid, ask, md)
+            m = _mid(bid, ask, md)
+            if m is not None and m < 0:
+                m = None
+            out[(ts, sym)] = m
         return out
+
+
+def _build_structural_candidate(
+    conn: psycopg.Connection,
+    *,
+    snapshot_ts: datetime,
+    expiration_date: date,
+    strikes: list[float],
+    spot: float,
+    put_wall: float | None,
+    call_wall: float | None,
+    side: str,
+    long_leg_moneyness: LongLegMoneyness,
+    max_width_points: float,
+    min_width_points: float,
+    max_debit_points: float,
+    short_offset_steps: int,
+) -> dict[str, Any] | None:
+    """Build a structural-walls debit spread using current price as the long leg anchor.
+
+    PUT: long put at/near ATM, short put at/below PW (clamped by width).
+    CALL: long call at/near ATM, short call at/above CW (clamped by width).
+
+    Entry debit is clamped to [0,width].
+    """
+
+    k_atm = _nearest_strike(strikes, float(spot))
+    if k_atm is None:
+        return None
+
+    if side == "put":
+        if put_wall is None:
+            return None
+
+        k_long = float(k_atm)
+        if long_leg_moneyness == "1_ITM":
+            k_long = _next_up(strikes, k_long) or k_long
+
+        # target strike at/below wall
+        k_target = None
+        for k in reversed(strikes):
+            if float(k) <= float(put_wall):
+                k_target = float(k)
+                break
+        if k_target is None:
+            k_target = float(strikes[0])
+
+        k_short = _step_dn(strikes, k_target, int(short_offset_steps))
+        if k_short is None:
+            return None
+
+        if k_short >= k_long:
+            k_short = _next_dn(strikes, k_long)
+            if k_short is None:
+                return None
+
+        width = float(k_long - k_short)
+        if width > float(max_width_points):
+            k_short = _nearest_strike(strikes, float(k_long - max_width_points))
+            if k_short is None:
+                return None
+            if k_short >= k_long:
+                k_short = _next_dn(strikes, k_long)
+                if k_short is None:
+                    return None
+            width = float(k_long - k_short)
+
+        if width < float(min_width_points):
+            target2 = float(k_long - min_width_points)
+            k_short2 = None
+            for k in reversed(strikes):
+                if float(k) <= target2:
+                    k_short2 = float(k)
+                    break
+            if k_short2 is None:
+                return None
+            k_short = k_short2
+            width = float(k_long - k_short)
+
+        if not (float(min_width_points) <= width <= float(max_width_points)):
+            return None
+
+        long_pick = _pick_contract_at_strike(conn, snapshot_ts=snapshot_ts, expiration_date=expiration_date, side="put", strike=k_long)
+        short_pick = _pick_contract_at_strike(conn, snapshot_ts=snapshot_ts, expiration_date=expiration_date, side="put", strike=k_short)
+        if not long_pick or not short_pick:
+            return None
+        long_sym, long_mid = long_pick
+        short_sym, short_mid = short_pick
+
+        debit = _clamp(float(long_mid - short_mid), 0.0, width)
+        if debit <= 0 or debit > float(max_debit_points):
+            return None
+
+        return {
+            "snapshot_ts": snapshot_ts,
+            "direction": "PW_PUT",
+            "anchor_type": "PUT_WALL",
+            "spread_type": "PUT",
+            "k_long": k_long,
+            "k_short": k_short,
+            "width": width,
+            "long_symbol": long_sym,
+            "short_symbol": short_sym,
+            "entry_debit": debit,
+            "spot": float(spot),
+            "put_wall": float(put_wall),
+            "call_wall": float(call_wall) if call_wall is not None else None,
+        }
+
+    # CALL
+    if call_wall is None:
+        return None
+
+    k_long = float(k_atm)
+    if long_leg_moneyness == "1_ITM":
+        k_long = _next_dn(strikes, k_long) or k_long
+
+    # target strike at/above wall
+    k_target = None
+    for k in strikes:
+        if float(k) >= float(call_wall):
+            k_target = float(k)
+            break
+    if k_target is None:
+        k_target = float(strikes[-1])
+
+    k_short = _step_up(strikes, k_target, int(short_offset_steps))
+    if k_short is None:
+        return None
+
+    if k_short <= k_long:
+        k_short = _next_up(strikes, k_long)
+        if k_short is None:
+            return None
+
+    width = float(k_short - k_long)
+    if width > float(max_width_points):
+        k_short = _nearest_strike(strikes, float(k_long + max_width_points))
+        if k_short is None:
+            return None
+        if k_short <= k_long:
+            k_short = _next_up(strikes, k_long)
+            if k_short is None:
+                return None
+        width = float(k_short - k_long)
+
+    if width < float(min_width_points):
+        target2 = float(k_long + min_width_points)
+        k_short2 = None
+        for k in strikes:
+            if float(k) >= target2:
+                k_short2 = float(k)
+                break
+        if k_short2 is None:
+            return None
+        k_short = k_short2
+        width = float(k_short - k_long)
+
+    if not (float(min_width_points) <= width <= float(max_width_points)):
+        return None
+
+    long_pick = _pick_contract_at_strike(conn, snapshot_ts=snapshot_ts, expiration_date=expiration_date, side="call", strike=k_long)
+    short_pick = _pick_contract_at_strike(conn, snapshot_ts=snapshot_ts, expiration_date=expiration_date, side="call", strike=k_short)
+    if not long_pick or not short_pick:
+        return None
+    long_sym, long_mid = long_pick
+    short_sym, short_mid = short_pick
+
+    debit = _clamp(float(long_mid - short_mid), 0.0, width)
+    if debit <= 0 or debit > float(max_debit_points):
+        return None
+
+    return {
+        "snapshot_ts": snapshot_ts,
+        "direction": "CW_CALL",
+        "anchor_type": "CALL_WALL",
+        "spread_type": "CALL",
+        "k_long": k_long,
+        "k_short": k_short,
+        "width": width,
+        "long_symbol": long_sym,
+        "short_symbol": short_sym,
+        "entry_debit": debit,
+        "spot": float(spot),
+        "put_wall": float(put_wall) if put_wall is not None else None,
+        "call_wall": float(call_wall),
+    }
 
 
 def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfig) -> dict[str, Any]:
@@ -321,24 +676,29 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
     cum_pnl = 0.0
     eq_points: list[float] = []
 
+    strike_cache: dict[tuple[datetime, date], list[float]] = {}
+
     for day_local in _daterange(cfg.start_day, cfg.end_day):
         day_trades = 0
         in_position = False
         position_exit_ts: datetime | None = None
 
         snaps = _fetch_snapshots_in_window(conn, day_local=day_local, start_t=start_t, end_t=end_t, tz_local=tz_local)
-        by_ts = _fetch_candidates_for_window(
-            conn,
-            snapshots=snaps,
-            horizon_minutes=cfg.horizon_minutes,
-            max_debit_points=cfg.max_debit_points,
-            min_p_bigwin=cfg.min_p_bigwin,
-            min_pred_change=cfg.min_pred_change,
-            allowed_anchors=allowed_anchors,
-            allowed_spreads=cfg.allowed_spreads,
-            call_anchors=call_anchors,
-            put_anchors=put_anchors,
-        )
+
+        by_ts: dict[datetime, list[dict[str, Any]]] = {}
+        if cfg.strategy_mode == "anchor_based":
+            by_ts = _fetch_candidates_for_window(
+                conn,
+                snapshots=snaps,
+                horizon_minutes=cfg.horizon_minutes,
+                max_debit_points=cfg.max_debit_points,
+                min_p_bigwin=cfg.min_p_bigwin,
+                min_pred_change=cfg.min_pred_change,
+                allowed_anchors=allowed_anchors,
+                allowed_spreads=cfg.allowed_spreads,
+                call_anchors=call_anchors,
+                put_anchors=put_anchors,
+            )
 
         for ts in snaps:
             if day_trades >= int(cfg.max_trades_per_day):
@@ -350,18 +710,139 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     continue
                 in_position = False
 
-            cand = _select_best_candidate(by_ts.get(ts, []))
-            if not cand:
-                continue
+            entry_ts = ts
+            exp_date: date | None = None
+            long_sym: str | None = None
+            short_sym: str | None = None
+            entry_debit: float | None = None
+            width_points: float | None = None
+            direction: str | None = None
+            cand: dict[str, Any] | None = None
 
-            entry_ts = cand["snapshot_ts"]
-            entry_debit = float(cand["debit_points"]) if cand.get("debit_points") is not None else None
-            if entry_debit is None or entry_debit <= 0:
-                continue
+            if cfg.strategy_mode == "anchor_based":
+                cand = _select_best_candidate(by_ts.get(ts, []))
+                if not cand:
+                    continue
+                entry_debit = float(cand["debit_points"]) if cand.get("debit_points") is not None else None
+                if entry_debit is None or entry_debit <= 0:
+                    continue
 
-            exp_date = cand["expiration_date"]
-            long_sym = str(cand["long_symbol"])
-            short_sym = str(cand["short_symbol"])
+                exp_date = cand["expiration_date"]
+                long_sym = str(cand["long_symbol"])
+                short_sym = str(cand["short_symbol"])
+
+                # width for clamping (if missing, we won't clamp)
+                if cand.get("k_long") is not None and cand.get("k_short") is not None:
+                    width_points = abs(float(cand["k_short"]) - float(cand["k_long"]))
+
+            else:
+                # structural walls mode
+                spot, exp_date = _fetch_spot_and_exp(conn, snapshot_ts=ts)
+                if spot is None or exp_date is None:
+                    continue
+                put_wall, call_wall = _fetch_walls(conn, snapshot_ts=ts)
+                if put_wall is None and call_wall is None:
+                    continue
+
+                # rotation filter
+                spot_delta_5m = None
+                if cfg.rotation_filter == "spot_delta_5m":
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT spot
+                            FROM spx.chain_features_0dte
+                            WHERE (snapshot_ts AT TIME ZONE %s)::date = %s::date
+                              AND snapshot_ts < %s
+                            ORDER BY snapshot_ts DESC
+                            LIMIT 1
+                            """,
+                            (tz_local, day_local.isoformat(), ts),
+                        )
+                        r = cur.fetchone()
+                        if r and r[0] is not None:
+                            spot_delta_5m = float(spot - float(r[0]))
+
+                key = (ts, exp_date)
+                strikes = strike_cache.get(key)
+                if strikes is None:
+                    strikes = _fetch_strikes(conn, snapshot_ts=ts, expiration_date=exp_date)
+                    strike_cache[key] = strikes
+                if not strikes:
+                    continue
+
+                candidates: list[dict[str, Any]] = []
+
+                # PW bearish PUT
+                if cfg.enable_pw_trade and put_wall is not None and spot > float(put_wall):
+                    d_pw = float(spot - put_wall)
+                    if float(cfg.proximity_min_points) <= d_pw <= float(cfg.proximity_max_points):
+                        if cfg.rotation_filter != "spot_delta_5m" or (spot_delta_5m is not None and spot_delta_5m < 0):
+                            c = _build_structural_candidate(
+                                conn,
+                                snapshot_ts=ts,
+                                expiration_date=exp_date,
+                                strikes=strikes,
+                                spot=spot,
+                                put_wall=put_wall,
+                                call_wall=call_wall,
+                                side="put",
+                                long_leg_moneyness=cfg.long_leg_moneyness,
+                                max_width_points=cfg.max_width_points,
+                                min_width_points=cfg.min_width_points,
+                                max_debit_points=cfg.max_debit_points,
+                                short_offset_steps=cfg.short_put_offset_steps,
+                            )
+                            if c:
+                                c["distance_to_wall"] = d_pw
+                                candidates.append(c)
+
+                # CW bullish CALL
+                if cfg.enable_cw_trade and call_wall is not None and spot < float(call_wall):
+                    d_cw = float(call_wall - spot)
+                    if float(cfg.proximity_min_points) <= d_cw <= float(cfg.proximity_max_points):
+                        if cfg.rotation_filter != "spot_delta_5m" or (spot_delta_5m is not None and spot_delta_5m > 0):
+                            c = _build_structural_candidate(
+                                conn,
+                                snapshot_ts=ts,
+                                expiration_date=exp_date,
+                                strikes=strikes,
+                                spot=spot,
+                                put_wall=put_wall,
+                                call_wall=call_wall,
+                                side="call",
+                                long_leg_moneyness=cfg.long_leg_moneyness,
+                                max_width_points=cfg.max_width_points,
+                                min_width_points=cfg.min_width_points,
+                                max_debit_points=cfg.max_debit_points,
+                                short_offset_steps=cfg.short_call_offset_steps,
+                            )
+                            if c:
+                                c["distance_to_wall"] = d_cw
+                                candidates.append(c)
+
+                if not candidates:
+                    continue
+
+                # tie-break
+                candidates.sort(key=lambda x: (float(x.get("distance_to_wall") or 1e9), float(x.get("entry_debit") or 1e9)))
+                if len(candidates) >= 2 and float(candidates[0].get("distance_to_wall") or 0) == float(candidates[1].get("distance_to_wall") or 0):
+                    if cfg.prefer_pw_on_tie:
+                        for c in candidates:
+                            if c.get("direction") == "PW_PUT":
+                                candidates = [c]
+                                break
+
+                cand = candidates[0]
+                entry_debit = float(cand["entry_debit"])
+                exp_date = exp_date
+                long_sym = str(cand["long_symbol"])
+                short_sym = str(cand["short_symbol"])
+                width_points = float(cand["width"])
+                direction = str(cand.get("direction") or "")
+
+            if exp_date is None or long_sym is None or short_sym is None or entry_debit is None:
+                continue
 
             # Build forward snapshot path for exits
             path_snaps, tH = _fetch_path_snapshots(
@@ -387,13 +868,16 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             exit_reason: str = "MISSING"
             exit_debit: float | None = None
 
+            clamp_hi = float(width_points) if width_points is not None else float("inf")
+
             # Walk snapshots in order to find first SL/TP hit
             for p_ts in path_snaps:
                 m_long = mids.get((p_ts, long_sym))
                 m_short = mids.get((p_ts, short_sym))
                 if m_long is None or m_short is None:
                     continue
-                spread_mid = float(m_long - m_short)
+                raw = float(m_long - m_short)
+                spread_mid = _clamp(raw, 0.0, clamp_hi)
 
                 if spread_mid <= stop_level:
                     exit_ts = p_ts
@@ -417,9 +901,10 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                         exit_reason = "MISSING"
                         exit_ts = tH
                     else:
+                        raw = float(m_long - m_short)
                         exit_reason = "TIME"
                         exit_ts = tH
-                        exit_debit = float(m_long - m_short)
+                        exit_debit = _clamp(raw, 0.0, clamp_hi)
 
             change_points = None
             pnl_dollars = None
@@ -436,15 +921,17 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 day_trades += 1
                 continue
 
-            trade = {
+            tdict = {
                 "day_local": day_local.isoformat(),
                 "entry_ts": entry_ts.astimezone(ZoneInfo(tz_local)).isoformat(),
                 "exit_ts": exit_ts.astimezone(ZoneInfo(tz_local)).isoformat() if exit_ts else None,
                 "exit_reason": exit_reason,
-                "anchor_type": cand["anchor_type"],
-                "spread_type": cand["spread_type"],
-                "k_long": cand.get("k_long"),
-                "k_short": cand.get("k_short"),
+                "anchor_type": (cand or {}).get("anchor_type"),
+                "spread_type": (cand or {}).get("spread_type"),
+                "k_long": (cand or {}).get("k_long"),
+                "k_short": (cand or {}).get("k_short"),
+                "width_points": width_points,
+                "direction": direction,
                 "long_symbol": long_sym,
                 "short_symbol": short_sym,
                 "entry_debit": entry_debit,
@@ -452,10 +939,13 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 "change_points": change_points,
                 "pnl_dollars": pnl_dollars,
                 "roi": roi,
-                "p_bigwin": cand.get("p_bigwin"),
-                "pred_change": cand.get("pred_change"),
+                "p_bigwin": (cand or {}).get("p_bigwin"),
+                "pred_change": (cand or {}).get("pred_change"),
+                "spot": (cand or {}).get("spot"),
+                "put_wall": (cand or {}).get("put_wall"),
+                "call_wall": (cand or {}).get("call_wall"),
             }
-            trades.append(trade)
+            trades.append(tdict)
 
             if pnl_dollars is not None:
                 cum_pnl += pnl_dollars
@@ -506,11 +996,6 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             "entry_end_ct": cfg.entry_end_ct,
             "max_trades_per_day": int(cfg.max_trades_per_day),
             "one_trade_at_a_time": bool(cfg.one_trade_at_a_time),
-            "anchor_mode": cfg.anchor_mode,
-            "anchor_policy": cfg.anchor_policy,
-            "min_p_bigwin": float(cfg.min_p_bigwin),
-            "min_pred_change": float(cfg.min_pred_change),
-            "allowed_spreads": list(cfg.allowed_spreads),
             "max_debit_points": float(cfg.max_debit_points),
             "stop_loss_pct": float(cfg.stop_loss_pct),
             "take_profit_pct": float(cfg.take_profit_pct),
@@ -518,6 +1003,23 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             "price_mode": cfg.price_mode,
             "tz_local": cfg.tz_local,
             "include_missing_exits": bool(cfg.include_missing_exits),
+            "strategy_mode": cfg.strategy_mode,
+            "anchor_mode": cfg.anchor_mode,
+            "anchor_policy": cfg.anchor_policy,
+            "min_p_bigwin": float(cfg.min_p_bigwin),
+            "min_pred_change": float(cfg.min_pred_change),
+            "allowed_spreads": list(cfg.allowed_spreads),
+            "enable_pw_trade": bool(cfg.enable_pw_trade),
+            "enable_cw_trade": bool(cfg.enable_cw_trade),
+            "long_leg_moneyness": cfg.long_leg_moneyness,
+            "max_width_points": float(cfg.max_width_points),
+            "min_width_points": float(cfg.min_width_points),
+            "proximity_min_points": float(cfg.proximity_min_points),
+            "proximity_max_points": float(cfg.proximity_max_points),
+            "rotation_filter": cfg.rotation_filter,
+            "prefer_pw_on_tie": bool(cfg.prefer_pw_on_tie),
+            "short_put_offset_steps": int(cfg.short_put_offset_steps),
+            "short_call_offset_steps": int(cfg.short_call_offset_steps),
         },
         "summary": summary,
         "equity_curve": equity_curve,

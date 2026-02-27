@@ -683,6 +683,12 @@
             <div class="card-b">
               <div class="row">
                 <label>Start <input id="btStart" type="date" /></label>
+                <label>Strategy
+                  <select id="btStrategyMode">
+                    <option value="anchor_based" selected>Anchor-based</option>
+                    <option value="structural_walls">Structural Walls</option>
+                  </select>
+                </label>
                 <label>End <input id="btEnd" type="date" /></label>
                 <label>Horizon(min) <input id="btH" type="number" min="5" max="180" value="30" style="width:90px;" /></label>
                 <label>Entry mode
@@ -700,7 +706,32 @@
                 <label>Entry end (CT) <input id="btEntryEnd" type="text" value="09:30" style="width:90px;" /></label>
               </div>
 
-              <div class="row" style="margin-top:10px;">
+              <div class="row" style="margin-top:10px;" id="btStructuralControls" style="display:none;">
+                <label><input id="btEnablePW" type="checkbox" checked /> Enable PW trade (bearish PUT)</label>
+                <label><input id="btEnableCW" type="checkbox" checked /> Enable CW trade (bullish CALL)</label>
+                <label>Long moneyness
+                  <select id="btLongMoneyness">
+                    <option value="ATM" selected>ATM</option>
+                    <option value="1_ITM">1_ITM</option>
+                  </select>
+                </label>
+                <label>Max width <input id="btMaxWidth" type="number" value="25" style="width:90px;" /></label>
+                <label>Min width <input id="btMinWidth" type="number" value="5" style="width:90px;" /></label>
+                <label>Prox max <input id="btProxMax" type="number" value="30" style="width:90px;" /></label>
+                <label>Rotation
+                  <select id="btRotation">
+                    <option value="spot_delta_5m" selected>spot_delta_5m</option>
+                    <option value="none">none</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="row" style="margin-top:10px;" id="btStructuralOffsets" style="display:none;">
+                <label>Short put offset (steps) <input id="btShortPutOffset" type="number" value="0" style="width:90px;" /></label>
+                <label>Short call offset (steps) <input id="btShortCallOffset" type="number" value="0" style="width:90px;" /></label>
+              </div>
+
+<div class="row" style="margin-top:10px;">
                 <label>Max trades/day <input id="btMaxPerDay" type="number" min="1" max="10" value="1" style="width:90px;" /></label>
                 <label><input id="btOneAtATime" type="checkbox" checked /> One trade at a time</label>
                 <label>Anchor mode
@@ -1037,9 +1068,20 @@
       }
     }
 
+    function updateBtMode() {
+      const mode = document.getElementById('btStrategyMode')?.value || 'anchor_based';
+      const show = (mode === 'structural_walls');
+      const sc = document.getElementById('btStructuralControls');
+      const so = document.getElementById('btStructuralOffsets');
+      if (sc) sc.style.display = show ? '' : 'none';
+      if (so) so.style.display = show ? '' : 'none';
+    }
+
     async function runBacktestDebitSpreads() {
       setDateDefaults();
+      updateBtMode();
       const payload = {
+        strategy_mode: document.getElementById('btStrategyMode')?.value || 'anchor_based',
         start_day: document.getElementById('btStart')?.value,
         end_day: document.getElementById('btEnd')?.value,
         horizon_minutes: parseInt(document.getElementById('btH')?.value || '30', 10),
@@ -1054,6 +1096,16 @@
         anchor_policy: document.getElementById('btAnchorPolicy')?.value || 'any',
         min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
         min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
+        enable_pw_trade: !!document.getElementById('btEnablePW')?.checked,
+        enable_cw_trade: !!document.getElementById('btEnableCW')?.checked,
+        long_leg_moneyness: document.getElementById('btLongMoneyness')?.value || 'ATM',
+        max_width_points: parseFloat(document.getElementById('btMaxWidth')?.value || '25'),
+        min_width_points: parseFloat(document.getElementById('btMinWidth')?.value || '5'),
+        proximity_min_points: 0,
+        proximity_max_points: parseFloat(document.getElementById('btProxMax')?.value || '30'),
+        rotation_filter: document.getElementById('btRotation')?.value || 'spot_delta_5m',
+        short_put_offset_steps: parseInt(document.getElementById('btShortPutOffset')?.value || '0', 10),
+        short_call_offset_steps: parseInt(document.getElementById('btShortCallOffset')?.value || '0', 10),
         allowed_spreads: ['CALL','PUT'],
         max_debit_points: parseFloat(document.getElementById('btMaxDebit')?.value || '5'),
         stop_loss_pct: parseFloat(document.getElementById('btSL')?.value || '0.5'),
@@ -1579,6 +1631,7 @@
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
+    document.getElementById('btStrategyMode')?.addEventListener('change', () => updateBtMode());
     document.getElementById('refreshDebitHistoryBtn')?.addEventListener('click', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('debitHistOnlyReco')?.addEventListener('change', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
