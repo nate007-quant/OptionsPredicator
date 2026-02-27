@@ -1019,7 +1019,7 @@
     }
 
     function renderBtEquity(curve) {
-      if (!chartAvailable()) return;
+      if (!chartsAvailable()) return;
       const ctx = document.getElementById('btEquityChart');
       if (!ctx) return;
       const labels = (curve || []).map(x => x.ts);
