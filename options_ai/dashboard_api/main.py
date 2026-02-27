@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -27,6 +27,7 @@ from options_ai.runtime_overrides import (
 )
 from options_ai.utils_web.tail import tail_jsonl
 from options_ai.queries import fetch_tokens_summary, fetch_tokens_hourly_series
+from options_ai.backtest.debit_spreads import DebitBacktestConfig, run_backtest_debit_spreads
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -835,6 +836,49 @@ def create_app() -> FastAPI:
             "written_to": str(overrides_path),
             "tz": "America/Chicago",
         }
+
+    
+
+    @app.post("/api/backtest/debit_spreads/run")
+    def backtest_debit_spreads_run(payload: dict[str, Any]) -> dict[str, Any]:
+        """Run a Timescale-backed backtest for 0DTE debit spreads."""
+        dsn = _pg_dsn()
+        if not dsn:
+            raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
+
+        try:
+            start_day = date.fromisoformat(str(payload.get("start_day")))
+            end_day = date.fromisoformat(str(payload.get("end_day")))
+        except Exception:
+            raise HTTPException(status_code=400, detail="start_day/end_day required as YYYY-MM-DD")
+
+        cfg = DebitBacktestConfig(
+            start_day=start_day,
+            end_day=end_day,
+            horizon_minutes=int(payload.get("horizon_minutes", 30)),
+            entry_mode=str(payload.get("entry_mode", "time_range")),
+            session_start_ct=str(payload.get("session_start_ct", "08:30")),
+            entry_first_n_minutes=int(payload.get("entry_first_n_minutes", 60)),
+            entry_start_ct=str(payload.get("entry_start_ct", "08:40")),
+            entry_end_ct=str(payload.get("entry_end_ct", "09:30")),
+            max_trades_per_day=int(payload.get("max_trades_per_day", 1)),
+            one_trade_at_a_time=bool(payload.get("one_trade_at_a_time", True)),
+            anchor_mode=str(payload.get("anchor_mode", "ATM")),
+            anchor_policy=str(payload.get("anchor_policy", os.getenv("DEBIT_ANCHOR_POLICY", "any"))),
+            min_p_bigwin=float(payload.get("min_p_bigwin", 0.0)),
+            min_pred_change=float(payload.get("min_pred_change", 0.0)),
+            allowed_spreads=tuple(payload.get("allowed_spreads", ["CALL", "PUT"])),
+            max_debit_points=float(payload.get("max_debit_points", 5.0)),
+            stop_loss_pct=float(payload.get("stop_loss_pct", 0.50)),
+            take_profit_pct=float(payload.get("take_profit_pct", 2.00)),
+            max_future_lookahead_minutes=int(payload.get("max_future_lookahead_minutes", 120)),
+            price_mode=str(payload.get("price_mode", "mid")),
+            tz_local=str(payload.get("tz_local", "America/Chicago")),
+            include_missing_exits=bool(payload.get("include_missing_exits", False)),
+        )
+
+        with _pg_connect(dsn) as conn:
+            return run_backtest_debit_spreads(conn, cfg)
 
     @app.get("/api/debit_spreads/top")
     def debit_spreads_top(limit: int = Query(12, ge=1, le=100)) -> dict[str, Any]:

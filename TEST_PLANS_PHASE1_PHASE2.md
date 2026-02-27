@@ -233,3 +233,51 @@ WHERE horizon_minutes = 30;
 
 
 Notes: If `p_bigwin` is present in `spx.debit_spread_scores_0dte`, the UI will display it as the model-estimated probability of achieving your configured big-win multiple (ATM=2x, WALL/MAGNET=4x by default) by the horizon.
+
+---
+
+## Test Plan G — Website backtester (0DTE debit spreads)
+
+### G1) API smoke test (manual)
+
+Run a small range that you know has data in Timescale.
+
+```bash
+curl -sS -X POST http://127.0.0.1:8088/api/backtest/debit_spreads/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "start_day": "2026-02-20",
+    "end_day": "2026-02-26",
+    "horizon_minutes": 30,
+    "entry_mode": "time_range",
+    "entry_start_ct": "08:40",
+    "entry_end_ct": "09:30",
+    "max_trades_per_day": 1,
+    "one_trade_at_a_time": true,
+    "anchor_mode": "ALL",
+    "anchor_policy": "opposite_wall",
+    "min_p_bigwin": 0.00,
+    "min_pred_change": 0.00,
+    "max_debit_points": 5.0,
+    "stop_loss_pct": 0.50,
+    "take_profit_pct": 2.00,
+    "price_mode": "mid"
+  }' | head
+```
+
+**Pass criteria**:
+- Response JSON contains `summary`, `equity_curve`, `trades`.
+- `summary.trades` matches number of returned trades.
+
+### G2) UI smoke test
+
+Open the dashboard and go to the **Backtest** tab.
+
+- Set date range
+- Click **Run Backtest**
+
+**Pass criteria**:
+- Summary populates
+- Equity curve renders (if Chart.js available)
+- Trades table populates
+

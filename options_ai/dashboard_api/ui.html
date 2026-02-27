@@ -359,6 +359,7 @@
       <nav class="nav" id="nav">
         <a href="#overview" data-view="overview" class="active">Overview</a>
         <a href="#debit" data-view="debit">Debit Spreads</a>
+        <a href="#backtest" data-view="backtest">Backtest</a>
         <a href="#processing" data-view="processing">Processing</a>
         <a href="#timeseries" data-view="timeseries">Time Series</a>
         <a href="#logs" data-view="logs">Logs</a>
@@ -672,6 +673,100 @@
         </div>
       </section>
 
+
+
+      <!-- BACKTEST -->
+      <section class="view" id="view-backtest">
+        <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>Backtester — 0DTE Debit Spreads</h2><div class="hint">Timescale-backed (mid-based). Entry selection uses ML scores.</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Start <input id="btStart" type="date" /></label>
+                <label>End <input id="btEnd" type="date" /></label>
+                <label>Horizon(min) <input id="btH" type="number" min="5" max="180" value="30" style="width:90px;" /></label>
+                <label>Entry mode
+                  <select id="btEntryMode">
+                    <option value="time_range" selected>time_range</option>
+                    <option value="first_n_minutes">first_n_minutes</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="row" style="margin-top:10px;">
+                <label>Session start (CT) <input id="btSessionStart" type="text" value="08:30" style="width:90px;" /></label>
+                <label>First N (min) <input id="btFirstN" type="number" min="5" max="180" value="60" style="width:90px;" /></label>
+                <label>Entry start (CT) <input id="btEntryStart" type="text" value="08:40" style="width:90px;" /></label>
+                <label>Entry end (CT) <input id="btEntryEnd" type="text" value="09:30" style="width:90px;" /></label>
+              </div>
+
+              <div class="row" style="margin-top:10px;">
+                <label>Max trades/day <input id="btMaxPerDay" type="number" min="1" max="10" value="1" style="width:90px;" /></label>
+                <label><input id="btOneAtATime" type="checkbox" checked /> One trade at a time</label>
+                <label>Anchor mode
+                  <select id="btAnchorMode">
+                    <option value="ATM" selected>ATM</option>
+                    <option value="WALLS">WALLS</option>
+                    <option value="MAGNET">MAGNET</option>
+                    <option value="ALL">ALL</option>
+                  </select>
+                </label>
+                <label>Anchor policy
+                  <select id="btAnchorPolicy">
+                    <option value="any">any</option>
+                    <option value="opposite_wall" selected>opposite_wall</option>
+                    <option value="same_wall">same_wall</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="row" style="margin-top:10px;">
+                <label>Min p(bigwin) <input id="btMinP" type="number" step="0.01" min="0" max="1" value="0.00" style="width:90px;" /></label>
+                <label>Min pred(30m) <input id="btMinPred" type="number" step="0.01" value="0.00" style="width:90px;" /></label>
+                <label>Max debit <input id="btMaxDebit" type="number" step="0.01" value="5.00" style="width:90px;" /></label>
+                <label>Stop loss % <input id="btSL" type="number" step="0.01" value="0.50" style="width:90px;" /></label>
+                <label>Take profit % <input id="btTP" type="number" step="0.01" value="2.00" style="width:90px;" /></label>
+              </div>
+
+              <div class="row" style="margin-top:12px;">
+                <button class="btn-primary" id="runBacktest">Run Backtest</button>
+                <span class="hint" id="btNote"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>Summary</h2><div class="hint">PnL uses multiplier 100; mid-based; snapshot-level exits</div></div>
+            <div class="card-b">
+              <pre id="btSummary" style="font-family:var(--mono); font-size:12px;">(run to see results)</pre>
+              <div style="margin-top:12px;">
+                <canvas id="btEquityChart" height="120"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>Trades</h2><div class="hint">Entries are chosen by p(bigwin) desc, pred_change desc, debit asc (and pred_change&gt;0)</div></div>
+            <div class="card-b">
+              <div style="overflow:auto;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>day</th><th>entry</th><th>exit</th><th>reason</th>
+                      <th>anchor</th><th>type</th><th>debit_in</th><th>debit_out</th>
+                      <th>chg</th><th>pnl$</th><th>roi</th>
+                      <th>p(bigwin)</th><th>pred(30m)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="btTrades"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
 <!-- LOGS -->
       <section class="view" id="view-logs">
         <div class="grid1">
@@ -858,7 +953,7 @@
 
     function routeFromHash() {
       const h = (window.location.hash || '#overview').replace('#','');
-      const allowed = new Set(['overview','debit','processing','timeseries','logs','controls']);
+      const allowed = new Set(['overview','debit','backtest','processing','timeseries','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
@@ -908,7 +1003,114 @@
       return data;
     }
 
-    // Debit spreads (TimescaleDB)
+    // Backtest
+    let btEquityChart;
+
+    function setDateDefaults() {
+      const s = document.getElementById('btStart');
+      const e = document.getElementById('btEnd');
+      if (!s || !e) return;
+      const now = new Date();
+      const end = new Date(now.getTime() - 24*3600*1000); // default: yesterday
+      const start = new Date(end.getTime() - 5*24*3600*1000);
+      const fmt = (d) => d.toISOString().slice(0,10);
+      if (!s.value) s.value = fmt(start);
+      if (!e.value) e.value = fmt(end);
+    }
+
+    function renderBtEquity(curve) {
+      if (!chartAvailable()) return;
+      const ctx = document.getElementById('btEquityChart');
+      if (!ctx) return;
+      const labels = (curve || []).map(x => x.ts);
+      const vals = (curve || []).map(x => x.cum_pnl_dollars);
+      if (!btEquityChart) {
+        btEquityChart = new Chart(ctx, {
+          type: 'line',
+          data: { labels, datasets: [{ label: 'Cum PnL ($)', data: vals, borderColor: '#60a5fa', tension: 0.2 }] },
+          options: { responsive: true, plugins: { legend: { display: true } }, scales: { x: { display: false } } }
+        });
+      } else {
+        btEquityChart.data.labels = labels;
+        btEquityChart.data.datasets[0].data = vals;
+        btEquityChart.update();
+      }
+    }
+
+    async function runBacktestDebitSpreads() {
+      setDateDefaults();
+      const payload = {
+        start_day: document.getElementById('btStart')?.value,
+        end_day: document.getElementById('btEnd')?.value,
+        horizon_minutes: parseInt(document.getElementById('btH')?.value || '30', 10),
+        entry_mode: document.getElementById('btEntryMode')?.value || 'time_range',
+        session_start_ct: document.getElementById('btSessionStart')?.value || '08:30',
+        entry_first_n_minutes: parseInt(document.getElementById('btFirstN')?.value || '60', 10),
+        entry_start_ct: document.getElementById('btEntryStart')?.value || '08:40',
+        entry_end_ct: document.getElementById('btEntryEnd')?.value || '09:30',
+        max_trades_per_day: parseInt(document.getElementById('btMaxPerDay')?.value || '1', 10),
+        one_trade_at_a_time: !!document.getElementById('btOneAtATime')?.checked,
+        anchor_mode: document.getElementById('btAnchorMode')?.value || 'ATM',
+        anchor_policy: document.getElementById('btAnchorPolicy')?.value || 'any',
+        min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
+        min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
+        allowed_spreads: ['CALL','PUT'],
+        max_debit_points: parseFloat(document.getElementById('btMaxDebit')?.value || '5'),
+        stop_loss_pct: parseFloat(document.getElementById('btSL')?.value || '0.5'),
+        take_profit_pct: parseFloat(document.getElementById('btTP')?.value || '2.0'),
+        max_future_lookahead_minutes: 120,
+        price_mode: 'mid'
+      };
+
+      const note = document.getElementById('btNote');
+      if (note) note.textContent = 'running…';
+
+      const resp = await fetch('/api/backtest/debit_spreads/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok) {
+        const t = await resp.text();
+        throw new Error(`backtest http ${resp.status}: ${t}`);
+      }
+      const data = await resp.json();
+
+      const sum = document.getElementById('btSummary');
+      if (sum) sum.textContent = JSON.stringify(data.summary || {}, null, 2);
+
+      renderBtEquity(data.equity_curve || []);
+
+      const tb = document.getElementById('btTrades');
+      if (tb) {
+        tb.innerHTML = '';
+        for (const t of (data.trades || [])) {
+          const tr = document.createElement('tr');
+          const pnl = t.pnl_dollars;
+          tr.innerHTML = `
+            <td>${t.day_local||''}</td>
+            <td>${t.entry_ts||''}</td>
+            <td>${t.exit_ts||''}</td>
+            <td>${t.exit_reason||''}</td>
+            <td>${t.anchor_type||''}</td>
+            <td>${t.spread_type||''}</td>
+            <td>${t.entry_debit==null?'—':fmtNum(t.entry_debit,2)}</td>
+            <td>${t.exit_debit==null?'—':fmtNum(t.exit_debit,2)}</td>
+            <td>${t.change_points==null?'—':fmtNum(t.change_points,2)}</td>
+            <td>${pnl==null?'—':fmtNum(pnl,2)}</td>
+            <td>${t.roi==null?'—':(100*Number(t.roi)).toFixed(1)+'%'}</td>
+            <td>${t.p_bigwin==null?'—':(100*Number(t.p_bigwin)).toFixed(1)+'%'}</td>
+            <td>${t.pred_change==null?'—':fmtNum(t.pred_change,2)}</td>
+          `;
+          tb.appendChild(tr);
+        }
+      }
+
+      if (note) note.textContent = `done: ${((data.trades||[]).length)} trades`;
+      return data;
+    }
+
+// Debit spreads (TimescaleDB)
     async function refreshDailyPick() {
       const win = parseInt(document.getElementById('dailyPickWindow')?.value || '30', 10);
       const minP = parseFloat(document.getElementById('dailyPickMinP')?.value || '0');
@@ -1376,6 +1578,7 @@
     document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
+    document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
     document.getElementById('refreshDebitHistoryBtn')?.addEventListener('click', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('debitHistOnlyReco')?.addEventListener('change', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
