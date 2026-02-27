@@ -243,6 +243,67 @@ def create_app() -> FastAPI:
     if not db_path:
         db_path = _db_path_from_database_url(cfg.database_url)
 
+
+    # Backtest presets + run history (Option C)
+    def _now_utc_iso() -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    def _ensure_backtest_tables() -> None:
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS backtest_presets (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  strategy_key TEXT NOT NULL,
+                  name TEXT NOT NULL,
+                  params_json TEXT NOT NULL,
+                  schema_version INTEGER NOT NULL DEFAULT 1,
+                  created_at_utc TEXT NOT NULL,
+                  updated_at_utc TEXT NOT NULL,
+                  last_run_id INTEGER NULL,
+                  last_run_at_utc TEXT NULL,
+                  last_summary_json TEXT NULL,
+                  UNIQUE(strategy_key, name)
+                );
+                """
+            )
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS backtest_runs (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  strategy_key TEXT NOT NULL,
+                  created_at_utc TEXT NOT NULL,
+                  preset_id INTEGER NULL,
+                  preset_name_at_run TEXT NULL,
+                  params_json TEXT NOT NULL,
+                  summary_json TEXT NOT NULL
+                );
+                """
+            )
+            con.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_created
+                ON backtest_runs(strategy_key, created_at_utc DESC);
+                """
+            )
+            con.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_created
+                ON backtest_runs(preset_id, created_at_utc DESC);
+                """
+            )
+            con.commit()
+
+    def _validate_preset_name(name: str) -> str:
+        nm = (name or '').strip()
+        if not nm:
+            raise HTTPException(status_code=400, detail='name required')
+        if len(nm) > 60:
+            raise HTTPException(status_code=400, detail='name too long (max 60)')
+        return nm
+
+    _ensure_backtest_tables()
+
     app = FastAPI(title="OptionsPredicator Dashboard API", version="0.1")
 
     @app.get("/", response_class=HTMLResponse)
@@ -839,6 +900,190 @@ def create_app() -> FastAPI:
 
     
 
+
+    # ---- Backtest Presets (server-persisted) ----
+
+    @app.get('/api/backtest/presets')
+    def backtest_presets_list(strategy_key: str = Query(...)) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, strategy_key, name, params_json, schema_version,
+                       created_at_utc, updated_at_utc,
+                       last_run_id, last_run_at_utc, last_summary_json
+                FROM backtest_presets
+                WHERE strategy_key = ?
+                ORDER BY updated_at_utc DESC
+                """,
+                (strategy_key,),
+            ).fetchall()
+
+        items = []
+        import json as _json
+        for r in rows:
+            params = None
+            last_summary = None
+            try:
+                params = _json.loads(r['params_json'])
+            except Exception:
+                params = None
+            try:
+                last_summary = _json.loads(r['last_summary_json']) if r['last_summary_json'] else None
+            except Exception:
+                last_summary = None
+
+            items.append({
+                'id': int(r['id']),
+                'strategy_key': r['strategy_key'],
+                'name': r['name'],
+                'params': params,
+                'schema_version': int(r['schema_version'] or 1),
+                'created_at_utc': r['created_at_utc'],
+                'updated_at_utc': r['updated_at_utc'],
+                'last_run_id': r['last_run_id'],
+                'last_run_at_utc': r['last_run_at_utc'],
+                'last_summary': last_summary,
+            })
+
+        return {'strategy_key': strategy_key, 'items': items}
+
+    @app.post('/api/backtest/presets')
+    def backtest_presets_create(body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        strategy_key = str((body or {}).get('strategy_key') or '').strip()
+        if not strategy_key:
+            raise HTTPException(status_code=400, detail='strategy_key required')
+        name = _validate_preset_name(str((body or {}).get('name') or ''))
+        params = (body or {}).get('params')
+        if not isinstance(params, dict):
+            raise HTTPException(status_code=400, detail='params must be an object')
+
+        now = _now_utc_iso()
+        params_json = _json.dumps(params, separators=(',', ':'), sort_keys=True)
+
+        with _connect(db_path) as con:
+            try:
+                con.execute(
+                    """
+                    INSERT INTO backtest_presets(strategy_key, name, params_json, schema_version, created_at_utc, updated_at_utc)
+                    VALUES(?, ?, ?, 1, ?, ?)
+                    """,
+                    (strategy_key, name, params_json, now, now),
+                )
+                con.commit()
+            except sqlite3.IntegrityError:
+                raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+
+        return backtest_presets_list(strategy_key=strategy_key)
+
+    @app.put('/api/backtest/presets/{preset_id}')
+    def backtest_presets_update(preset_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        now = _now_utc_iso()
+        new_name = body.get('name') if isinstance(body, dict) else None
+        new_params = body.get('params') if isinstance(body, dict) else None
+
+        sets = []
+        params: list[Any] = []
+        if new_name is not None:
+            nm = _validate_preset_name(str(new_name))
+            sets.append('name = ?')
+            params.append(nm)
+        if new_params is not None:
+            if not isinstance(new_params, dict):
+                raise HTTPException(status_code=400, detail='params must be an object')
+            sets.append('params_json = ?')
+            params.append(_json.dumps(new_params, separators=(',', ':'), sort_keys=True))
+
+        if not sets:
+            raise HTTPException(status_code=400, detail='nothing to update')
+
+        sets.append('updated_at_utc = ?')
+        params.append(now)
+        params.append(int(preset_id))
+
+        with _connect(db_path) as con:
+            r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='preset not found')
+            strategy_key = r['strategy_key']
+
+            try:
+                con.execute(f"UPDATE backtest_presets SET {', '.join(sets)} WHERE id = ?", tuple(params))
+                con.commit()
+            except sqlite3.IntegrityError:
+                raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+
+        return backtest_presets_list(strategy_key=strategy_key)
+
+    @app.delete('/api/backtest/presets/{preset_id}')
+    def backtest_presets_delete(preset_id: int) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='preset not found')
+            strategy_key = r['strategy_key']
+            con.execute('DELETE FROM backtest_presets WHERE id=?', (int(preset_id),))
+            con.commit()
+        return backtest_presets_list(strategy_key=strategy_key)
+
+
+    # ---- Backtest Runs (history grid) ----
+
+    @app.get('/api/backtest/runs')
+    def backtest_runs_list(
+        strategy_key: str = Query(...),
+        preset_id: int | None = Query(None),
+        limit: int = Query(200, ge=1, le=2000),
+    ) -> dict[str, Any]:
+        import json as _json
+        sql = """
+            SELECT id, strategy_key, created_at_utc, preset_id, preset_name_at_run, params_json, summary_json
+            FROM backtest_runs
+            WHERE strategy_key = ?
+        """
+        params: list[Any] = [strategy_key]
+        if preset_id is not None:
+            sql += " AND preset_id = ?"
+            params.append(int(preset_id))
+        sql += " ORDER BY created_at_utc DESC LIMIT ?"
+        params.append(int(limit))
+
+        with _connect(db_path) as con:
+            rows = con.execute(sql, tuple(params)).fetchall()
+
+        items = []
+        for r in rows:
+            try:
+                params_obj = _json.loads(r['params_json'])
+            except Exception:
+                params_obj = None
+            try:
+                summary_obj = _json.loads(r['summary_json'])
+            except Exception:
+                summary_obj = None
+            items.append({
+                'id': int(r['id']),
+                'created_at_utc': r['created_at_utc'],
+                'preset_id': r['preset_id'],
+                'preset_name_at_run': r['preset_name_at_run'],
+                'params': params_obj,
+                'summary': summary_obj,
+            })
+
+        return {'strategy_key': strategy_key, 'preset_id': preset_id, 'limit': int(limit), 'items': items}
+
+    @app.delete('/api/backtest/runs/{run_id}')
+    def backtest_runs_delete(run_id: int) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            r = con.execute('SELECT strategy_key FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='run not found')
+            strategy_key = r['strategy_key']
+            con.execute('DELETE FROM backtest_runs WHERE id=?', (int(run_id),))
+            con.commit()
+        return {'ok': True, 'deleted': int(run_id), 'strategy_key': strategy_key}
+
     @app.post("/api/backtest/debit_spreads/run")
     def backtest_debit_spreads_run(payload: dict[str, Any]) -> dict[str, Any]:
         """Run a Timescale-backed backtest for 0DTE debit spreads."""
@@ -890,7 +1135,74 @@ def create_app() -> FastAPI:
         )
 
         with _pg_connect(dsn) as conn:
-            return run_backtest_debit_spreads(conn, cfg)
+            result = run_backtest_debit_spreads(conn, cfg)
+
+        # Persist run summary in SQLite for history/compare grid
+        import json as _json
+        now = _now_utc_iso()
+        strategy_mode = str(payload.get('strategy_mode', 'anchor_based'))
+        strategy_key = f"debit_spreads:{strategy_mode}"
+
+        preset_id_in = payload.get('preset_id', None)
+        preset_id_final: int | None = None
+        preset_name_at_run: str | None = None
+
+        # Store "pure" params (omit preset_id)
+        params_payload = dict(payload or {})
+        params_payload.pop('preset_id', None)
+
+        summary = (result or {}).get('summary') or {}
+
+        with _connect(db_path) as con:
+            if preset_id_in is not None:
+                try:
+                    pid = int(preset_id_in)
+                    row = con.execute('SELECT id, name FROM backtest_presets WHERE id=?', (pid,)).fetchone()
+                    if row:
+                        preset_id_final = int(row['id'])
+                        preset_name_at_run = str(row['name'])
+                except Exception:
+                    preset_id_final = None
+                    preset_name_at_run = None
+
+            cur = con.execute(
+                """
+                INSERT INTO backtest_runs(strategy_key, created_at_utc, preset_id, preset_name_at_run, params_json, summary_json)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    strategy_key,
+                    now,
+                    preset_id_final,
+                    preset_name_at_run,
+                    _json.dumps(params_payload, separators=(',', ':'), sort_keys=True),
+                    _json.dumps(summary, separators=(',', ':'), sort_keys=True),
+                ),
+            )
+            run_id = int(cur.lastrowid)
+
+            if preset_id_final is not None:
+                con.execute(
+                    """
+                    UPDATE backtest_presets
+                    SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
+                    WHERE id=?
+                    """,
+                    (
+                        run_id,
+                        now,
+                        _json.dumps(summary, separators=(',', ':'), sort_keys=True),
+                        now,
+                        preset_id_final,
+                    ),
+                )
+            con.commit()
+
+        # Keep existing shape; add identifiers so UI can link/refresh
+        if isinstance(result, dict):
+            result['run_id'] = run_id
+            result['preset_id'] = preset_id_final
+        return result
 
     @app.get("/api/debit_spreads/top")
     def debit_spreads_top(limit: int = Query(12, ge=1, le=100)) -> dict[str, Any]:

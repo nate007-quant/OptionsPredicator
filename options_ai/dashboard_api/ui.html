@@ -463,6 +463,7 @@
               </div>
             </div>
           </div>
+
         </div>
       </section>
 
@@ -759,6 +760,19 @@
                 <label>Take profit % <input id="btTP" type="number" step="0.01" value="2.00" style="width:90px;" /></label>
               </div>
 
+
+
+              <div class="row" style="margin-top:10px;">
+                <label>Presets
+                  <select id="btPresetSelect" style="min-width:240px;">
+                    <option value="">(no preset)</option>
+                  </select>
+                </label>
+                <button id="btPresetSave" disabled>Save</button>
+                <button id="btPresetSaveAs">Save As…</button>
+                <button class="btn-danger" id="btPresetDelete" disabled>Delete</button>
+                <span class="hint" id="btPresetLastRun"></span>
+              </div>
               <div class="row" style="margin-top:12px;">
                 <button class="btn-primary" id="runBacktest">Run Backtest</button>
                 <span class="hint" id="btNote"></span>
@@ -796,6 +810,42 @@
           </div>
 
         </div>
+
+
+          <div class="card">
+            <div class="card-h"><h2>Backtest Runs</h2><div class="hint">Server-persisted history (SQLite). Click a run row to load params.</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Show
+                  <select id="btRunsScope">
+                    <option value="all" selected>All runs</option>
+                    <option value="preset">Selected preset</option>
+                  </select>
+                </label>
+                <label>Limit <input id="btRunsLimit" type="number" value="200" min="10" max="2000" style="width:90px;" /></label>
+                <button class="btn-primary" id="btRunsRefresh">Refresh</button>
+                <span class="hint" id="btRunsNote"></span>
+              </div>
+              <div style="overflow:auto; margin-top:12px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>created_at</th>
+                      <th>preset</th>
+                      <th>start</th>
+                      <th>end</th>
+                      <th>H</th>
+                      <th>trades</th>
+                      <th>total_pnl</th>
+                      <th>win_rate</th>
+                      <th>max_dd</th>
+                    </tr>
+                  </thead>
+                  <tbody id="btRunsTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
       </section>
 
 <!-- LOGS -->
@@ -1077,10 +1127,15 @@
       if (so) so.style.display = show ? '' : 'none';
     }
 
-    async function runBacktestDebitSpreads() {
+    function btStrategyKey() {
+      const mode = document.getElementById('btStrategyMode')?.value || 'anchor_based';
+      return `debit_spreads:${mode}`;
+    }
+
+    function btReadFormPayload() {
       setDateDefaults();
       updateBtMode();
-      const payload = {
+      return {
         strategy_mode: document.getElementById('btStrategyMode')?.value || 'anchor_based',
         start_day: document.getElementById('btStart')?.value,
         end_day: document.getElementById('btEnd')?.value,
@@ -1113,6 +1168,203 @@
         max_future_lookahead_minutes: 120,
         price_mode: 'mid'
       };
+    }
+
+    function btApplyPayloadToForm(p) {
+      if (!p) return;
+      const setv = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = String(v); };
+      const setc = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+
+      setv('btStrategyMode', p.strategy_mode);
+      setv('btStart', p.start_day);
+      setv('btEnd', p.end_day);
+      setv('btH', p.horizon_minutes);
+      setv('btEntryMode', p.entry_mode);
+      setv('btSessionStart', p.session_start_ct);
+      setv('btFirstN', p.entry_first_n_minutes);
+      setv('btEntryStart', p.entry_start_ct);
+      setv('btEntryEnd', p.entry_end_ct);
+      setv('btMaxPerDay', p.max_trades_per_day);
+      setc('btOneAtATime', p.one_trade_at_a_time);
+      setv('btAnchorMode', p.anchor_mode);
+      setv('btAnchorPolicy', p.anchor_policy);
+      setv('btMinP', p.min_p_bigwin);
+      setv('btMinPred', p.min_pred_change);
+
+      setc('btEnablePW', p.enable_pw_trade);
+      setc('btEnableCW', p.enable_cw_trade);
+      setv('btLongMoneyness', p.long_leg_moneyness);
+      setv('btMaxWidth', p.max_width_points);
+      setv('btMinWidth', p.min_width_points);
+      setv('btProxMax', p.proximity_max_points);
+      setv('btRotation', p.rotation_filter);
+      setv('btShortPutOffset', p.short_put_offset_steps);
+      setv('btShortCallOffset', p.short_call_offset_steps);
+
+      setv('btMaxDebit', p.max_debit_points);
+      setv('btSL', p.stop_loss_pct);
+      setv('btTP', p.take_profit_pct);
+
+      updateBtMode();
+    }
+
+    function btSelectedPresetId() {
+      const sel = document.getElementById('btPresetSelect');
+      if (!sel) return null;
+      const v = (sel.value || '').trim();
+      if (!v) return null;
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    async function btReloadPresets() {
+      const sk = btStrategyKey();
+      const data = await jget(`/api/backtest/presets?strategy_key=${encodeURIComponent(sk)}`);
+      const sel = document.getElementById('btPresetSelect');
+      if (!sel) return data;
+
+      const current = sel.value;
+      sel.innerHTML = '';
+      const opt0 = document.createElement('option');
+      opt0.value = '';
+      opt0.textContent = '(no preset)';
+      sel.appendChild(opt0);
+
+      for (const it of (data.items || [])) {
+        const opt = document.createElement('option');
+        opt.value = String(it.id);
+        opt.textContent = it.name;
+        sel.appendChild(opt);
+      }
+      if (current) sel.value = current;
+
+      btUpdatePresetButtons(data);
+      btRenderPresetLastRun(data);
+      return data;
+    }
+
+    function btUpdatePresetButtons(presetsData) {
+      const pid = btSelectedPresetId();
+      const btnSave = document.getElementById('btPresetSave');
+      const btnDel = document.getElementById('btPresetDelete');
+      if (btnSave) btnSave.disabled = !(pid);
+      if (btnDel) btnDel.disabled = !(pid);
+    }
+
+    function btRenderPresetLastRun(presetsData) {
+      const pid = btSelectedPresetId();
+      const el = document.getElementById('btPresetLastRun');
+      if (!el) return;
+      if (!pid) { el.textContent = ''; return; }
+      const it = (presetsData?.items || []).find(x => String(x.id) === String(pid));
+      if (!it) { el.textContent = ''; return; }
+      if (!it.last_run_at_utc) { el.textContent = 'Last run: —'; return; }
+      const trades = it.last_summary?.trades ?? it.last_summary?.n_trades;
+      const pnl = it.last_summary?.total_pnl ?? it.last_summary?.total_pnl_dollars;
+      const extra = (trades !== undefined || pnl !== undefined) ? ` (trades=${trades ?? '—'}, pnl=${pnl ?? '—'})` : '';
+      el.textContent = `Last run: ${it.last_run_at_utc}${extra}`;
+    }
+
+    async function btPresetSaveAs() {
+      const name = prompt('Preset name:');
+      if (!name) return;
+      const body = { strategy_key: btStrategyKey(), name: name, params: btReadFormPayload() };
+      await jpost('/api/backtest/presets', body);
+      const data = await btReloadPresets();
+      // select newly created preset if name matches
+      const sel = document.getElementById('btPresetSelect');
+      const it = (data.items||[]).find(x => x.name === name.trim());
+      if (sel && it) sel.value = String(it.id);
+      btUpdatePresetButtons(data);
+      btRenderPresetLastRun(data);
+      toast('preset saved', 'success');
+      await btRefreshRuns();
+    }
+
+    async function btPresetSave() {
+      const pid = btSelectedPresetId();
+      if (!pid) return;
+      const ok = confirm('Overwrite preset params?');
+      if (!ok) return;
+      await jput(`/api/backtest/presets/${pid}`, { params: btReadFormPayload() });
+      const data = await btReloadPresets();
+      toast('preset updated', 'success');
+      btUpdatePresetButtons(data);
+      btRenderPresetLastRun(data);
+      await btRefreshRuns();
+    }
+
+    async function btPresetDelete() {
+      const pid = btSelectedPresetId();
+      if (!pid) return;
+      const ok = confirm('Delete preset?');
+      if (!ok) return;
+      await jdel(`/api/backtest/presets/${pid}`);
+      const sel = document.getElementById('btPresetSelect');
+      if (sel) sel.value = '';
+      const data = await btReloadPresets();
+      toast('preset deleted', 'success');
+      btUpdatePresetButtons(data);
+      btRenderPresetLastRun(data);
+      await btRefreshRuns();
+    }
+
+    async function btRefreshRuns() {
+      const note = document.getElementById('btRunsNote');
+      if (note) note.textContent = 'loading…';
+
+      const sk = btStrategyKey();
+      const scope = document.getElementById('btRunsScope')?.value || 'all';
+      const lim = parseInt(document.getElementById('btRunsLimit')?.value || '200', 10);
+      let url = `/api/backtest/runs?strategy_key=${encodeURIComponent(sk)}&limit=${encodeURIComponent(String(lim))}`;
+      if (scope === 'preset') {
+        const pid = btSelectedPresetId();
+        if (pid) url += `&preset_id=${encodeURIComponent(String(pid))}`;
+      }
+
+      const data = await jget(url);
+      const tb = document.getElementById('btRunsTable');
+      if (tb) {
+        tb.innerHTML = '';
+        for (const it of (data.items || [])) {
+          const p = it.params || {};
+          const sum = it.summary || {};
+          const tr = document.createElement('tr');
+          tr.style.cursor = 'pointer';
+          const trades = sum.trades ?? sum.n_trades ?? '—';
+          const pnl = sum.total_pnl_dollars ?? sum.total_pnl ?? '—';
+          const wr = sum.win_rate ?? sum.winrate ?? null;
+          const maxdd = sum.max_drawdown ?? sum.max_dd ?? null;
+          tr.innerHTML = `
+            <td>${it.created_at_utc || ''}</td>
+            <td>${it.preset_name_at_run || '—'}</td>
+            <td>${p.start_day || '—'}</td>
+            <td>${p.end_day || '—'}</td>
+            <td>${p.horizon_minutes ?? '—'}</td>
+            <td>${trades}</td>
+            <td>${pnl}</td>
+            <td>${wr === null || wr === undefined ? '—' : (100*Number(wr)).toFixed(1)+'%'}</td>
+            <td>${maxdd === null || maxdd === undefined ? '—' : String(maxdd)}</td>
+          `;
+          tr.addEventListener('click', () => {
+            btApplyPayloadToForm(p);
+            toast('loaded params from run', 'info');
+          });
+          tb.appendChild(tr);
+        }
+      }
+
+      if (note) note.textContent = `runs: ${(data.items||[]).length}`;
+      return data;
+    }
+
+
+    async function runBacktestDebitSpreads() {
+      setDateDefaults();
+      updateBtMode();
+      const payload = btReadFormPayload();
+      const pid = btSelectedPresetId();
+      if (pid) payload.preset_id = pid;
 
       const note = document.getElementById('btNote');
       if (note) note.textContent = 'running…';
