@@ -1254,6 +1254,7 @@ def create_app() -> FastAPI:
                         "pred_change": float(r[10]) if r[10] is not None else None,
                         "p_bigwin": float(r[11]) if r[11] is not None else None,
                     })
+        return {"items": items, "tz": "America/Chicago", "anchor_policy": anchor_policy}
 
 
 
