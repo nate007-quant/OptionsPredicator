@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi import Response
+from fastapi.staticfiles import StaticFiles
 
 from options_ai.config import load_config
 from options_ai.runtime_overrides import (
@@ -304,7 +305,12 @@ def create_app() -> FastAPI:
 
     _ensure_backtest_tables()
 
-    app = FastAPI(title="OptionsPredicator Dashboard API", version="0.1")
+    app = FastAPI(title="Nate's Option Dashboard API", version="0.1")
+
+    # Static assets for the UI (logos, etc.)
+    static_dir = Path(__file__).with_name("static")
+    static_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     def index(response: Response) -> str:

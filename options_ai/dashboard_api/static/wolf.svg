@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Wolf logo">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e7ecff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#a6b0d6" stop-opacity="0.85"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Stylized front-facing wolf head ("staring") -->
+  <path fill="url(#g)" d="M128 18c-18 15-32 23-52 30-6 2-10 7-10 13v53c0 55 34 96 62 117 28-21 62-62 62-117V61c0-6-4-11-10-13-20-7-34-15-52-30z"/>
+
+  <!-- Ears -->
+  <path fill="#0b1020" fill-opacity="0.30" d="M76 52l20 26-22 10V60c0-3 1-6 2-8z"/>
+  <path fill="#0b1020" fill-opacity="0.30" d="M180 52l-20 26 22 10V60c0-3-1-6-2-8z"/>
+
+  <!-- Face mask -->
+  <path fill="#0b1020" fill-opacity="0.25" d="M88 98c10-18 25-28 40-28s30 10 40 28c6 11 9 23 9 35 0 35-23 60-49 78-26-18-49-43-49-78 0-12 3-24 9-35z"/>
+
+  <!-- Eyes (stare) -->
+  <ellipse cx="108" cy="128" rx="14" ry="10" fill="#0b1020" fill-opacity="0.75"/>
+  <ellipse cx="148" cy="128" rx="14" ry="10" fill="#0b1020" fill-opacity="0.75"/>
+  <circle cx="112" cy="128" r="4" fill="#60a5fa"/>
+  <circle cx="152" cy="128" r="4" fill="#60a5fa"/>
+
+  <!-- Nose -->
+  <path d="M128 152c-7 0-12 5-12 11 0 9 10 14 12 14s12-5 12-14c0-6-5-11-12-11z" fill="#0b1020" fill-opacity="0.75"/>
+
+  <!-- Subtle outline -->
+  <path d="M128 18c-18 15-32 23-52 30-6 2-10 7-10 13v53c0 55 34 96 62 117 28-21 62-62 62-117V61c0-6-4-11-10-13-20-7-34-15-52-30z" fill="none" stroke="#60a5fa" stroke-opacity="0.35" stroke-width="6"/>
+</svg>

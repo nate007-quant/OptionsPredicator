@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OptionsPredicator</title>
+  <title>Nate's Option Dashboard</title>
 
   <style>
     :root {
@@ -88,10 +88,16 @@
     .brand {
       display: flex;
       gap: var(--space-3);
-      align-items: baseline;
+      align-items: center;
+    }
+    .logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      box-shadow: var(--shadow-sm);
     }
     .brand h1 {
-      font-size: 16px;
+      font-size: 18px;
       margin: 0;
       letter-spacing: 0.2px;
     }
@@ -339,7 +345,8 @@
   <div class="app">
     <div class="appbar">
       <div class="brand">
-        <h1>OptionsPredicator</h1>
+        <img src="/static/wolf.svg" alt="Wolf logo" class="logo"/>
+        <h1>Nate's Option Dashboard</h1>
         <div class="sub">Dashboard</div>
       </div>
 
