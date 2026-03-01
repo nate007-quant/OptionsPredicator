@@ -635,7 +635,7 @@ def run_phase2_daemon(cfg: Phase2Config) -> None:
             # (We intentionally avoid logging dependencies here.)
             pass
 
-        time.sleep(cfg.poll_seconds if not did else 0.5)
+        time.sleep(cfg.poll_seconds if not did else 10.0)
 
 
 def load_phase2_config_from_env() -> Phase2Config:
