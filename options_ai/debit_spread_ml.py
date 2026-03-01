@@ -645,7 +645,7 @@ def run_daemon(cfg: DebitMLConfig) -> None:
         except Exception:
             pass
 
-        time.sleep(cfg.poll_seconds if not did else 0.2)
+        time.sleep(cfg.poll_seconds if not did else 5.0)
 
 
 def load_config_from_env() -> DebitMLConfig:
