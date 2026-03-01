@@ -380,7 +380,7 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
             except Exception:
                 pass
 
-            time.sleep(cfg_effective.watch_poll_seconds if not processed_any else 1.0)
+            time.sleep(cfg_effective.watch_poll_seconds if not processed_any else 3.0)
 
         except Exception as e:
             lg = get_logger()
