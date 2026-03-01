@@ -649,7 +649,7 @@ def run_daemon(cfg: DebitSpreadConfig) -> None:
             # Keep daemon alive; journalctl will show stack traces when run under systemd.
             pass
 
-        time.sleep(cfg.poll_seconds if not did else 0.1)
+        time.sleep(cfg.poll_seconds if not did else 2.0)
 
 
 def load_config_from_env() -> DebitSpreadConfig:
