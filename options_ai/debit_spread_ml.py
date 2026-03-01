@@ -373,16 +373,24 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
     )
 
 
-def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedModel) -> int:
-    """Score tradable candidates for the latest snapshot and upsert into scores table."""
 
+
+def _latest_candidate_snapshot_ts(conn: psycopg.Connection) -> datetime | None:
+    """Return the latest snapshot_ts present in debit_spread_candidates_0dte."""
     with conn.cursor() as cur:
         cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_candidates_0dte")
         r = cur.fetchone()
-        latest = r[0] if r else None
-        if latest is None:
-            return 0
+        return r[0] if r else None
 
+
+def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedModel) -> int:
+    """Score tradable candidates for the latest snapshot and upsert into scores table."""
+
+    latest = _latest_candidate_snapshot_ts(conn)
+    if latest is None:
+        return 0
+
+    with conn.cursor() as cur:
         cur.execute(
             """
             SELECT
@@ -598,6 +606,8 @@ def score_recent_backfill(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
 
 def run_daemon(cfg: DebitMLConfig) -> None:
     last_train_ts = 0.0
+    last_scored_snapshot_ts: datetime | None = None
+    last_scored_trained_at: datetime | None = None
 
     with psycopg.connect(cfg.db_dsn) as conn:
         ensure_schema(conn)
@@ -611,7 +621,24 @@ def run_daemon(cfg: DebitMLConfig) -> None:
                 tm = train_if_needed(conn, cfg, force=force)
                 if tm is not None:
                     last_train_ts = now
-                    n = score_latest_snapshot(conn, cfg, tm)
+
+                    # Avoid tight upsert loops: only rescore the latest snapshot when it advances
+                    # (or when the model was retrained, in which case we refresh once).
+                    latest = _latest_candidate_snapshot_ts(conn)
+                    if latest is not None:
+                        should_score_latest = (
+                            latest != last_scored_snapshot_ts
+                            or tm.trained_at != last_scored_trained_at
+                        )
+                        if should_score_latest:
+                            n = _score_snapshot(conn, cfg, tm, snapshot_ts=latest)
+                            last_scored_snapshot_ts = latest
+                            last_scored_trained_at = tm.trained_at
+                        else:
+                            n = 0
+                    else:
+                        n = 0
+
                     n2 = score_recent_backfill(conn, cfg, tm, limit=200)
                     if n or n2:
                         did = True
