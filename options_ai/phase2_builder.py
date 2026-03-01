@@ -549,17 +549,30 @@ def compute_labels_for_snapshot(
 
 
 def _candidate_snapshot_ts(conn: psycopg.Connection, *, limit: int) -> list[datetime]:
-    """Pick recent snapshot_ts that exist in option_chain but may not yet have features."""
+    """Pick snapshot_ts that exist in option_chain but are missing features.
+
+    NOTE: This query is on a hot path (phase2 daemon). The previous implementation
+    scanned a large portion of the option_chain hypertable (ORDER BY ASC + anti-join),
+    which can consume significant CPU on small hosts.
+
+    We instead sample the *latest* snapshot_ts first (DESC + LIMIT) and then
+    anti-join against chain_features_0dte. This drastically reduces work when the
+    pipeline lag is near "now" (the common case).
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT DISTINCT oc.snapshot_ts
-            FROM spx.option_chain oc
+            SELECT oc.snapshot_ts
+            FROM (
+                SELECT DISTINCT snapshot_ts
+                FROM spx.option_chain
+                ORDER BY snapshot_ts DESC
+                LIMIT %s
+            ) oc
             LEFT JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = oc.snapshot_ts
             WHERE f.snapshot_ts IS NULL
-            ORDER BY oc.snapshot_ts ASC
-            LIMIT %s
+            ORDER BY oc.snapshot_ts DESC
             """,
             (int(limit),),
         )
