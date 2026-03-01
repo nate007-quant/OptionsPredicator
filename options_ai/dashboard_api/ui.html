@@ -1912,6 +1912,16 @@
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
 
     document.getElementById('btPresetSelect')?.addEventListener('change', () => {
+      // When a preset is selected, load its saved params into the form.
+      const pid = btSelectedPresetId();
+      if (pid && btPresetsData && Array.isArray(btPresetsData.items)) {
+        const it = btPresetsData.items.find(x => String(x.id) === String(pid));
+        if (it && it.params) {
+          btApplyPayloadToForm(it.params);
+          toast('loaded preset params', 'info');
+        }
+      }
+
       btUpdatePresetButtons(btPresetsData);
       btRenderPresetLastRun(btPresetsData);
       safe('bt_runs', () => btRefreshRuns());
