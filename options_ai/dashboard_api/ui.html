@@ -1028,6 +1028,24 @@
       try { return JSON.parse(txt); } catch { return {raw: txt}; }
     }
 
+    async function jput(path, obj) {
+      const r = await fetch(api + path, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(obj)
+      });
+      const txt = await r.text();
+      if (!r.ok) throw new Error(txt);
+      try { return JSON.parse(txt); } catch { return {raw: txt}; }
+    }
+
+    async function jdel(path) {
+      const r = await fetch(api + path, { method: 'DELETE' });
+      const txt = await r.text();
+      if (!r.ok) throw new Error(txt);
+      try { return JSON.parse(txt); } catch { return {raw: txt}; }
+    }
+
     function setActiveView(view) {
       document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
       const v = document.getElementById(`view-${view}`);
@@ -1092,6 +1110,8 @@
 
     // Backtest
     let btEquityChart;
+    let btPresetsData;
+
 
     function setDateDefaults() {
       const s = document.getElementById('btStart');
@@ -1244,6 +1264,7 @@
       }
       if (current) sel.value = current;
 
+      btPresetsData = data;
       btUpdatePresetButtons(data);
       btRenderPresetLastRun(data);
       return data;
@@ -1889,7 +1910,18 @@
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
-    document.getElementById('btStrategyMode')?.addEventListener('change', () => updateBtMode());
+
+    document.getElementById('btPresetSelect')?.addEventListener('change', () => {
+      btUpdatePresetButtons(btPresetsData);
+      btRenderPresetLastRun(btPresetsData);
+      safe('bt_runs', () => btRefreshRuns());
+    });
+    document.getElementById('btStrategyMode')?.addEventListener('change', () => {
+      updateBtMode();
+      // Presets are keyed by strategy_mode; reload when strategy changes.
+      safe('bt_presets', () => btReloadPresets());
+      safe('bt_runs', () => btRefreshRuns());
+    });
     document.getElementById('refreshDebitHistoryBtn')?.addEventListener('click', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('debitHistOnlyReco')?.addEventListener('change', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
@@ -1919,6 +1951,10 @@
       await safe('mlBuckets', () => refreshMlBuckets());
       await safe('eod', () => refreshEod());
       await safe('logs', () => refreshLogs());
+
+      // Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
+      await safe('bt_presets', () => btReloadPresets());
+      await safe('bt_runs', () => btRefreshRuns());
 
       // intervals
       setInterval(() => safe('health', () => refreshHealth()), 5000);
