@@ -1351,6 +1351,16 @@ def create_app() -> FastAPI:
         dt1 = dt0 + timedelta(minutes=int(window_minutes))
         end_time = dt1.time().strftime("%H:%M:%S")
 
+        # Convert CT day + window into a UTC timestamp range so Postgres can use snapshot_ts indexes
+        try:
+            y, m, d = (int(x) for x in day_ct.split("-", 2))
+        except Exception:
+            raise HTTPException(status_code=400, detail="day_local must be YYYY-MM-DD")
+        dt_start_ct = datetime(y, m, d, start_h, start_m, 0, tzinfo=CENTRAL_TZ)
+        dt_end_ct = dt_start_ct + timedelta(minutes=int(window_minutes))
+        dt_start_utc = dt_start_ct.astimezone(timezone.utc)
+        dt_end_utc = dt_end_ct.astimezone(timezone.utc)
+
         anchors = None
         if allowed_anchors:
             anchors = [a.strip().upper() for a in allowed_anchors.split(",") if a.strip()]
@@ -1367,8 +1377,6 @@ def create_app() -> FastAPI:
                     WITH eligible AS (
                       SELECT
                         c.snapshot_ts,
-                        (c.snapshot_ts AT TIME ZONE 'America/Chicago')::date AS d_local,
-                        (c.snapshot_ts AT TIME ZONE 'America/Chicago')::time AS t_local,
                         c.anchor_type,
                         c.spread_type,
                         c.anchor_strike,
@@ -1389,9 +1397,8 @@ def create_app() -> FastAPI:
                        AND s.spread_type = c.spread_type
                       WHERE c.tradable = true
                         AND f.low_quality = false
-                        AND (c.snapshot_ts AT TIME ZONE 'America/Chicago')::date = %s::date
-                        AND (c.snapshot_ts AT TIME ZONE 'America/Chicago')::time >= %s::time
-                        AND (c.snapshot_ts AT TIME ZONE 'America/Chicago')::time < %s::time
+                        AND c.snapshot_ts >= %s
+                        AND c.snapshot_ts < %s
                         AND s.p_bigwin IS NOT NULL
                         AND s.pred_change IS NOT NULL
                         AND s.p_bigwin >= %s
@@ -1445,11 +1452,10 @@ def create_app() -> FastAPI:
                     FROM ranked_day
                     WHERE rn_day = 1
                     LIMIT 1
-                    """,
+""",
                     (
-                        day_ct,
-                        start_time,
-                        end_time,
+                        dt_start_utc,
+                        dt_end_utc,
                         float(min_p_bigwin),
                         float(min_pred_change),
                         call_anchors,
