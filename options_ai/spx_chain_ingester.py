@@ -526,7 +526,7 @@ def run_chain_ingest_daemon(cfg: ChainIngestConfig) -> None:
                 did_any = True
                 processed.add(p.name)
 
-        time.sleep(cfg.poll_seconds if not did_any else 0.05)
+        time.sleep(cfg.poll_seconds if not did_any else 1.0)
 
 
 def load_chain_ingest_config_from_env() -> ChainIngestConfig:
