@@ -549,9 +549,29 @@ def compute_labels_for_feature_row(
         return upserted
 
 
-def _candidate_snapshot_ts(conn: psycopg.Connection, *, limit: int) -> list[datetime]:
-    """Pick recent snapshot_ts from option_chain (DESC)."""
+def _candidate_snapshot_ts(conn: psycopg.Connection, *, cfg: Phase2TermConfig, limit: int) -> list[datetime]:
+    """Pick snapshot_ts values to process.
+
+    For term horizons measured in days, the most recent snapshots won't have enough
+    future data to form labels yet. To bootstrap training, we mix:
+
+    - recent snapshots (for near-live features)
+    - snapshots old enough that (ts + max_horizon) is likely within the available data
+
+    We still compute missing-future labels when they occur; ML training filters those out.
+    """
+
+    n = max(1, int(limit))
+    n_recent = max(1, n // 2)
+    n_hist = max(1, n - n_recent)
+    max_h = max((int(x) for x in cfg.horizons_minutes), default=0)
+
     with conn.cursor() as cur:
+        cur.execute("SELECT max(snapshot_ts) FROM spx.option_chain")
+        r = cur.fetchone()
+        max_ts = r[0] if r else None
+
+        # 1) very recent
         cur.execute(
             """
             SELECT DISTINCT snapshot_ts
@@ -559,9 +579,34 @@ def _candidate_snapshot_ts(conn: psycopg.Connection, *, limit: int) -> list[date
             ORDER BY snapshot_ts DESC
             LIMIT %s
             """,
-            (int(limit),),
+            (n_recent,),
         )
-        return [r[0] for r in cur.fetchall()]
+        recent = [x[0] for x in cur.fetchall()]
+
+        hist: list[datetime] = []
+        if max_ts is not None and max_h > 0:
+            cutoff = max_ts - timedelta(minutes=int(max_h))
+            cur.execute(
+                """
+                SELECT DISTINCT snapshot_ts
+                FROM spx.option_chain
+                WHERE snapshot_ts <= %s
+                ORDER BY snapshot_ts DESC
+                LIMIT %s
+                """,
+                (cutoff, n_hist),
+            )
+            hist = [x[0] for x in cur.fetchall()]
+
+    out: list[datetime] = []
+    seen: set[datetime] = set()
+    for ts in recent + hist:
+        if ts in seen:
+            continue
+        seen.add(ts)
+        out.append(ts)
+    return out
+
 
 
 def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, limit: int) -> list[tuple[datetime, Any]]:
@@ -577,7 +622,7 @@ def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, 
                 WHERE l.snapshot_ts = f.snapshot_ts
                   AND l.expiration_date = f.expiration_date
               )
-            ORDER BY f.snapshot_ts ASC
+            ORDER BY f.snapshot_ts DESC
             LIMIT %s
             """,
             (term_bucket, int(limit)),
@@ -594,7 +639,7 @@ def run_daemon(cfg: Phase2TermConfig) -> None:
         try:
             with psycopg.connect(cfg.db_dsn) as conn:
                 # Features backfill: sample recent snapshot_ts, pick term expiration per snapshot
-                for ts in _candidate_snapshot_ts(conn, limit=cfg.batch_limit):
+                for ts in _candidate_snapshot_ts(conn, cfg=cfg, limit=cfg.batch_limit):
                     r = compute_features_for_snapshot(conn, snapshot_ts=ts, cfg=cfg)
                     if r:
                         did = True

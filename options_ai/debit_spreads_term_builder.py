@@ -641,34 +641,36 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
     return upserted
 
 
-def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: str, limit: int) -> list[tuple[datetime, Any]]:
+def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: str, max_horizon_minutes: int, limit: int) -> list[tuple[datetime, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT f.snapshot_ts, f.expiration_date
             FROM spx.chain_features_term f
             WHERE f.term_bucket = %s
+              AND f.snapshot_ts <= (SELECT max(snapshot_ts) FROM spx.option_chain) - (%s * INTERVAL '1 minute')
               AND NOT EXISTS (
                 SELECT 1
                 FROM spx.debit_spread_candidates_term c
                 WHERE c.snapshot_ts = f.snapshot_ts
                   AND c.expiration_date = f.expiration_date
               )
-            ORDER BY f.snapshot_ts ASC
+            ORDER BY f.snapshot_ts DESC
             LIMIT %s
             """,
-            (term_bucket, int(limit)),
+            (term_bucket, int(max_horizon_minutes), int(limit)),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
 
-def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, limit: int) -> list[tuple[datetime, Any]]:
+def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, max_horizon_minutes: int, limit: int) -> list[tuple[datetime, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT c.snapshot_ts, c.expiration_date
             FROM spx.debit_spread_candidates_term c
             WHERE c.term_bucket = %s
+              AND c.snapshot_ts <= (SELECT max(snapshot_ts) FROM spx.option_chain) - (%s * INTERVAL '1 minute')
               AND NOT EXISTS (
                 SELECT 1
                 FROM spx.debit_spread_labels_term l
@@ -676,10 +678,10 @@ def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, 
                   AND l.expiration_date = c.expiration_date
               )
             GROUP BY c.snapshot_ts, c.expiration_date
-            ORDER BY c.snapshot_ts ASC
+            ORDER BY c.snapshot_ts DESC
             LIMIT %s
             """,
-            (term_bucket, int(limit)),
+            (term_bucket, int(max_horizon_minutes), int(limit)),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
@@ -692,12 +694,12 @@ def run_daemon(cfg: DebitSpreadTermConfig) -> None:
         did = False
         try:
             with psycopg.connect(cfg.db_dsn) as conn:
-                for ts, exp in _feature_rows_missing_candidates(conn, term_bucket=cfg.term_bucket, limit=cfg.batch_limit):
+                for ts, exp in _feature_rows_missing_candidates(conn, term_bucket=cfg.term_bucket, max_horizon_minutes=max(cfg.horizons_minutes), limit=cfg.batch_limit):
                     n = compute_candidates_for_snapshot(conn, snapshot_ts=ts, cfg=cfg)
                     if n:
                         did = True
 
-                for ts, exp in _feature_rows_missing_labels(conn, term_bucket=cfg.term_bucket, limit=cfg.batch_limit):
+                for ts, exp in _feature_rows_missing_labels(conn, term_bucket=cfg.term_bucket, max_horizon_minutes=max(cfg.horizons_minutes), limit=cfg.batch_limit):
                     n = compute_labels_for_snapshot(conn, snapshot_ts=ts, expiration_date=exp, cfg=cfg)
                     if n:
                         did = True
