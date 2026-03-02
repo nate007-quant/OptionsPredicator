@@ -89,7 +89,7 @@ def main() -> int:
                 fn = path.name
                 try:
                     parsed = parse_chain_filename(fn, filename_tz=cfg.filename_tz)
-                    raw = path.read_text(encoding="utf-8")
+                    raw = path.read_text(encoding="utf-8-sig")  # tolerate UTF-8 BOM
                     snap = json.loads(raw)
                     if not isinstance(snap, dict):
                         raise ValueError("snapshot JSON root must be an object")
