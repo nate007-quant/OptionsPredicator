@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
+import statistics
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -23,17 +25,26 @@ except Exception:  # pragma: no cover
 
 # Example filename:
 #   SPX-5940.17-2025-03-28-20250303-100058.json
+# Also supported (weekly snapshots with non-numeric spot token):
+#   SPX-Unknown-2026-04-10-20260226-145112.json
 # Notes:
 # - Some sources may emit stray spaces; we strip them.
 FILENAME_RE = re.compile(
-    r"^(?P<underlying>[A-Z]+)-(?P<spot>\d+(?:\.\d+)?)-(?P<exp>\d{4}-\d{2}-\d{2})-(?P<obsDate>\d{8})-(?P<obsTime>\d{6})\.json$"
+    r"^(?P<underlying>[A-Za-z]+)-(?P<spot>[^-]+)-(?P<exp>\d{4}-\d{2}-\d{2})-(?P<obsDate>\d{8})-(?P<obsTime>\d{6})\.json$"
 )
+
+
+def _normalize_underlying(u: Any) -> str:
+    s = str(u).strip().upper()
+    if s in {"SPX", "SPXW"}:
+        return "SPX"
+    return s
 
 
 @dataclass(frozen=True)
 class ParsedChainFilename:
     underlying: str
-    underlying_price: float
+    underlying_price: float | None
     expiration_date: date
     snapshot_local: datetime
     snapshot_ts_utc: datetime
@@ -59,8 +70,18 @@ def parse_chain_filename(name: str, *, filename_tz: str) -> ParsedChainFilename:
     if not m:
         raise ValueError(f"invalid filename format: {name!r}")
 
-    underlying = m.group("underlying").upper()
-    spot = float(m.group("spot"))
+    underlying = _normalize_underlying(m.group("underlying"))
+
+    spot_token = m.group("spot")
+    spot: float | None
+    try:
+        spot = float(spot_token)
+    except Exception:
+        spot = None
+    else:
+        if not math.isfinite(spot):
+            spot = None
+
     exp = date.fromisoformat(m.group("exp"))
 
     if ZoneInfo is None:
@@ -263,9 +284,13 @@ def _as_num(x: Any) -> float | None:
     if x is None:
         return None
     try:
-        return float(x)
+        v = float(x)
     except Exception:
         return None
+
+    if not math.isfinite(v):
+        return None
+    return v
 
 
 def _as_int(x: Any) -> int | None:
@@ -342,13 +367,41 @@ def build_rows(
     theta = _arr(snapshot, "theta", n)
     vega = _arr(snapshot, "vega", n)
 
+    # Underlying spot precedence:
+    # 1) Prefer per-row snapshot["underlyingPrice"][i] when present+finite
+    # 2) If underlyingPrice exists but row value is missing/unparseable: use snapshot-level median
+    # 3) If underlyingPrice is missing entirely: fall back to numeric spot parsed from filename
+    if underlying_price is None and parsed.underlying_price is None:
+        raise ValueError(
+            "missing underlyingPrice array in snapshot and filename spot token is not a finite float"
+        )
+
+    fallback_spot: float | None = None
+    if underlying_price is not None:
+        finite_spots = [_as_num(v) for v in underlying_price]
+        finite_spots = [v for v in finite_spots if v is not None]
+        fallback_spot = statistics.median(finite_spots) if finite_spots else None
+
     out: list[dict[str, Any]] = []
     for i in range(n):
+        row_underlying = (
+            _normalize_underlying(underlying[i])
+            if underlying is not None and underlying[i] is not None
+            else parsed.underlying
+        )
+
+        if underlying_price is not None:
+            row_spot = _as_num(underlying_price[i])
+            if row_spot is None:
+                row_spot = fallback_spot
+        else:
+            row_spot = parsed.underlying_price
+
         out.append(
             {
                 "snapshot_ts": parsed.snapshot_ts_utc,
                 "option_symbol": str(option_symbol[i]),
-                "underlying": (str(underlying[i]) if underlying is not None and underlying[i] is not None else parsed.underlying),
+                "underlying": row_underlying,
                 "expiration_date": parsed.expiration_date,
                 "side": (str(side[i]) if side is not None and side[i] is not None else None),
                 "strike": (_as_num(strike[i]) if strike is not None else None),
@@ -366,11 +419,7 @@ def build_rows(
                 "in_the_money": (_as_bool(in_the_money[i]) if in_the_money is not None else None),
                 "intrinsic_value": (_as_num(intrinsic_value[i]) if intrinsic_value is not None else None),
                 "extrinsic_value": (_as_num(extrinsic_value[i]) if extrinsic_value is not None else None),
-                "underlying_price": (
-                    _as_num(underlying_price[i])
-                    if underlying_price is not None
-                    else float(parsed.underlying_price)
-                ),
+                "underlying_price": row_spot,
                 "iv": (_as_num(iv[i]) if iv is not None else None),
                 "delta": (_as_num(delta[i]) if delta is not None else None),
                 "gamma": (_as_num(gamma[i]) if gamma is not None else None),
