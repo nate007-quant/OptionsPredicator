@@ -686,7 +686,7 @@
       <section class="view" id="view-backtest">
         <div class="grid1">
           <div class="card">
-            <div class="card-h"><h2>Backtester — 0DTE Debit Spreads</h2><div class="hint">Timescale-backed (mid-based). Entry selection uses ML scores.</div></div>
+            <div class="card-h"><h2>Backtester — Debit Spreads</h2><div class="hint">0DTE uses ML scores; target-DTE mode builds candidates on-the-fly.</div></div>
             <div class="card-b">
               <div class="row">
                 <label>Start <input id="btStart" type="date" /></label>
@@ -698,6 +698,21 @@
                 </label>
                 <label>End <input id="btEnd" type="date" /></label>
                 <label>Horizon(min) <input id="btH" type="number" min="5" max="180" value="30" style="width:90px;" /></label>
+                <label>Expiration
+                  <select id="btExpMode">
+                    <option value="0dte" selected>0dte</option>
+                    <option value="target_dte">target_dte</option>
+                  </select>
+                </label>
+                <label id="btTargetDteWrap" style="display:none;">Target DTE (days)
+                  <select id="btTargetDte">
+                    <option value="7" selected>7</option>
+                    <option value="14">14</option>
+                    <option value="21">21</option>
+                    <option value="30">30</option>
+                  </select>
+                </label>
+                <label id="btDteTolWrap" style="display:none;">DTE tol (days) <input id="btDteTol" type="number" min="0" max="14" value="2" style="width:90px;" /></label>
                 <label>Entry mode
                   <select id="btEntryMode">
                     <option value="time_range" selected>time_range</option>
@@ -1151,11 +1166,28 @@
       const so = document.getElementById('btStructuralOffsets');
       if (sc) sc.style.display = show ? '' : 'none';
       if (so) so.style.display = show ? '' : 'none';
+      // expiration/tenor controls
+      const em = document.getElementById('btExpMode')?.value || '0dte';
+      const showTerm = (em === 'target_dte');
+      const tw = document.getElementById('btTargetDteWrap');
+      const tolw = document.getElementById('btDteTolWrap');
+      if (tw) tw.style.display = showTerm ? '' : 'none';
+      if (tolw) tolw.style.display = showTerm ? '' : 'none';
+    }
+
+    function btExpKey() {
+      const em = document.getElementById('btExpMode')?.value || '0dte';
+      if (em === '0dte') return 'exp0dte';
+      const td = parseInt(document.getElementById('btTargetDte')?.value || '7', 10);
+      const tol = parseInt(document.getElementById('btDteTol')?.value || '2', 10);
+      const td2 = Number.isFinite(td) ? td : 7;
+      const tol2 = Number.isFinite(tol) ? tol : 2;
+      return `dte${td2}t${tol2}`;
     }
 
     function btStrategyKey() {
       const mode = document.getElementById('btStrategyMode')?.value || 'anchor_based';
-      return `debit_spreads:${mode}`;
+      return `debit_spreads:${mode}:${btExpKey()}`;
     }
 
     function btReadFormPayload() {
@@ -1165,6 +1197,9 @@
         strategy_mode: document.getElementById('btStrategyMode')?.value || 'anchor_based',
         start_day: document.getElementById('btStart')?.value,
         end_day: document.getElementById('btEnd')?.value,
+        expiration_mode: document.getElementById('btExpMode')?.value || '0dte',
+        target_dte_days: ((document.getElementById('btExpMode')?.value || '0dte') === 'target_dte') ? parseInt(document.getElementById('btTargetDte')?.value || '7', 10) : null,
+        dte_tolerance_days: parseInt(document.getElementById('btDteTol')?.value || '2', 10),
         horizon_minutes: parseInt(document.getElementById('btH')?.value || '30', 10),
         entry_mode: document.getElementById('btEntryMode')?.value || 'time_range',
         session_start_ct: document.getElementById('btSessionStart')?.value || '08:30',
@@ -1204,6 +1239,9 @@
       setv('btStrategyMode', p.strategy_mode);
       setv('btStart', p.start_day);
       setv('btEnd', p.end_day);
+      setv('btExpMode', p.expiration_mode);
+      setv('btTargetDte', p.target_dte_days);
+      setv('btDteTol', p.dte_tolerance_days);
       setv('btH', p.horizon_minutes);
       setv('btEntryMode', p.entry_mode);
       setv('btSessionStart', p.session_start_ct);

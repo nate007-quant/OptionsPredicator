@@ -1092,7 +1092,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/backtest/debit_spreads/run")
     def backtest_debit_spreads_run(payload: dict[str, Any]) -> dict[str, Any]:
-        """Run a Timescale-backed backtest for 0DTE debit spreads."""
+        """Run a Timescale-backed backtest for debit spreads (0DTE default; optional target DTE)."""
         dsn = _pg_dsn()
         if not dsn:
             raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
@@ -1106,6 +1106,13 @@ def create_app() -> FastAPI:
         cfg = DebitBacktestConfig(
             start_day=start_day,
             end_day=end_day,
+            expiration_mode=str(payload.get("expiration_mode", "0dte")),
+            target_dte_days=(
+                int(payload.get("target_dte_days"))
+                if payload.get("target_dte_days") not in (None, "")
+                else None
+            ),
+            dte_tolerance_days=int(payload.get("dte_tolerance_days", 2)),
             horizon_minutes=int(payload.get("horizon_minutes", 30)),
             entry_mode=str(payload.get("entry_mode", "time_range")),
             session_start_ct=str(payload.get("session_start_ct", "08:30")),
@@ -1147,7 +1154,22 @@ def create_app() -> FastAPI:
         import json as _json
         now = _now_utc_iso()
         strategy_mode = str(payload.get('strategy_mode', 'anchor_based'))
-        strategy_key = f"debit_spreads:{strategy_mode}"
+
+        exp_mode = str(payload.get('expiration_mode', '0dte') or '0dte').strip().lower()
+        if exp_mode == '0dte':
+            exp_key = 'exp0dte'
+        else:
+            try:
+                td = int(payload.get('target_dte_days') or 7)
+            except Exception:
+                td = 7
+            try:
+                tol = int(payload.get('dte_tolerance_days') or 2)
+            except Exception:
+                tol = 2
+            exp_key = f'dte{td}t{tol}'
+
+        strategy_key = f"debit_spreads:{strategy_mode}:{exp_key}"
 
         preset_id_in = payload.get('preset_id', None)
         preset_id_final: int | None = None

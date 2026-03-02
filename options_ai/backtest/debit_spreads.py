@@ -17,12 +17,18 @@ PriceMode = Literal["mid"]
 StrategyMode = Literal["anchor_based", "structural_walls"]
 LongLegMoneyness = Literal["ATM", "1_ITM"]
 RotationFilter = Literal["none", "spot_delta_5m"]
+ExpirationMode = Literal["0dte", "target_dte"]
 
 
 @dataclass(frozen=True)
 class DebitBacktestConfig:
     start_day: date
     end_day: date
+
+    # --- expiration selection ---
+    expiration_mode: ExpirationMode = "0dte"
+    target_dte_days: int | None = None
+    dte_tolerance_days: int = 2
 
     # --- shared / defaults ---
     horizon_minutes: int = 30
@@ -181,6 +187,235 @@ def _fetch_walls(conn: psycopg.Connection, *, snapshot_ts: datetime) -> tuple[fl
         if not r:
             return None, None
         return (float(r[0]) if r[0] is not None else None, float(r[1]) if r[1] is not None else None)
+
+
+
+def _fetch_levels(conn: psycopg.Connection, *, snapshot_ts: datetime) -> tuple[float | None, float | None, float | None]:
+    """Return (put_wall, call_wall, magnet) from gex_levels_0dte for the snapshot.
+
+    Note: gex_levels_0dte is computed for the 0DTE chain, but the levels are on SPX
+    and can be reused as anchors for non-0DTE tenors (best-effort).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT put_wall, call_wall, magnet
+            FROM spx.gex_levels_0dte
+            WHERE snapshot_ts = %s
+            """,
+            (snapshot_ts,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None, None, None
+        pw = float(r[0]) if r[0] is not None else None
+        cw = float(r[1]) if r[1] is not None else None
+        mg = float(r[2]) if r[2] is not None else None
+        return pw, cw, mg
+
+
+def _pick_expiration_for_target_dte(
+    conn: psycopg.Connection,
+    *,
+    snapshot_ts: datetime,
+    target_dte_days: int,
+    dte_tolerance_days: int,
+    tz_local: str,
+) -> date | None:
+    """Pick an expiration_date closest to target DTE (within tolerance) for a snapshot.
+
+    DTE is computed as (expiration_date - local_trade_date(snapshot_ts, tz_local)).days
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT expiration_date
+            FROM (
+              SELECT
+                expiration_date,
+                ABS((expiration_date - (snapshot_ts AT TIME ZONE %s)::date) - %s) AS dte_diff
+              FROM spx.option_chain
+              WHERE snapshot_ts = %s
+              GROUP BY expiration_date
+            ) t
+            WHERE dte_diff <= %s
+            ORDER BY dte_diff ASC, expiration_date ASC
+            LIMIT 1
+            """,
+            (tz_local, int(target_dte_days), snapshot_ts, int(dte_tolerance_days)),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None
+        return r[0]
+
+
+def _build_simple_debit_candidate(
+    conn: psycopg.Connection,
+    *,
+    snapshot_ts: datetime,
+    expiration_date: date,
+    spread_type: str,
+    strikes: list[float],
+    anchor_strike: float,
+    max_debit_points: float,
+    max_short_candidates: int = 12,
+) -> dict[str, Any] | None:
+    """Build a simple debit spread around an anchor strike (best-effort, on-the-fly).
+
+    CALL: long call @ anchor, short call above.
+    PUT:  long put  @ anchor, short put  below.
+
+    Returns candidate with long/short symbols and debit_points if tradable.
+    """
+    st = (spread_type or "").upper().strip()
+    if st not in {"CALL", "PUT"}:
+        return None
+
+    side = "call" if st == "CALL" else "put"
+
+    k_long = float(anchor_strike)
+    if st == "CALL":
+        short_strikes = [float(k) for k in strikes if float(k) > k_long][: int(max_short_candidates)]
+    else:
+        short_strikes = [float(k) for k in reversed(strikes) if float(k) < k_long][: int(max_short_candidates)]
+
+    long_pick = _pick_contract_at_strike(conn, snapshot_ts=snapshot_ts, expiration_date=expiration_date, side=side, strike=k_long)
+    if not long_pick:
+        return None
+    long_sym, long_mid = long_pick
+
+    best = None
+    for k_short in short_strikes:
+        short_pick = _pick_contract_at_strike(conn, snapshot_ts=snapshot_ts, expiration_date=expiration_date, side=side, strike=float(k_short))
+        if not short_pick:
+            continue
+        short_sym, short_mid = short_pick
+        width = abs(float(k_short) - float(k_long))
+        if width <= 0:
+            continue
+        debit = _clamp(float(long_mid - short_mid), 0.0, width)
+        if debit <= 0 or debit > float(max_debit_points):
+            continue
+        cand = {
+            "k_long": float(k_long),
+            "k_short": float(k_short),
+            "long_symbol": str(long_sym),
+            "short_symbol": str(short_sym),
+            "debit_points": float(debit),
+            "width_points": float(width),
+        }
+        key = (float(debit), float(width))
+        if best is None or key < best[0]:
+            best = (key, cand)
+
+    return best[1] if best else None
+
+
+def _fetch_candidates_term_anchor_based(
+    conn: psycopg.Connection,
+    *,
+    snapshots: list[datetime],
+    cfg: DebitBacktestConfig,
+    allowed_anchors: list[str],
+    call_anchors: list[str] | None,
+    put_anchors: list[str] | None,
+) -> dict[datetime, list[dict[str, Any]]]:
+    if not snapshots:
+        return {}
+
+    by_ts: dict[datetime, list[dict[str, Any]]] = {}
+    exp_cache: dict[datetime, date | None] = {}
+
+    for ts in snapshots:
+        spot, _exp0 = _fetch_spot_and_exp(conn, snapshot_ts=ts)
+        if spot is None:
+            continue
+
+        target = cfg.target_dte_days
+        if target is None:
+            # default to 1w if not provided
+            target = 7
+
+        if ts in exp_cache:
+            exp = exp_cache[ts]
+        else:
+            exp = _pick_expiration_for_target_dte(
+                conn,
+                snapshot_ts=ts,
+                target_dte_days=int(target),
+                dte_tolerance_days=int(cfg.dte_tolerance_days),
+                tz_local=cfg.tz_local,
+            )
+            exp_cache[ts] = exp
+
+        if exp is None:
+            continue
+
+        strikes = _fetch_strikes(conn, snapshot_ts=ts, expiration_date=exp)
+        if not strikes:
+            continue
+
+        pw, cw, mg = _fetch_levels(conn, snapshot_ts=ts)
+        anchors: dict[str, float] = {"ATM": float(spot)}
+        if pw is not None:
+            anchors["PUT_WALL"] = float(pw)
+        if cw is not None:
+            anchors["CALL_WALL"] = float(cw)
+        if mg is not None:
+            anchors["MAGNET"] = float(mg)
+
+        cands: list[dict[str, Any]] = []
+
+        for anchor_type in allowed_anchors:
+            if anchor_type not in anchors:
+                continue
+            anchor_level = float(anchors[anchor_type])
+            k_anchor = _nearest_strike(strikes, anchor_level)
+            if k_anchor is None:
+                continue
+
+            for spread_type in cfg.allowed_spreads:
+                st = (spread_type or "").upper().strip()
+                if st == "CALL" and call_anchors is not None and anchor_type not in call_anchors:
+                    continue
+                if st == "PUT" and put_anchors is not None and anchor_type not in put_anchors:
+                    continue
+
+                base = _build_simple_debit_candidate(
+                    conn,
+                    snapshot_ts=ts,
+                    expiration_date=exp,
+                    spread_type=st,
+                    strikes=strikes,
+                    anchor_strike=float(k_anchor),
+                    max_debit_points=float(cfg.max_debit_points),
+                )
+                if not base:
+                    continue
+
+                cands.append(
+                    {
+                        "snapshot_ts": ts,
+                        "anchor_type": anchor_type,
+                        "spread_type": st,
+                        "expiration_date": exp,
+                        "anchor_strike": float(k_anchor),
+                        "k_long": base["k_long"],
+                        "k_short": base["k_short"],
+                        "long_symbol": base["long_symbol"],
+                        "short_symbol": base["short_symbol"],
+                        "debit_points": base["debit_points"],
+                        "pred_change": None,
+                        "p_bigwin": None,
+                    }
+                )
+
+        if cands:
+            cands.sort(key=lambda x: float(x.get("debit_points") or 1e18))
+            by_ts[ts] = cands
+
+    return by_ts
 
 
 def _fetch_strikes(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_date: date) -> list[float]:
@@ -687,18 +922,28 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
 
         by_ts: dict[datetime, list[dict[str, Any]]] = {}
         if cfg.strategy_mode == "anchor_based":
-            by_ts = _fetch_candidates_for_window(
-                conn,
-                snapshots=snaps,
-                horizon_minutes=cfg.horizon_minutes,
-                max_debit_points=cfg.max_debit_points,
-                min_p_bigwin=cfg.min_p_bigwin,
-                min_pred_change=cfg.min_pred_change,
-                allowed_anchors=allowed_anchors,
-                allowed_spreads=cfg.allowed_spreads,
-                call_anchors=call_anchors,
-                put_anchors=put_anchors,
-            )
+            if cfg.expiration_mode == "0dte":
+                by_ts = _fetch_candidates_for_window(
+                    conn,
+                    snapshots=snaps,
+                    horizon_minutes=cfg.horizon_minutes,
+                    max_debit_points=cfg.max_debit_points,
+                    min_p_bigwin=cfg.min_p_bigwin,
+                    min_pred_change=cfg.min_pred_change,
+                    allowed_anchors=allowed_anchors,
+                    allowed_spreads=cfg.allowed_spreads,
+                    call_anchors=call_anchors,
+                    put_anchors=put_anchors,
+                )
+            else:
+                by_ts = _fetch_candidates_term_anchor_based(
+                    conn,
+                    snapshots=snaps,
+                    cfg=cfg,
+                    allowed_anchors=allowed_anchors,
+                    call_anchors=call_anchors,
+                    put_anchors=put_anchors,
+                )
 
         for ts in snaps:
             if day_trades >= int(cfg.max_trades_per_day):
@@ -737,8 +982,23 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
 
             else:
                 # structural walls mode
-                spot, exp_date = _fetch_spot_and_exp(conn, snapshot_ts=ts)
-                if spot is None or exp_date is None:
+                spot, exp0 = _fetch_spot_and_exp(conn, snapshot_ts=ts)
+                if spot is None:
+                    continue
+
+                if cfg.expiration_mode == "0dte":
+                    exp_date = exp0
+                else:
+                    target = cfg.target_dte_days if cfg.target_dte_days is not None else 7
+                    exp_date = _pick_expiration_for_target_dte(
+                        conn,
+                        snapshot_ts=ts,
+                        target_dte_days=int(target),
+                        dte_tolerance_days=int(cfg.dte_tolerance_days),
+                        tz_local=cfg.tz_local,
+                    )
+
+                if exp_date is None:
                     continue
                 put_wall, call_wall = _fetch_walls(conn, snapshot_ts=ts)
                 if put_wall is None and call_wall is None:
@@ -988,6 +1248,9 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
         "config": {
             "start_day": cfg.start_day.isoformat(),
             "end_day": cfg.end_day.isoformat(),
+            "expiration_mode": cfg.expiration_mode,
+            "target_dte_days": int(cfg.target_dte_days) if cfg.target_dte_days is not None else None,
+            "dte_tolerance_days": int(cfg.dte_tolerance_days),
             "horizon_minutes": int(cfg.horizon_minutes),
             "entry_mode": cfg.entry_mode,
             "session_start_ct": cfg.session_start_ct,
