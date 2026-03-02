@@ -12,11 +12,17 @@ Safe to re-run: successful files are moved to ARCHIVE_ROOT/archive/YYYYMMDD/.
 
 from __future__ import annotations
 
+
 import argparse
 import json
 import sys
 import time
 from pathlib import Path
+
+# Ensure project root is on sys.path when run as a script (sys.path[0]=scripts/)
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import psycopg
 
