@@ -1970,6 +1970,20 @@
       safe('bt_presets', () => btReloadPresets());
       safe('bt_runs', () => btRefreshRuns());
     });
+    document.getElementById('btExpMode')?.addEventListener('change', () => {
+      updateBtMode();
+      // Presets/runs are keyed by strategy_key which includes expiration selection.
+      safe('bt_presets', () => btReloadPresets());
+      safe('bt_runs', () => btRefreshRuns());
+    });
+    document.getElementById('btTargetDte')?.addEventListener('change', () => {
+      safe('bt_presets', () => btReloadPresets());
+      safe('bt_runs', () => btRefreshRuns());
+    });
+    document.getElementById('btDteTol')?.addEventListener('change', () => {
+      safe('bt_presets', () => btReloadPresets());
+      safe('bt_runs', () => btRefreshRuns());
+    });
     document.getElementById('refreshDebitHistoryBtn')?.addEventListener('click', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('debitHistOnlyReco')?.addEventListener('change', () => safe('debit_history', () => refreshDebitHistory()));
     document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
