@@ -81,75 +81,136 @@ def main() -> int:
     fail = 0
     t0 = time.time()
 
-    with psycopg.connect(cfg.database_url) as conn:
-        with conn.cursor() as cur:
-            cur.execute("BEGIN")
+    def _connect_with_retry(max_tries: int = 10) -> psycopg.Connection:
+        delay = 1.0
+        last_err: Exception | None = None
+        for i in range(1, int(max_tries) + 1):
+            try:
+                return psycopg.connect(cfg.database_url)
+            except Exception as e:
+                last_err = e
+                print(json.dumps({"event": "reprocess_db_connect_fail", "try": i, "error": str(e)[:300]}), flush=True)
+                time.sleep(delay)
+                delay = min(30.0, delay * 1.5)
+        assert last_err is not None
+        raise last_err
 
-            for idx, path in enumerate(files, start=1):
-                fn = path.name
+    conn = _connect_with_retry()
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+
+    def _reset_conn() -> tuple[psycopg.Connection, psycopg.Cursor]:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        c = _connect_with_retry()
+        cu = c.cursor()
+        cu.execute("BEGIN")
+        return c, cu
+
+    for idx, path in enumerate(files, start=1):
+        fn = path.name
+        tries = 0
+        while True:
+            try:
+                parsed = parse_chain_filename(fn, filename_tz=cfg.filename_tz)
+                raw = path.read_text(encoding="utf-8-sig")  # tolerate UTF-8 BOM
+                snap = json.loads(raw)
+                if not isinstance(snap, dict):
+                    raise ValueError("snapshot JSON root must be an object")
+
+                n = validate_chain_json(snap)
+                rows = build_rows(snap, n=n, parsed=parsed)
+
+                cur.executemany(UPSERT_SQL, rows)
+                conn.commit()  # commit per-file so we only archive after a successful commit
+                cur.execute("BEGIN")
+
+                # Move file to archive post-commit.
+                dest = _archive_dest(cfg, parsed, fn)
+                _safe_move_or_copy(path, dest)
+
+                # Remove old error marker if present.
                 try:
-                    parsed = parse_chain_filename(fn, filename_tz=cfg.filename_tz)
-                    raw = path.read_text(encoding="utf-8-sig")  # tolerate UTF-8 BOM
-                    snap = json.loads(raw)
-                    if not isinstance(snap, dict):
-                        raise ValueError("snapshot JSON root must be an object")
+                    errp = (cfg.archive_root / "bad" / f"{fn}.error.txt")
+                    if errp.exists():
+                        errp.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
-                    n = validate_chain_json(snap)
-                    rows = build_rows(snap, n=n, parsed=parsed)
+                ok += 1
+                break
 
-                    cur.executemany(UPSERT_SQL, rows)
-
-                    # Move file to archive post-upsert.
-                    dest = _archive_dest(cfg, parsed, fn)
-                    _safe_move_or_copy(path, dest)
-
-                    # Remove old error marker if present.
-                    try:
-                        errp = (cfg.archive_root / "bad" / f"{fn}.error.txt")
-                        if errp.exists():
-                            errp.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-
-                    ok += 1
-
-                except Exception as e:
-                    fail += 1
-                    # Keep file in bad; write/overwrite error.
+            except psycopg.OperationalError as e:
+                tries += 1
+                fail += 1
+                print(json.dumps({"event": "reprocess_db_operational_error", "file": fn, "try": tries, "error": str(e)[:400]}), flush=True)
+                # reconnect and retry the same file a few times
+                if tries >= 5:
                     try:
                         errp = cfg.archive_root / "bad" / f"{fn}.error.txt"
                         errp.write_text(str(e).strip() + "\n", encoding="utf-8")
                     except Exception:
                         pass
+                    break
+                conn, cur = _reset_conn()
+                continue
 
-                    print(json.dumps({"event": "reprocess_fail", "file": fn, "error": str(e)[:500]}), flush=True)
+            except Exception as e:
+                fail += 1
+                # Keep file in bad; write/overwrite error.
+                try:
+                    errp = cfg.archive_root / "bad" / f"{fn}.error.txt"
+                    errp.write_text(str(e).strip() + "\n", encoding="utf-8")
+                except Exception:
+                    pass
 
-                # periodic commit
-                if int(args.commit_every) <= 1 or (idx % int(args.commit_every) == 0):
-                    conn.commit()
+                print(json.dumps({"event": "reprocess_fail", "file": fn, "error": str(e)[:500]}), flush=True)
+                # best-effort rollback
+                try:
+                    conn.rollback()
                     cur.execute("BEGIN")
+                except Exception:
+                    conn, cur = _reset_conn()
+                break
 
-                if idx % 50 == 0:
-                    dt = time.time() - t0
-                    rate = ok / dt if dt > 0 else None
-                    print(
-                        json.dumps(
-                            {
-                                "event": "reprocess_progress",
-                                "done": idx,
-                                "total": len(files),
-                                "ok": ok,
-                                "fail": fail,
-                                "rate_files_per_sec": rate,
-                            }
-                        ),
-                        flush=True,
-                    )
+        if idx % 50 == 0:
+            dt = time.time() - t0
+            rate = ok / dt if dt > 0 else None
+            print(
+                json.dumps(
+                    {
+                        "event": "reprocess_progress",
+                        "done": idx,
+                        "total": len(files),
+                        "ok": ok,
+                        "fail": fail,
+                        "rate_files_per_sec": rate,
+                    }
+                ),
+                flush=True,
+            )
 
-                if args.sleep and args.sleep > 0:
-                    time.sleep(float(args.sleep))
+        if args.sleep and args.sleep > 0:
+            time.sleep(float(args.sleep))
 
-            conn.commit()
+    try:
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        cur.close()
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
 
     dt = time.time() - t0
     print(
