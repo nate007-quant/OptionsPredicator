@@ -1,0 +1,41 @@
+# Phase 2 TERM: DTE14±2 chain feature/label builder (TimescaleDB)
+#
+# Install:
+#   sudo cp systemd/spx_chain_phase2_term_dte14t2.service /etc/systemd/system/spx_chain_phase2_term_dte14t2.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spx_chain_phase2_term_dte14t2
+#
+# Logs:
+#   journalctl -u spx_chain_phase2_term_dte14t2 -f
+
+[Unit]
+Description=SPX TERM chain feature/label builder (dte14t2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+
+Environment=TARGET_DTE_DAYS=14
+Environment=DTE_TOLERANCE_DAYS=2
+Environment=TERM_BUCKET=term_dte14t2
+
+# half/full horizons (calendar days): 7d, 14d
+Environment=HORIZONS_MINUTES=10080,20160
+Environment=MAX_FUTURE_LOOKAHEAD_MINUTES=20160
+
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.phase2_term_main
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

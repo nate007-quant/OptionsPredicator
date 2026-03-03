@@ -1,0 +1,42 @@
+# TERM debit spread ML scorer (DTE14±2)
+#
+# Install:
+#   sudo cp systemd/spx_debit_ml_term_dte14t2.service /etc/systemd/system/spx_debit_ml_term_dte14t2.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spx_debit_ml_term_dte14t2
+#
+# Logs:
+#   journalctl -u spx_debit_ml_term_dte14t2 -f
+
+[Unit]
+Description=SPX TERM debit spread ML scorer (dte14t2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+
+Environment=TARGET_DTE_DAYS=14
+Environment=DTE_TOLERANCE_DAYS=2
+Environment=TERM_BUCKET=term_dte14t2
+
+Environment=DEBIT_ML_HORIZONS_MINUTES=10080,20160
+Environment=DEBIT_ML_MODEL_VERSION=debit_ridge_term_dte14t2_v1
+Environment=DEBIT_ML_MIN_TRAIN_ROWS=100
+Environment=DEBIT_ML_RETRAIN_SECONDS=3600
+
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.debit_spread_ml_term_main
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
