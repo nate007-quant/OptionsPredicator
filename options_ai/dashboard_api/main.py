@@ -941,7 +941,6 @@ def create_app() -> FastAPI:
             items.append({
                 'id': int(r['id']),
                 'strategy_key': r['strategy_key'],
-                'strategy_key': r['strategy_key'],
                 'name': r['name'],
                 'params': params,
                 'schema_version': int(r['schema_version'] or 1),
@@ -1074,6 +1073,7 @@ def create_app() -> FastAPI:
                 summary_obj = None
             items.append({
                 'id': int(r['id']),
+                'strategy_key': r['strategy_key'],
                 'created_at_utc': r['created_at_utc'],
                 'preset_id': r['preset_id'],
                 'preset_name_at_run': r['preset_name_at_run'],
