@@ -1579,8 +1579,57 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       el.textContent = `Last run: ${it.last_run_at_utc}${extra}`;
     }
 
+    function btPresetSuggestedName() {
+      // Build a short, parameter-like default preset name.
+      // Must be <= 60 chars (server-side limit).
+      let p;
+      try { p = btReadFormPayload(); } catch { p = {}; }
+
+      const sm = (p.strategy_mode === 'structural_walls') ? 'sw' : 'ab';
+      let exp = '0dte';
+      if (p.expiration_mode && p.expiration_mode !== '0dte') {
+        const td = (p.target_dte_days ?? 'x');
+        const tol = (p.dte_tolerance_days ?? 'x');
+        exp = `dte${td}t${tol}`;
+      }
+
+      const h = (p.horizon_minutes != null) ? `H${p.horizon_minutes}` : 'H?';
+
+      let entry = '';
+      if (p.entry_mode === 'first_n_minutes') {
+        entry = `first${p.entry_first_n_minutes ?? ''}`;
+      } else {
+        const a = (p.entry_start_ct || '').replace(':','');
+        const b = (p.entry_end_ct || '').replace(':','');
+        entry = (a && b) ? `t${a}-${b}` : 'time';
+      }
+
+      const fmt = (x, nd=2) => {
+        const n = Number(x);
+        if (!isFinite(n)) return '';
+        return n.toFixed(nd).replace(/0+$/,'').replace(/\.$/,'');
+      };
+
+      const parts = [
+        sm,
+        exp,
+        h,
+        entry,
+        (p.max_trades_per_day != null ? `mx${p.max_trades_per_day}` : ''),
+        (p.max_debit_points != null ? `d${fmt(p.max_debit_points,2)}` : ''),
+        (p.stop_loss_pct != null ? `sl${fmt(p.stop_loss_pct,2)}` : ''),
+        (p.take_profit_pct != null ? `tp${fmt(p.take_profit_pct,2)}` : ''),
+      ].filter(Boolean);
+
+      let name = parts.join('_');
+      name = name.replace(/[^A-Za-z0-9_.\-]/g, '');
+      if (name.length > 60) name = name.slice(0, 60);
+      return name || 'preset';
+    }
+
+
     async function btPresetSaveAs() {
-      const name = prompt('Preset name:');
+      const name = prompt('Preset name:', btPresetSuggestedName());
       if (!name) return;
       const body = { strategy_key: btStrategyKey(), name: name, params: btReadFormPayload() };
       await jpost('/api/backtest/presets', body);
@@ -2594,6 +2643,10 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
+    document.getElementById('btPresetSaveAs')?.addEventListener('click', () => safe('bt_preset_saveas', () => btPresetSaveAs()));
+    document.getElementById('btPresetSave')?.addEventListener('click', () => safe('bt_preset_save', () => btPresetSave()));
+    document.getElementById('btPresetDelete')?.addEventListener('click', () => safe('bt_preset_delete', () => btPresetDelete()));
+
     document.getElementById('btRunsRefresh')?.addEventListener('click', () => safe('bt_runs', () => btRefreshRuns()));
     document.getElementById('btRunsStrategyScope')?.addEventListener('change', () => safe('bt_runs', () => btRefreshRuns()));
 
