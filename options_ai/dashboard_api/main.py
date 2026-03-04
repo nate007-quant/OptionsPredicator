@@ -456,6 +456,13 @@ def create_app() -> FastAPI:
             'state_files': {},
         }
 
+        def _try_load_json_file(path: Path) -> Any:
+            try:
+                import json as _json
+                return _json.loads(path.read_text(encoding='utf-8'))
+            except Exception:
+                return None
+
         # state cursor files (best-effort)
         try:
             sf = {}
@@ -466,7 +473,7 @@ def create_app() -> FastAPI:
                         'path': str(name),
                         'mtime_utc': datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
                         'bytes': int(st.st_size),
-                        'json': _load_json(name, None),
+                        'json': _try_load_json_file(name),
                     }
                 except Exception:
                     continue
