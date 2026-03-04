@@ -434,6 +434,196 @@ def create_app() -> FastAPI:
             "tz": "America/Chicago",
         }
 
+
+    @app.get('/api/status/pipelines')
+    def status_pipelines(window: int = Query(500, ge=50, le=5000)) -> dict[str, Any]:
+        """Return Timescale-backed pipeline progress + state cursors.
+
+        This is used by the Processing tab to show how far each stage is behind the
+        newest option_chain snapshot.
+        """
+        dsn = _pg_dsn()
+        out: dict[str, Any] = {
+            'ok': True,
+            'window': int(window),
+            'ts': _now_central_iso(),
+            'timescale': {'ok': False, 'error': None},
+            'latest': {},
+            'lags_minutes': {},
+            'counts_recent': {},
+            'labels_by_horizon': {},
+            'scores_by_horizon': {},
+            'state_files': {},
+        }
+
+        # state cursor files (best-effort)
+        try:
+            sf = {}
+            for name in sorted((data_root / 'state').glob('*backfill*.json')):
+                try:
+                    st = name.stat()
+                    sf[name.name] = {
+                        'path': str(name),
+                        'mtime_utc': datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).replace(microsecond=0).isoformat(),
+                        'bytes': int(st.st_size),
+                        'json': _load_json(name, None),
+                    }
+                except Exception:
+                    continue
+            out['state_files'] = sf
+        except Exception:
+            out['state_files'] = {}
+
+        if not dsn:
+            out['timescale'] = {'ok': False, 'error': 'SPX_CHAIN_DATABASE_URL not configured'}
+            return out
+
+        # Timescale progress
+        try:
+            with _pg_connect(dsn) as conn:
+                with conn.cursor() as cur:
+                    def max_ts(table: str) -> Any:
+                        cur.execute(f"SELECT max(snapshot_ts) FROM {table}")
+                        r = cur.fetchone()
+                        return r[0] if r else None
+
+                    latest_chain = max_ts('spx.option_chain')
+                    latest_feat = max_ts('spx.chain_features_0dte')
+                    latest_label = max_ts('spx.chain_labels_0dte')
+                    latest_cand = max_ts('spx.debit_spread_candidates_0dte')
+                    latest_dlbl = max_ts('spx.debit_spread_labels_0dte')
+                    latest_score = max_ts('spx.debit_spread_scores_0dte')
+
+                    out['latest'] = {
+                        'option_chain': latest_chain,
+                        'chain_features_0dte': latest_feat,
+                        'chain_labels_0dte': latest_label,
+                        'debit_candidates_0dte': latest_cand,
+                        'debit_labels_0dte': latest_dlbl,
+                        'debit_scores_0dte': latest_score,
+                    }
+
+                    # horizon breakdowns
+                    cur.execute("SELECT horizon_minutes, max(snapshot_ts) FROM spx.chain_labels_0dte GROUP BY horizon_minutes ORDER BY horizon_minutes")
+                    out['labels_by_horizon'] = {int(r[0]): r[1] for r in cur.fetchall() if r and r[0] is not None}
+
+                    cur.execute("SELECT horizon_minutes, max(snapshot_ts) FROM spx.debit_spread_scores_0dte GROUP BY horizon_minutes ORDER BY horizon_minutes")
+                    out['scores_by_horizon'] = {int(r[0]): r[1] for r in cur.fetchall() if r and r[0] is not None}
+
+                    # recent window counts (approx backlog)
+                    # Missing features for newest N distinct snapshots
+                    cur.execute(
+                        """
+                        WITH oc AS (
+                          SELECT DISTINCT snapshot_ts
+                          FROM spx.option_chain
+                          ORDER BY snapshot_ts DESC
+                          LIMIT %s
+                        )
+                        SELECT
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN f.snapshot_ts IS NULL THEN 1 ELSE 0 END) AS missing
+                        FROM oc
+                        LEFT JOIN spx.chain_features_0dte f
+                          ON f.snapshot_ts = oc.snapshot_ts
+                        """,
+                        (int(window),),
+                    )
+                    r = cur.fetchone()
+                    out['counts_recent']['features_missing'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
+
+                    # Missing any chain labels for newest N feature snapshots
+                    cur.execute(
+                        """
+                        WITH f AS (
+                          SELECT snapshot_ts
+                          FROM spx.chain_features_0dte
+                          ORDER BY snapshot_ts DESC
+                          LIMIT %s
+                        )
+                        SELECT
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN l.snapshot_ts IS NULL THEN 1 ELSE 0 END) AS missing
+                        FROM f
+                        LEFT JOIN (
+                          SELECT DISTINCT snapshot_ts FROM spx.chain_labels_0dte
+                        ) l
+                          ON l.snapshot_ts = f.snapshot_ts
+                        """,
+                        (int(window),),
+                    )
+                    r = cur.fetchone()
+                    out['counts_recent']['labels_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
+
+                    # Missing any debit candidates for newest N feature snapshots
+                    cur.execute(
+                        """
+                        WITH f AS (
+                          SELECT snapshot_ts
+                          FROM spx.chain_features_0dte
+                          ORDER BY snapshot_ts DESC
+                          LIMIT %s
+                        )
+                        SELECT
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN c.snapshot_ts IS NULL THEN 1 ELSE 0 END) AS missing
+                        FROM f
+                        LEFT JOIN (
+                          SELECT DISTINCT snapshot_ts FROM spx.debit_spread_candidates_0dte
+                        ) c
+                          ON c.snapshot_ts = f.snapshot_ts
+                        """,
+                        (int(window),),
+                    )
+                    r = cur.fetchone()
+                    out['counts_recent']['debit_candidates_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
+
+                    # Missing any debit scores for newest N candidates (any horizon)
+                    cur.execute(
+                        """
+                        WITH c AS (
+                          SELECT DISTINCT snapshot_ts
+                          FROM spx.debit_spread_candidates_0dte
+                          ORDER BY snapshot_ts DESC
+                          LIMIT %s
+                        )
+                        SELECT
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN s.snapshot_ts IS NULL THEN 1 ELSE 0 END) AS missing
+                        FROM c
+                        LEFT JOIN (
+                          SELECT DISTINCT snapshot_ts FROM spx.debit_spread_scores_0dte
+                        ) s
+                          ON s.snapshot_ts = c.snapshot_ts
+                        """,
+                        (int(window),),
+                    )
+                    r = cur.fetchone()
+                    out['counts_recent']['debit_scores_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
+
+                    # Lag minutes vs latest option_chain
+                    def lag_minutes(ts: Any) -> float | None:
+                        if latest_chain is None or ts is None:
+                            return None
+                        try:
+                            return max(0.0, (latest_chain - ts).total_seconds() / 60.0)
+                        except Exception:
+                            return None
+
+                    out['lags_minutes'] = {
+                        'chain_features_0dte': lag_minutes(latest_feat),
+                        'chain_labels_0dte': lag_minutes(latest_label),
+                        'debit_candidates_0dte': lag_minutes(latest_cand),
+                        'debit_labels_0dte': lag_minutes(latest_dlbl),
+                        'debit_scores_0dte': lag_minutes(latest_score),
+                    }
+
+            out['timescale'] = {'ok': True, 'error': None}
+            return out
+        except Exception as e:
+            out['timescale'] = {'ok': False, 'error': str(e)}
+            return out
+
     @app.get("/api/metrics/daily")
     def metrics_daily(days: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
         with _connect(db_path) as con:

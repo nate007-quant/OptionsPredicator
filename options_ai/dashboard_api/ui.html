@@ -523,6 +523,18 @@
                 </div>
               </div>
 
+              <div class="card" style="margin-top: var(--space-4);">
+            <div class="card-h"><h2>Pipeline Progress (Timescale)</h2><div class="hint">Backlog + latest snapshot per stage</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Window <input id="pipeWin" type="number" min="50" max="5000" value="500" style="width:90px;" /></label>
+                <button class="btn-primary" id="refreshPipes">Refresh</button>
+                <span class="hint" id="pipeNote"></span>
+              </div>
+              <pre id="pipeBox" style="margin-top:10px; font-family: var(--mono); font-size: 12px; color: var(--muted);">(loading)</pre>
+            </div>
+          </div>
+
               <div style="margin-top:10px;">
                 <table>
                   <thead><tr><th>file</th><th>size</th><th>mtime</th></tr></thead>
@@ -2357,6 +2369,25 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return data;
     }
 
+    async function refreshPipelines() {
+      const win = parseInt(document.getElementById('pipeWin')?.value || '500', 10);
+      const note = document.getElementById('pipeNote');
+      if (note) note.textContent = 'loading…';
+      const data = await jget(`/api/status/pipelines?window=${encodeURIComponent(String(win))}`);
+
+      const box = document.getElementById('pipeBox');
+      if (box) box.textContent = JSON.stringify(data, null, 2);
+
+      if (note) {
+        const tsok = data?.timescale?.ok;
+        const err = data?.timescale?.error;
+        if (!tsok) note.textContent = err ? `timescale: ${err}` : 'timescale: unavailable';
+        else note.textContent = 'ok';
+      }
+      return data;
+    }
+
+
     // Tokens tile
     async function refreshTokens() {
       const data = await jget('/api/usage/tokens?hours=24');
@@ -2796,6 +2827,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('runReset')?.addEventListener('click', () => safe('runReset', () => runFullReset()));
 
     document.getElementById('refreshProcessingBtn')?.addEventListener('click', () => safe('refreshProcessing', () => refreshProcessing()));
+    document.getElementById('refreshPipes')?.addEventListener('click', () => safe('pipes', () => refreshPipelines()));
 
     // routing
     window.addEventListener('hashchange', routeFromHash);
@@ -2809,6 +2841,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('config', () => refreshConfig());
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
+      await safe('pipes', () => refreshPipelines());
       await safe('debit', () => refreshDebitSpreads());
       await safe('daily_pick', () => refreshDailyPick());
       await safe('debit_history', () => refreshDebitHistory());
@@ -2832,6 +2865,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('health', () => refreshHealth()), 5000);
       setInterval(() => safe('config', () => refreshConfig()), 5000);
       setInterval(() => safe('processing', () => refreshProcessing()), 2000);
+      setInterval(() => safe('pipes', () => refreshPipelines()), 10000);
       setInterval(() => safe('tokens', () => refreshTokens()), 10000);
       setInterval(() => safe('ml', () => refreshML()), 20000);
       setInterval(() => safe('debit', () => refreshDebitSpreads()), 10000);
