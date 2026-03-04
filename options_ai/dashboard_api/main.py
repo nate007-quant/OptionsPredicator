@@ -1090,6 +1090,31 @@ def create_app() -> FastAPI:
             con.commit()
         return {'ok': True, 'deleted': int(run_id), 'strategy_key': strategy_key}
 
+    
+
+    @app.post('/api/backtest/runs/bulk_delete')
+    def backtest_runs_bulk_delete(payload: dict[str, Any]) -> dict[str, Any]:
+        ids = payload.get('ids')
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(status_code=400, detail='ids must be a non-empty list')
+        if len(ids) > 5000:
+            raise HTTPException(status_code=400, detail='too many ids (max 5000)')
+
+        norm: list[int] = []
+        for x in ids:
+            try:
+                norm.append(int(x))
+            except Exception:
+                raise HTTPException(status_code=400, detail='ids must be integers')
+
+        q = ','.join(['?'] * len(norm))
+        with _connect(db_path) as con:
+            cur = con.execute(f'DELETE FROM backtest_runs WHERE id IN ({q})', tuple(norm))
+            con.commit()
+
+        deleted = int(cur.rowcount if cur.rowcount is not None else 0)
+        return {'ok': True, 'deleted_count': deleted, 'requested': len(norm)}
+
     @app.post("/api/backtest/debit_spreads/run")
     def backtest_debit_spreads_run(payload: dict[str, Any]) -> dict[str, Any]:
         """Run a Timescale-backed backtest for debit spreads (0DTE default; optional target DTE)."""

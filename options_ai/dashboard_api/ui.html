@@ -334,7 +334,23 @@
       .content { grid-row: 3; }
       .grid2 { grid-template-columns: 1fr; }
     }
-  </style>
+  
+    .fs { border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; padding: 10px 12px 12px; }
+    .fs > legend { padding: 0 8px; color: rgba(255,255,255,0.7); font-size: 12px; }
+
+    .tip { display:inline-block; margin-left:6px; width:16px; height:16px; line-height:16px; text-align:center;
+           border-radius:999px; border:1px solid rgba(255,255,255,0.25); color:rgba(255,255,255,0.75);
+           font-size:11px; cursor:help; position:relative; user-select:none; }
+    .tip::after { content: attr(data-tip); position:absolute; left:50%; top: calc(100% + 8px); transform:translateX(-50%);
+                  width: 340px; max-width: 70vw; background: rgba(0,0,0,0.92); color: rgba(255,255,255,0.92);
+                  padding:10px 12px; border:1px solid rgba(255,255,255,0.18); border-radius:10px;
+                  box-shadow: 0 10px 26px rgba(0,0,0,0.35); font-size:12px; line-height:1.25;
+                  opacity:0; pointer-events:none; transition:opacity 120ms ease; z-index:50; white-space: normal; }
+    .tip::before { content:''; position:absolute; left:50%; top: calc(100% + 2px); transform:translateX(-50%);
+                   border:6px solid transparent; border-bottom-color: rgba(255,255,255,0.18);
+                   opacity:0; pointer-events:none; transition:opacity 120ms ease; z-index:51; }
+    .tip:hover::after, .tip:hover::before { opacity: 1; }
+</style>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -637,7 +653,9 @@
             <div class="card-b">
               <div class="row">
                 <label>Window (min) <input id="dailyPickWindow" type="number" min="5" max="180" value="30" style="width:90px;" /></label>
-                <label>Min p(bigwin) <input id="dailyPickMinP" type="number" step="0.01" min="0" max="1" value="0.00" style="width:90px;" /></label>
+                <label>Min p(bigwin) <span class="tip" data-tip="Anchor-based only.
+
+Filter candidates by ML p(bigwin) (if ML score exists for the selected horizon).">i</span> <input id="dailyPickMinP" type="number" step="0.01" min="0" max="1" value="0.00" style="width:90px;" /></label>
                 <label>Min pred(30m) <input id="dailyPickMinPred" type="number" step="0.01" value="0.00" style="width:90px;" /></label>
                 <button class="btn-primary" id="refreshDailyPick">Refresh</button>
                 <span class="hint" id="dailyPickNote"></span>
@@ -688,103 +706,198 @@
           <div class="card">
             <div class="card-h"><h2>Backtester — Debit Spreads</h2><div class="hint">0DTE uses ML scores; target-DTE mode builds candidates on-the-fly.</div></div>
             <div class="card-b">
-              <div class="row">
-                <label>Start <input id="btStart" type="date" /></label>
-                <label>Strategy
-                  <select id="btStrategyMode">
-                    <option value="anchor_based" selected>Anchor-based</option>
-                    <option value="structural_walls">Structural Walls</option>
-                  </select>
-                </label>
-                <label>End <input id="btEnd" type="date" /></label>
-                <label>Horizon(min) <input id="btH" type="number" min="5" max="180" value="30" style="width:90px;" /></label>
-                <label>Expiration
-                  <select id="btExpMode">
-                    <option value="0dte" selected>0dte</option>
-                    <option value="target_dte">target_dte</option>
-                  </select>
-                </label>
-                <label id="btTargetDteWrap" style="display:none;">Target DTE (days)
-                  <select id="btTargetDte">
-                    <option value="7" selected>7</option>
-                    <option value="14">14</option>
-                    <option value="21">21</option>
-                    <option value="30">30</option>
-                  </select>
-                </label>
-                <label id="btDteTolWrap" style="display:none;">DTE tol (days) <input id="btDteTol" type="number" min="0" max="14" value="2" style="width:90px;" /></label>
-                <label>Entry mode
-                  <select id="btEntryMode">
-                    <option value="time_range" selected>time_range</option>
-                    <option value="first_n_minutes">first_n_minutes</option>
-                  </select>
-                </label>
-              </div>
 
-              <div class="row" style="margin-top:10px;">
-                <label>Session start (CT) <input id="btSessionStart" type="text" value="08:30" style="width:90px;" /></label>
-                <label>First N (min) <input id="btFirstN" type="number" min="5" max="180" value="60" style="width:90px;" /></label>
-                <label>Entry start (CT) <input id="btEntryStart" type="text" value="08:40" style="width:90px;" /></label>
-                <label>Entry end (CT) <input id="btEntryEnd" type="text" value="09:30" style="width:90px;" /></label>
-              </div>
+              <fieldset class="fs" style="margin-top:6px;">
+                <legend>Backtest window</legend>
+                <div class="row">
+                  <label>Start <span class="tip" data-tip="Backtest start date (Central day).">i</span> <input id="btStart" type="date" /></label>
+                  <label>End <span class="tip" data-tip="Backtest end date (Central day). Default is yesterday.">i</span> <input id="btEnd" type="date" /></label>
+                </div>
+              </fieldset>
 
-              <div class="row" style="margin-top:10px;" id="btStructuralControls" style="display:none;">
-                <label><input id="btEnablePW" type="checkbox" checked /> Enable PW trade (bearish PUT)</label>
-                <label><input id="btEnableCW" type="checkbox" checked /> Enable CW trade (bullish CALL)</label>
-                <label>Long moneyness
-                  <select id="btLongMoneyness">
-                    <option value="ATM" selected>ATM</option>
-                    <option value="1_ITM">1_ITM</option>
-                  </select>
-                </label>
-                <label>Max width <input id="btMaxWidth" type="number" value="25" style="width:90px;" /></label>
-                <label>Min width <input id="btMinWidth" type="number" value="5" style="width:90px;" /></label>
-                <label>Prox max <input id="btProxMax" type="number" value="30" style="width:90px;" /></label>
-                <label>Rotation
-                  <select id="btRotation">
-                    <option value="spot_delta_5m" selected>spot_delta_5m</option>
-                    <option value="none">none</option>
-                  </select>
-                </label>
-              </div>
+              <fieldset class="fs" style="margin-top:10px;">
+                <legend>Expiration</legend>
+                <div class="row">
+                  <label>Expiration mode <span class="tip" data-tip="0dte: use same-day expiration from the 0DTE feature table.
 
-              <div class="row" style="margin-top:10px;" id="btStructuralOffsets" style="display:none;">
-                <label>Short put offset (steps) <input id="btShortPutOffset" type="number" value="0" style="width:90px;" /></label>
-                <label>Short call offset (steps) <input id="btShortCallOffset" type="number" value="0" style="width:90px;" /></label>
-              </div>
+target_dte: pick an expiration near Target DTE using DTE tolerance.">i</span>
+                    <select id="btExpMode">
+                      <option value="0dte" selected>0dte</option>
+                      <option value="target_dte">target_dte</option>
+                    </select>
+                  </label>
+                  <label id="btTargetDteWrap" style="display:none;">Target DTE (days) <span class="tip" data-tip="Used only when Expiration mode = target_dte.
 
-<div class="row" style="margin-top:10px;">
-                <label>Max trades/day <input id="btMaxPerDay" type="number" min="1" max="10" value="1" style="width:90px;" /></label>
-                <label><input id="btOneAtATime" type="checkbox" checked /> One trade at a time</label>
-                <label>Anchor mode
-                  <select id="btAnchorMode">
-                    <option value="ATM" selected>ATM</option>
-                    <option value="WALLS">WALLS</option>
-                    <option value="MAGNET">MAGNET</option>
-                    <option value="ALL">ALL</option>
-                  </select>
-                </label>
-                <label>Anchor policy
-                  <select id="btAnchorPolicy">
-                    <option value="any">any</option>
-                    <option value="opposite_wall" selected>opposite_wall</option>
-                    <option value="same_wall">same_wall</option>
-                  </select>
-                </label>
-              </div>
+We pick an expiration whose DTE is closest to this target (within tolerance).">i</span>
+                    <select id="btTargetDte">
+                      <option value="7" selected>7</option>
+                      <option value="14">14</option>
+                      <option value="21">21</option>
+                      <option value="30">30</option>
+                    </select>
+                  </label>
+                  <label id="btDteTolWrap" style="display:none;">DTE tol (days) <span class="tip" data-tip="Used only when Expiration mode = target_dte.
 
-              <div class="row" style="margin-top:10px;">
-                <label>Min p(bigwin) <input id="btMinP" type="number" step="0.01" min="0" max="1" value="0.00" style="width:90px;" /></label>
-                <label>Min pred(30m) <input id="btMinPred" type="number" step="0.01" value="0.00" style="width:90px;" /></label>
-                <label>Max debit <input id="btMaxDebit" type="number" step="0.01" value="5.00" style="width:90px;" /></label>
-                <label>Stop loss % <input id="btSL" type="number" step="0.01" value="0.50" style="width:90px;" /></label>
-                <label>Take profit % <input id="btTP" type="number" step="0.01" value="2.00" style="width:90px;" /></label>
-              </div>
+We pick an expiration whose Days-To-Expiration (DTE) is within ± this tolerance of Target DTE.
+Example: target 14, tol 2 ⇒ accepts expirations with DTE 12–16 days.
 
+DTE is computed using the local trade date (Central time).">i</span>
+                    <input id="btDteTol" type="number" min="0" max="14" value="2" style="width:110px;" />
+                  </label>
+                  <label>Horizon (min) <span class="tip" data-tip="How far in the future we measure the outcome / exit.
 
+0DTE: currently aligned to ML horizon 30m.
+TERM: horizons are multi-day (e.g. 5760=4d).">i</span>
+                    <select id="btH" style="width:140px;"></select>
+                  </label>
+                </div>
+              </fieldset>
 
-              <div class="row" style="margin-top:10px;">
-                <label>Presets
+              <fieldset class="fs" style="margin-top:10px;">
+                <legend>Entry timing (Central)</legend>
+                <div class="row">
+                  <label>Entry mode <span class="tip" data-tip="time_range: consider entries only between Entry start and Entry end.
+
+first_n_minutes: consider entries from Session start through the first N minutes.">i</span>
+                    <select id="btEntryMode">
+                      <option value="time_range" selected>time_range</option>
+                      <option value="first_n_minutes">first_n_minutes</option>
+                    </select>
+                  </label>
+                  <label>Session start (CT) <span class="tip" data-tip="Central Time session start. Used as the base for first_n_minutes mode.">i</span> <input id="btSessionStart" type="text" value="08:30" style="width:110px;" /></label>
+                  <label>First N (min) <span class="tip" data-tip="Used only when Entry mode = first_n_minutes.
+
+How many minutes after Session start to consider for entries.">i</span> <input id="btFirstN" type="number" min="5" max="240" value="60" style="width:110px;" /></label>
+                  <label>Entry start (CT) <span class="tip" data-tip="Used only when Entry mode = time_range.">i</span> <input id="btEntryStart" type="text" value="08:40" style="width:110px;" /></label>
+                  <label>Entry end (CT) <span class="tip" data-tip="Used only when Entry mode = time_range.">i</span> <input id="btEntryEnd" type="text" value="09:30" style="width:110px;" /></label>
+                </div>
+              </fieldset>
+
+              <fieldset class="fs" style="margin-top:10px;">
+                <legend>Strategy</legend>
+                <div class="row">
+                  <label>Mode <span class="tip" data-tip="anchor_based: pick from precomputed candidates (+ optional ML scores).
+
+structural_walls: build trades around walls on-the-fly (anchor filters do not apply).">i</span>
+                    <select id="btStrategyMode">
+                      <option value="anchor_based" selected>Anchor-based</option>
+                      <option value="structural_walls">Structural Walls</option>
+                    </select>
+                  </label>
+                  <label>Max trades/day <span class="tip" data-tip="Maximum entries per day in the backtest.">i</span> <input id="btMaxPerDay" type="number" min="1" max="50" value="1" style="width:110px;" /></label>
+                  <label><input id="btOneAtATime" type="checkbox" checked /> One trade at a time <span class="tip" data-tip="If checked: the strategy will not enter a new trade until the previous trade has exited.">i</span></label>
+                </div>
+
+                <div id="btAnchorControls" style="margin-top:10px;">
+                  <div class="row">
+                    <label>Anchor mode <span class="tip" data-tip="Used only when Strategy = anchor_based.
+
+ATM: only ATM anchors
+WALLS: CALL_WALL/PUT_WALL anchors
+MAGNET: magnet anchor
+ALL: allow all anchor types">i</span>
+                      <select id="btAnchorMode">
+                        <option value="ATM" selected>ATM</option>
+                        <option value="WALLS">WALLS</option>
+                        <option value="MAGNET">MAGNET</option>
+                        <option value="ALL">ALL</option>
+                      </select>
+                    </label>
+                    <label>Anchor policy <span class="tip" data-tip="Used only when Strategy = anchor_based.
+
+any: no extra restriction
+opposite_wall: CALL spreads avoid CALL_WALL (and vice versa)
+same_wall: CALL spreads prefer CALL_WALL (and vice versa)">i</span>
+                      <select id="btAnchorPolicy">
+                        <option value="any">any</option>
+                        <option value="opposite_wall" selected>opposite_wall</option>
+                        <option value="same_wall">same_wall</option>
+                      </select>
+                    </label>
+                    <label>Allowed spreads <span class="tip" data-tip="Used only when Strategy = anchor_based.
+
+Choose which spread types are allowed: CALL and/or PUT.">i</span>
+                      <select id="btAllowedSpreads" multiple size="2" style="min-width:140px;">
+                        <option value="CALL" selected>CALL</option>
+                        <option value="PUT" selected>PUT</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="row" style="margin-top:10px;" id="btMlFilters">
+                    <label>Min p(bigwin) <input id="btMinP" type="number" step="0.01" min="0" max="1" value="0.00" style="width:110px;" /></label>
+                    <label>Min pred(change) <span class="tip" data-tip="Anchor-based only.
+
+Filter candidates by ML predicted change (if ML score exists for the selected horizon).">i</span> <input id="btMinPred" type="number" step="0.01" value="0.00" style="width:110px;" /></label>
+                  </div>
+                </div>
+
+                <div id="btStructuralControls" style="margin-top:10px; display:none;">
+                  <div class="row">
+                    <label><input id="btEnablePW" type="checkbox" checked /> Enable PW trade <span class="tip" data-tip="Structural walls mode only.
+
+PW = Put Wall trade (bearish PUT debit spread).">i</span> (bearish PUT)</label>
+                    <label><input id="btEnableCW" type="checkbox" checked /> Enable CW trade <span class="tip" data-tip="Structural walls mode only.
+
+CW = Call Wall trade (bullish CALL debit spread).">i</span> (bullish CALL)</label>
+                    <label>Long moneyness <span class="tip" data-tip="Structural walls mode only.
+
+ATM: long leg at-the-money.
+1_ITM: long leg one strike in-the-money.">i</span>
+                      <select id="btLongMoneyness">
+                        <option value="ATM" selected>ATM</option>
+                        <option value="1_ITM">1_ITM</option>
+                      </select>
+                    </label>
+                    <label>Rotation <span class="tip" data-tip="Structural walls mode only.
+
+spot_delta_5m: require spot rotation direction to agree with the trade.
+none: no rotation filter.">i</span>
+                      <select id="btRotation">
+                        <option value="spot_delta_5m" selected>spot_delta_5m</option>
+                        <option value="none">none</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="row" style="margin-top:10px;">
+                    <label>Max width <span class="tip" data-tip="Structural walls mode only.
+
+Maximum spread width in points.">i</span> <input id="btMaxWidth" type="number" value="25" style="width:110px;" /></label>
+                    <label>Min width <span class="tip" data-tip="Structural walls mode only.
+
+Minimum spread width in points.">i</span> <input id="btMinWidth" type="number" value="5" style="width:110px;" /></label>
+                    <label>Prox min <span class="tip" data-tip="Structural walls mode only.
+
+Minimum distance (points) from spot to wall/magnet required to take a trade.">i</span> <input id="btProxMin" type="number" value="0" style="width:110px;" /></label>
+                    <label>Prox max <span class="tip" data-tip="Structural walls mode only.
+
+Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</span> <input id="btProxMax" type="number" value="30" style="width:110px;" /></label>
+                  </div>
+                </div>
+
+                <div id="btStructuralOffsets" style="margin-top:10px; display:none;">
+                  <div class="row">
+                    <label>Short put offset (steps) <span class="tip" data-tip="Structural walls mode only.
+
+0 = at/below wall. 1 = one strike beyond wall, etc.">i</span> <input id="btShortPutOffset" type="number" value="0" style="width:110px;" /></label>
+                    <label>Short call offset (steps) <span class="tip" data-tip="Structural walls mode only.
+
+0 = at/above wall. 1 = one strike beyond wall, etc.">i</span> <input id="btShortCallOffset" type="number" value="0" style="width:110px;" /></label>
+                  </div>
+                </div>
+              </fieldset>
+
+              <fieldset class="fs" style="margin-top:10px;">
+                <legend>Risk / pricing</legend>
+                <div class="row">
+                  <label>Max debit <span class="tip" data-tip="Maximum allowed entry debit in points.">i</span> <input id="btMaxDebit" type="number" step="0.01" value="5.00" style="width:110px;" /></label>
+                  <label>Stop loss % <input id="btSL" type="number" step="0.01" value="0.50" style="width:110px;" /></label>
+                  <label>Take profit % <input id="btTP" type="number" step="0.01" value="2.00" style="width:110px;" /></label>
+                </div>
+              </fieldset>
+
+<label>Presets
                   <select id="btPresetSelect" style="min-width:240px;">
                     <option value="">(no preset)</option>
                   </select>
@@ -847,10 +960,40 @@
                 <button class="btn-primary" id="btRunsRefresh">Refresh</button>
                 <span class="hint" id="btRunsNote"></span>
               </div>
+
+              <fieldset class="fs" style="margin-top:10px;">
+                <legend>Filters + cleanup (client-side)</legend>
+                <div class="row">
+                  <label>Min win rate % <input id="btRunsMinWin" type="number" step="0.1" placeholder="e.g. 50" style="width:120px;" /></label>
+                  <label>Min profit factor <input id="btRunsMinPF" type="number" step="0.1" placeholder="e.g. 3.0" style="width:120px;" /></label>
+                  <label>Min avg PnL ($) <input id="btRunsMinAvg" type="number" step="1" placeholder="e.g. 120" style="width:120px;" /></label>
+                  <label>Min total PnL ($) <input id="btRunsMinTotal" type="number" step="1" placeholder="e.g. 500" style="width:120px;" /></label>
+                </div>
+
+                <div class="row" style="margin-top:10px;">
+                  <label>Keep top N by total PnL <span class="tip" data-tip="Set to >0 to keep only the top N runs by total PnL (cum_pnl_dollars).">i</span>
+                    <input id="btRunsKeepTopPnl" type="number" min="0" max="2000" value="0" style="width:110px;" />
+                  </label>
+                  <label>Keep top N by profit factor <span class="tip" data-tip="Set to >0 to keep only the top N runs by profit factor.">i</span>
+                    <input id="btRunsKeepTopPF" type="number" min="0" max="2000" value="0" style="width:110px;" />
+                  </label>
+                  <label><input id="btRunsOnlyShowPassing" type="checkbox" checked /> Only show passing/kept</label>
+                </div>
+
+                <div class="row" style="margin-top:10px;">
+                  <button id="btRunsResetFilters">Reset filters</button>
+                  <button id="btRunsSelectFailing">Select failing</button>
+                  <button class="btn-danger" id="btRunsDeleteSelected">Delete selected</button>
+                  <button class="btn-danger" id="btRunsDeleteFailing">Delete failing</button>
+                  <span class="hint" id="btRunsSelNote"></span>
+                </div>
+              </fieldset>
+
               <div style="overflow:auto; margin-top:12px;">
                 <table>
                   <thead>
                     <tr>
+                      <th></th>
                       <th>created_at</th>
                       <th>preset</th>
                       <th>start</th>
@@ -859,7 +1002,10 @@
                       <th>trades</th>
                       <th>total_pnl</th>
                       <th>win_rate</th>
+                      <th>profit_factor</th>
+                      <th>avg_pnl</th>
                       <th>max_dd</th>
+                      <th>actions</th>
                     </tr>
                   </thead>
                   <tbody id="btRunsTable"></tbody>
@@ -1126,6 +1272,9 @@
     // Backtest
     let btEquityChart;
     let btPresetsData;
+    let btRunsRaw = [];
+    let btRunsSelected = new Set();
+
 
 
     function setDateDefaults() {
@@ -1159,6 +1308,42 @@
       }
     }
 
+    function btHorizonChoices() {
+      const em = document.getElementById('btExpMode')?.value || '0dte';
+      if (em === '0dte') return [30]; // matches current 0DTE ML scorer horizon
+
+      const td = parseInt(document.getElementById('btTargetDte')?.value || '7', 10);
+      // TERM horizon choices (minutes) by target DTE
+      if (td === 7) return [5760, 10080];
+      if (td === 14) return [10080, 20160];
+      if (td === 21) return [15840, 30240];
+      if (td === 30) return [21600, 43200];
+      // fallback
+      return [10080, 20160];
+    }
+
+    function btUpdateHorizonOptions() {
+      const sel = document.getElementById('btH');
+      if (!sel) return;
+      const prev = parseInt(sel.value || '', 10);
+      const choices = btHorizonChoices();
+
+      sel.innerHTML = '';
+      for (const h of choices) {
+        const opt = document.createElement('option');
+        opt.value = String(h);
+        opt.textContent = String(h);
+        sel.appendChild(opt);
+      }
+
+      // keep previous selection if still valid
+      if (Number.isFinite(prev) && choices.includes(prev)) {
+        sel.value = String(prev);
+      } else {
+        sel.value = String(choices[0] || 30);
+      }
+    }
+
     function updateBtMode() {
       const mode = document.getElementById('btStrategyMode')?.value || 'anchor_based';
       const show = (mode === 'structural_walls');
@@ -1166,6 +1351,12 @@
       const so = document.getElementById('btStructuralOffsets');
       if (sc) sc.style.display = show ? '' : 'none';
       if (so) so.style.display = show ? '' : 'none';
+
+      // Anchor-based vs structural: only show relevant parameter groups
+      const ac = document.getElementById('btAnchorControls');
+      const mf = document.getElementById('btMlFilters');
+      if (ac) ac.style.display = show ? 'none' : '';
+      if (mf) mf.style.display = show ? 'none' : '';
       // expiration/tenor controls
       const em = document.getElementById('btExpMode')?.value || '0dte';
       const showTerm = (em === 'target_dte');
@@ -1173,6 +1364,8 @@
       const tolw = document.getElementById('btDteTolWrap');
       if (tw) tw.style.display = showTerm ? '' : 'none';
       if (tolw) tolw.style.display = showTerm ? '' : 'none';
+    
+      btUpdateHorizonOptions();
     }
 
     function btExpKey() {
@@ -1190,45 +1383,84 @@
       return `debit_spreads:${mode}:${btExpKey()}`;
     }
 
+    function btReadAllowedSpreads() {
+      const sel = document.getElementById('btAllowedSpreads');
+      if (!sel) return ['CALL','PUT'];
+      const out = [];
+      for (const opt of Array.from(sel.options || [])) {
+        if (opt.selected) out.push(opt.value);
+      }
+      return out.length ? out : ['CALL','PUT'];
+    }
+
     function btReadFormPayload() {
       setDateDefaults();
       updateBtMode();
-      return {
-        strategy_mode: document.getElementById('btStrategyMode')?.value || 'anchor_based',
+
+      const strategy_mode = document.getElementById('btStrategyMode')?.value || 'anchor_based';
+      const expiration_mode = document.getElementById('btExpMode')?.value || '0dte';
+
+      const base = {
+        strategy_mode,
         start_day: document.getElementById('btStart')?.value,
         end_day: document.getElementById('btEnd')?.value,
-        expiration_mode: document.getElementById('btExpMode')?.value || '0dte',
-        target_dte_days: ((document.getElementById('btExpMode')?.value || '0dte') === 'target_dte') ? parseInt(document.getElementById('btTargetDte')?.value || '7', 10) : null,
+        expiration_mode,
+        target_dte_days: (expiration_mode === 'target_dte') ? parseInt(document.getElementById('btTargetDte')?.value || '7', 10) : null,
         dte_tolerance_days: parseInt(document.getElementById('btDteTol')?.value || '2', 10),
         horizon_minutes: parseInt(document.getElementById('btH')?.value || '30', 10),
+
         entry_mode: document.getElementById('btEntryMode')?.value || 'time_range',
         session_start_ct: document.getElementById('btSessionStart')?.value || '08:30',
         entry_first_n_minutes: parseInt(document.getElementById('btFirstN')?.value || '60', 10),
         entry_start_ct: document.getElementById('btEntryStart')?.value || '08:40',
         entry_end_ct: document.getElementById('btEntryEnd')?.value || '09:30',
+
         max_trades_per_day: parseInt(document.getElementById('btMaxPerDay')?.value || '1', 10),
         one_trade_at_a_time: !!document.getElementById('btOneAtATime')?.checked,
-        anchor_mode: document.getElementById('btAnchorMode')?.value || 'ATM',
-        anchor_policy: document.getElementById('btAnchorPolicy')?.value || 'any',
-        min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
-        min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
+
+        max_debit_points: parseFloat(document.getElementById('btMaxDebit')?.value || '5'),
+        stop_loss_pct: parseFloat(document.getElementById('btSL')?.value || '0.5'),
+        take_profit_pct: parseFloat(document.getElementById('btTP')?.value || '2.0'),
+
+        max_future_lookahead_minutes: 120,
+        price_mode: 'mid',
+        tz_local: 'America/Chicago'
+      };
+
+      if (strategy_mode === 'anchor_based') {
+        return {
+          ...base,
+          anchor_mode: document.getElementById('btAnchorMode')?.value || 'ATM',
+          anchor_policy: document.getElementById('btAnchorPolicy')?.value || 'any',
+          allowed_spreads: btReadAllowedSpreads(),
+          min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
+          min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
+        };
+      }
+
+      // structural_walls
+      return {
+        ...base,
         enable_pw_trade: !!document.getElementById('btEnablePW')?.checked,
         enable_cw_trade: !!document.getElementById('btEnableCW')?.checked,
         long_leg_moneyness: document.getElementById('btLongMoneyness')?.value || 'ATM',
         max_width_points: parseFloat(document.getElementById('btMaxWidth')?.value || '25'),
         min_width_points: parseFloat(document.getElementById('btMinWidth')?.value || '5'),
-        proximity_min_points: 0,
+        proximity_min_points: parseFloat(document.getElementById('btProxMin')?.value || '0'),
         proximity_max_points: parseFloat(document.getElementById('btProxMax')?.value || '30'),
         rotation_filter: document.getElementById('btRotation')?.value || 'spot_delta_5m',
         short_put_offset_steps: parseInt(document.getElementById('btShortPutOffset')?.value || '0', 10),
         short_call_offset_steps: parseInt(document.getElementById('btShortCallOffset')?.value || '0', 10),
-        allowed_spreads: ['CALL','PUT'],
-        max_debit_points: parseFloat(document.getElementById('btMaxDebit')?.value || '5'),
-        stop_loss_pct: parseFloat(document.getElementById('btSL')?.value || '0.5'),
-        take_profit_pct: parseFloat(document.getElementById('btTP')?.value || '2.0'),
-        max_future_lookahead_minutes: 120,
-        price_mode: 'mid'
       };
+    }
+
+    function btSetAllowedSpreads(vals) {
+      const sel = document.getElementById('btAllowedSpreads');
+      if (!sel) return;
+      const want = new Set((vals || []).map(x => String(x).toUpperCase()));
+      for (const opt of Array.from(sel.options || [])) {
+        opt.selected = want.has(String(opt.value).toUpperCase());
+      }
     }
 
     function btApplyPayloadToForm(p) {
@@ -1254,12 +1486,14 @@
       setv('btAnchorPolicy', p.anchor_policy);
       setv('btMinP', p.min_p_bigwin);
       setv('btMinPred', p.min_pred_change);
+      btSetAllowedSpreads(p.allowed_spreads);
 
       setc('btEnablePW', p.enable_pw_trade);
       setc('btEnableCW', p.enable_cw_trade);
       setv('btLongMoneyness', p.long_leg_moneyness);
       setv('btMaxWidth', p.max_width_points);
       setv('btMinWidth', p.min_width_points);
+      setv('btProxMin', p.proximity_min_points);
       setv('btProxMax', p.proximity_max_points);
       setv('btRotation', p.rotation_filter);
       setv('btShortPutOffset', p.short_put_offset_steps);
@@ -1325,7 +1559,7 @@
       if (!it) { el.textContent = ''; return; }
       if (!it.last_run_at_utc) { el.textContent = 'Last run: —'; return; }
       const trades = it.last_summary?.trades ?? it.last_summary?.n_trades;
-      const pnl = it.last_summary?.total_pnl ?? it.last_summary?.total_pnl_dollars;
+      const pnl = it.last_summary?.cum_pnl_dollars ?? it.last_summary?.total_pnl_dollars ?? it.last_summary?.total_pnl;
       const extra = (trades !== undefined || pnl !== undefined) ? ` (trades=${trades ?? '—'}, pnl=${pnl ?? '—'})` : '';
       el.textContent = `Last run: ${it.last_run_at_utc}${extra}`;
     }
@@ -1374,10 +1608,306 @@
       await btRefreshRuns();
     }
 
-    async function btRefreshRuns() {
-      const note = document.getElementById('btRunsNote');
-      if (note) note.textContent = 'loading…';
+    function btRunsParseNum(v) {
+      if (v === null || v === undefined) return null;
+      const s = String(v).trim();
+      if (!s) return null;
+      const n = Number(s);
+      return isFinite(n) ? n : null;
+    }
 
+    function btRunsFiltersDefault() {
+      return {
+        minWinRatePct: null,
+        minProfitFactor: null,
+        minAvgPnl: null,
+        minTotalPnl: null,
+        keepTopPnl: 0,
+        keepTopPF: 0,
+        onlyShowPassing: true,
+      };
+    }
+
+    function btRunsReadFiltersFromUI() {
+      const f = btRunsFiltersDefault();
+      f.minWinRatePct = btRunsParseNum(document.getElementById('btRunsMinWin')?.value);
+      f.minProfitFactor = btRunsParseNum(document.getElementById('btRunsMinPF')?.value);
+      f.minAvgPnl = btRunsParseNum(document.getElementById('btRunsMinAvg')?.value);
+      f.minTotalPnl = btRunsParseNum(document.getElementById('btRunsMinTotal')?.value);
+      f.keepTopPnl = parseInt(document.getElementById('btRunsKeepTopPnl')?.value || '0', 10) || 0;
+      f.keepTopPF = parseInt(document.getElementById('btRunsKeepTopPF')?.value || '0', 10) || 0;
+      f.onlyShowPassing = !!document.getElementById('btRunsOnlyShowPassing')?.checked;
+      return f;
+    }
+
+    function btRunsWriteFiltersToUI(f) {
+      const setv = (id, v) => { const el = document.getElementById(id); if (el) el.value = (v === null || v === undefined) ? '' : String(v); };
+      setv('btRunsMinWin', f.minWinRatePct);
+      setv('btRunsMinPF', f.minProfitFactor);
+      setv('btRunsMinAvg', f.minAvgPnl);
+      setv('btRunsMinTotal', f.minTotalPnl);
+      const kp = document.getElementById('btRunsKeepTopPnl');
+      if (kp) kp.value = String(f.keepTopPnl || 0);
+      const kpf = document.getElementById('btRunsKeepTopPF');
+      if (kpf) kpf.value = String(f.keepTopPF || 0);
+      const c = document.getElementById('btRunsOnlyShowPassing');
+      if (c) c.checked = !!f.onlyShowPassing;
+    }
+
+    function btRunsLoadFilters() {
+      try {
+        const raw = localStorage.getItem('btRunsFilters');
+        if (!raw) return btRunsFiltersDefault();
+        const obj = JSON.parse(raw);
+        return {
+          ...btRunsFiltersDefault(),
+          ...obj,
+        };
+      } catch {
+        return btRunsFiltersDefault();
+      }
+    }
+
+    function btRunsSaveFilters(f) {
+      try { localStorage.setItem('btRunsFilters', JSON.stringify(f)); } catch {}
+    }
+
+    function btRunsMetric(it, key) {
+      const s = it?.summary || {};
+      // tolerate some legacy keys
+      const aliases = {
+        win_rate: ['winrate'],
+        cum_pnl_dollars: ['total_pnl_dollars', 'total_pnl'],
+        avg_pnl_dollars: ['avg_pnl'],
+        max_drawdown_dollars: ['max_drawdown', 'max_dd'],
+        profit_factor: ['pf'],
+      };
+      if (s[key] !== undefined && s[key] !== null) return s[key];
+      for (const a of (aliases[key] || [])) {
+        if (s[a] !== undefined && s[a] !== null) return s[a];
+      }
+      return null;
+    }
+
+    function btRunsPassesThresholds(it, f) {
+      const wr = btRunsMetric(it, 'win_rate');
+      const pf = btRunsMetric(it, 'profit_factor');
+      const avg = btRunsMetric(it, 'avg_pnl_dollars');
+      const total = btRunsMetric(it, 'cum_pnl_dollars');
+
+      if (f.minWinRatePct !== null) {
+        const need = f.minWinRatePct / 100.0;
+        if (!(wr !== null && Number(wr) >= need)) return false;
+      }
+      if (f.minProfitFactor !== null) {
+        if (!(pf !== null && Number(pf) >= f.minProfitFactor)) return false;
+      }
+      if (f.minAvgPnl !== null) {
+        if (!(avg !== null && Number(avg) >= f.minAvgPnl)) return false;
+      }
+      if (f.minTotalPnl !== null) {
+        if (!(total !== null && Number(total) >= f.minTotalPnl)) return false;
+      }
+      return true;
+    }
+
+    function btRunsComputeKeepSet(items, f) {
+      const keep = new Set();
+
+      function addTop(metricKey, n) {
+        if (!n || n <= 0) return;
+        const scored = (items || []).map(it => {
+          const v = btRunsMetric(it, metricKey);
+          const num = (v === null || v === undefined) ? null : Number(v);
+          const score = (num === null || !isFinite(num)) ? (num === Infinity ? 1e99 : -1e99) : num;
+          return [it, score];
+        });
+        scored.sort((a,b) => b[1]-a[1]);
+        for (const [it,_] of scored.slice(0, n)) {
+          keep.add(it.id);
+        }
+      }
+
+      addTop('cum_pnl_dollars', f.keepTopPnl);
+      addTop('profit_factor', f.keepTopPF);
+      return keep;
+    }
+
+    function btRunsComputeRender(items, f) {
+      const keepSet = btRunsComputeKeepSet(items, f);
+      const keepEnabled = (f.keepTopPnl > 0) || (f.keepTopPF > 0);
+
+      const rows = [];
+      const passingIds = new Set();
+      for (const it of (items || [])) {
+        const passThresh = btRunsPassesThresholds(it, f);
+        const passKeep = keepEnabled ? keepSet.has(it.id) : true;
+        const pass = passThresh && passKeep;
+        if (pass) passingIds.add(it.id);
+        if (f.onlyShowPassing) {
+          if (pass) rows.push([it, pass]);
+        } else {
+          rows.push([it, pass]);
+        }
+      }
+      return {rows, passingIds};
+    }
+
+    function btRunsUpdateSelNote() {
+      const el = document.getElementById('btRunsSelNote');
+      if (!el) return;
+      const n = btRunsSelected.size;
+      el.textContent = n ? `selected: ${n}` : '';
+    }
+
+    function btRunsRenderTable(items) {
+      const f = btRunsReadFiltersFromUI();
+      btRunsSaveFilters(f);
+
+      const tb = document.getElementById('btRunsTable');
+      if (!tb) return;
+      tb.innerHTML = '';
+
+      const keepSet = btRunsComputeKeepSet(items, f);
+      const keepEnabled = (f.keepTopPnl > 0) || (f.keepTopPF > 0);
+
+      let visible = 0;
+      let passing = 0;
+
+      for (const it of (items || [])) {
+        const p = it.params || {};
+        const sum = it.summary || {};
+
+        const trades = sum.trades ?? sum.n_trades ?? '—';
+        const pnl = btRunsMetric(it, 'cum_pnl_dollars');
+        const wr = btRunsMetric(it, 'win_rate');
+        const pf = btRunsMetric(it, 'profit_factor');
+        const avg = btRunsMetric(it, 'avg_pnl_dollars');
+        const maxdd = btRunsMetric(it, 'max_drawdown_dollars');
+
+        const passThresh = btRunsPassesThresholds(it, f);
+        const passKeep = keepEnabled ? keepSet.has(it.id) : true;
+        const pass = passThresh && passKeep;
+
+        if (pass) passing += 1;
+        if (f.onlyShowPassing && !pass) continue;
+
+        visible += 1;
+
+        const tr = document.createElement('tr');
+        if (!pass) tr.style.opacity = '0.55';
+        tr.style.cursor = 'pointer';
+
+        // select checkbox
+        const tdSel = document.createElement('td');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = btRunsSelected.has(it.id);
+        cb.addEventListener('click', (ev) => ev.stopPropagation());
+        cb.addEventListener('change', () => {
+          if (cb.checked) btRunsSelected.add(it.id);
+          else btRunsSelected.delete(it.id);
+          btRunsUpdateSelNote();
+        });
+        tdSel.appendChild(cb);
+
+        const tdCreated = document.createElement('td'); tdCreated.textContent = it.created_at_utc || '';
+        const tdPreset = document.createElement('td'); tdPreset.textContent = it.preset_name_at_run || '—';
+        const tdStart = document.createElement('td'); tdStart.textContent = p.start_day || '—';
+        const tdEnd = document.createElement('td'); tdEnd.textContent = p.end_day || '—';
+        const tdH = document.createElement('td'); tdH.textContent = (p.horizon_minutes ?? '—');
+        const tdTrades = document.createElement('td'); tdTrades.textContent = String(trades);
+
+        const tdPnl = document.createElement('td');
+        tdPnl.textContent = (pnl === null || pnl === undefined) ? '—' : fmtNum(pnl, 2);
+
+        const tdWr = document.createElement('td');
+        tdWr.textContent = (wr === null || wr === undefined) ? '—' : (100*Number(wr)).toFixed(1)+'%';
+
+        const tdPf = document.createElement('td');
+        if (pf === Infinity) tdPf.textContent = 'inf';
+        else tdPf.textContent = (pf === null || pf === undefined) ? '—' : fmtNum(pf, 2);
+
+        const tdAvg = document.createElement('td');
+        tdAvg.textContent = (avg === null || avg === undefined) ? '—' : fmtNum(avg, 2);
+
+        const tdDd = document.createElement('td');
+        tdDd.textContent = (maxdd === null || maxdd === undefined) ? '—' : fmtNum(maxdd, 2);
+
+        const tdAct = document.createElement('td');
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Delete';
+        delBtn.className = 'btn-danger';
+        delBtn.style.padding = '4px 8px';
+        delBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const ok = confirm(`Delete run ${it.id}?`);
+          if (!ok) return;
+          await safe('bt_run_delete', () => jpost('/api/backtest/runs/bulk_delete', {ids:[it.id]}));
+          btRunsSelected.delete(it.id);
+          btRunsUpdateSelNote();
+          toast('run deleted', 'warn');
+          await safe('bt_runs', () => btRefreshRuns());
+        });
+        tdAct.appendChild(delBtn);
+
+        tr.appendChild(tdSel);
+        tr.appendChild(tdCreated);
+        tr.appendChild(tdPreset);
+        tr.appendChild(tdStart);
+        tr.appendChild(tdEnd);
+        tr.appendChild(tdH);
+        tr.appendChild(tdTrades);
+        tr.appendChild(tdPnl);
+        tr.appendChild(tdWr);
+        tr.appendChild(tdPf);
+        tr.appendChild(tdAvg);
+        tr.appendChild(tdDd);
+        tr.appendChild(tdAct);
+
+        tr.addEventListener('click', () => {
+          btApplyPayloadToForm(p);
+          toast('loaded params from run', 'info');
+        });
+
+        tb.appendChild(tr);
+      }
+
+      const note = document.getElementById('btRunsNote');
+      if (note) {
+        const mode = f.onlyShowPassing ? 'showing passing only' : 'showing all (failing dimmed)';
+        note.textContent = `runs: ${(items||[]).length} | visible: ${visible} | passing: ${passing} | ${mode}`;
+      }
+
+      btRunsUpdateSelNote();
+    }
+
+    function btRunsComputeFailingIds(items) {
+      const f = btRunsReadFiltersFromUI();
+      const keepSet = btRunsComputeKeepSet(items, f);
+      const keepEnabled = (f.keepTopPnl > 0) || (f.keepTopPF > 0);
+      const failing = [];
+      for (const it of (items || [])) {
+        const passThresh = btRunsPassesThresholds(it, f);
+        const passKeep = keepEnabled ? keepSet.has(it.id) : true;
+        const pass = passThresh && passKeep;
+        if (!pass) failing.push(it.id);
+      }
+      return failing;
+    }
+
+    async function btRunsDeleteIds(ids) {
+      if (!ids || ids.length === 0) return;
+      const ok = confirm(`Delete ${ids.length} run(s)? This cannot be undone.`);
+      if (!ok) return;
+      await jpost('/api/backtest/runs/bulk_delete', {ids});
+      for (const id of ids) btRunsSelected.delete(id);
+      btRunsUpdateSelNote();
+      toast(`deleted ${ids.length} run(s)`, 'warn');
+      await btRefreshRuns();
+    }
+
+    async function btRunsRefreshRunsData() {
       const sk = btStrategyKey();
       const scope = document.getElementById('btRunsScope')?.value || 'all';
       const lim = parseInt(document.getElementById('btRunsLimit')?.value || '200', 10);
@@ -1386,44 +1916,19 @@
         const pid = btSelectedPresetId();
         if (pid) url += `&preset_id=${encodeURIComponent(String(pid))}`;
       }
-
       const data = await jget(url);
-      const tb = document.getElementById('btRunsTable');
-      if (tb) {
-        tb.innerHTML = '';
-        for (const it of (data.items || [])) {
-          const p = it.params || {};
-          const sum = it.summary || {};
-          const tr = document.createElement('tr');
-          tr.style.cursor = 'pointer';
-          const trades = sum.trades ?? sum.n_trades ?? '—';
-          const pnl = sum.total_pnl_dollars ?? sum.total_pnl ?? '—';
-          const wr = sum.win_rate ?? sum.winrate ?? null;
-          const maxdd = sum.max_drawdown ?? sum.max_dd ?? null;
-          tr.innerHTML = `
-            <td>${it.created_at_utc || ''}</td>
-            <td>${it.preset_name_at_run || '—'}</td>
-            <td>${p.start_day || '—'}</td>
-            <td>${p.end_day || '—'}</td>
-            <td>${p.horizon_minutes ?? '—'}</td>
-            <td>${trades}</td>
-            <td>${pnl}</td>
-            <td>${wr === null || wr === undefined ? '—' : (100*Number(wr)).toFixed(1)+'%'}</td>
-            <td>${maxdd === null || maxdd === undefined ? '—' : String(maxdd)}</td>
-          `;
-          tr.addEventListener('click', () => {
-            btApplyPayloadToForm(p);
-            toast('loaded params from run', 'info');
-          });
-          tb.appendChild(tr);
-        }
-      }
-
-      if (note) note.textContent = `runs: ${(data.items||[]).length}`;
+      btRunsRaw = (data.items || []);
       return data;
     }
 
+    async function btRefreshRuns() {
+      const note = document.getElementById('btRunsNote');
+      if (note) note.textContent = 'loading…';
 
+      const data = await btRunsRefreshRunsData();
+      btRunsRenderTable(btRunsRaw);
+      return data;
+    }
     async function runBacktestDebitSpreads() {
       setDateDefaults();
       updateBtMode();
@@ -1948,6 +2453,43 @@
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
+    document.getElementById('btRunsRefresh')?.addEventListener('click', () => safe('bt_runs', () => btRefreshRuns()));
+
+    // Backtest run filters (client-side)
+    ;['btRunsMinWin','btRunsMinPF','btRunsMinAvg','btRunsMinTotal','btRunsKeepTopPnl','btRunsKeepTopPF'].forEach(id => {
+      document.getElementById(id)?.addEventListener('change', () => btRunsRenderTable(btRunsRaw));
+      document.getElementById(id)?.addEventListener('keyup', () => btRunsRenderTable(btRunsRaw));
+    });
+    document.getElementById('btRunsOnlyShowPassing')?.addEventListener('change', () => btRunsRenderTable(btRunsRaw));
+
+    document.getElementById('btRunsResetFilters')?.addEventListener('click', () => {
+      const f = btRunsFiltersDefault();
+      btRunsWriteFiltersToUI(f);
+      btRunsSaveFilters(f);
+      btRunsRenderTable(btRunsRaw);
+    });
+
+    document.getElementById('btRunsSelectFailing')?.addEventListener('click', () => {
+      const failing = btRunsComputeFailingIds(btRunsRaw);
+      for (const id of failing) btRunsSelected.add(id);
+      btRunsRenderTable(btRunsRaw);
+      toast(`selected failing: ${failing.length}`, 'info');
+    });
+
+    document.getElementById('btRunsDeleteSelected')?.addEventListener('click', () => safe('bt_runs_delete_selected', async () => {
+      const ids = Array.from(btRunsSelected.values());
+      await btRunsDeleteIds(ids);
+    }));
+
+    document.getElementById('btRunsDeleteFailing')?.addEventListener('click', () => safe('bt_runs_delete_failing', async () => {
+      const ids = btRunsComputeFailingIds(btRunsRaw);
+      await btRunsDeleteIds(ids);
+    }));
+
+
+    // initialize backtest form visibility + horizon dropdown
+    updateBtMode();
+
 
     document.getElementById('btPresetSelect')?.addEventListener('change', () => {
       // When a preset is selected, load its saved params into the form.
@@ -1967,6 +2509,21 @@
     document.getElementById('btStrategyMode')?.addEventListener('change', () => {
       updateBtMode();
       // Presets are keyed by strategy_mode; reload when strategy changes.
+      safe('bt_presets', () => btReloadPresets());
+      safe('bt_runs', () => btRefreshRuns());
+    });
+    document.getElementById('btExpMode')?.addEventListener('change', () => {
+      updateBtMode();
+      // Presets/runs are keyed by strategy_key which includes expiration selection.
+      safe('bt_presets', () => btReloadPresets());
+      safe('bt_runs', () => btRefreshRuns());
+    });
+    document.getElementById('btTargetDte')?.addEventListener('change', () => {
+      updateBtMode();
+      safe('bt_presets', () => btReloadPresets());
+      safe('bt_runs', () => btRefreshRuns());
+    });
+    document.getElementById('btDteTol')?.addEventListener('change', () => {
       safe('bt_presets', () => btReloadPresets());
       safe('bt_runs', () => btRefreshRuns());
     });
@@ -2000,7 +2557,12 @@
       await safe('eod', () => refreshEod());
       await safe('logs', () => refreshLogs());
 
-      // Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
+            // Backtest Runs: init filters from localStorage
+      const f0 = btRunsLoadFilters();
+      btRunsWriteFiltersToUI(f0);
+      btRunsSaveFilters(f0);
+
+// Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
       await safe('bt_presets', () => btReloadPresets());
       await safe('bt_runs', () => btRefreshRuns());
 
