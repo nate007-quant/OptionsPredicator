@@ -241,18 +241,17 @@ def _pick_expiration_for_target_dte(
             """
             SELECT expiration_date
             FROM (
-              SELECT
+              SELECT DISTINCT
                 expiration_date,
-                ABS((expiration_date - (snapshot_ts AT TIME ZONE %s)::date) - %s) AS dte_diff
+                ABS((expiration_date - ((%s AT TIME ZONE %s)::date)) - %s) AS dte_diff
               FROM spx.option_chain
               WHERE snapshot_ts = %s
-              GROUP BY expiration_date
             ) t
             WHERE dte_diff <= %s
             ORDER BY dte_diff ASC, expiration_date ASC
             LIMIT 1
             """,
-            (tz_local, int(target_dte_days), snapshot_ts, int(dte_tolerance_days)),
+            (snapshot_ts, tz_local, int(target_dte_days), snapshot_ts, int(dte_tolerance_days)),
         )
         r = cur.fetchone()
         if not r:
