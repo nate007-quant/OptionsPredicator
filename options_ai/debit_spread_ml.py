@@ -10,6 +10,8 @@ from typing import Any
 import joblib
 import numpy as np
 import psycopg
+
+from options_ai.utils.task_state import utc_now_iso, write_task_state
 from sklearn.linear_model import Ridge, LogisticRegression
 
 
@@ -284,6 +286,8 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
                             horizon_minutes=int(cfg.horizon_minutes),
                             model_version=str(cfg.model_version),
                         )
+            if not did:
+                write_task_state(task_path, None)
         except Exception:
             pass
 
@@ -605,6 +609,7 @@ def score_recent_backfill(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
 
 
 def run_daemon(cfg: DebitMLConfig) -> None:
+    task_path = os.getenv('DEBIT_ML_TASK_PATH', '/mnt/options_ai/state/task_debit_ml.json')
     last_train_ts = 0.0
     last_scored_snapshot_ts: datetime | None = None
     last_scored_trained_at: datetime | None = None
@@ -618,6 +623,7 @@ def run_daemon(cfg: DebitMLConfig) -> None:
             with psycopg.connect(cfg.db_dsn) as conn:
                 now = time.time()
                 force = (now - last_train_ts) >= float(cfg.retrain_seconds)
+                write_task_state(task_path, {"stage": "ml_train_if_needed", "force": bool(force), "started_at": utc_now_iso()})
                 tm = train_if_needed(conn, cfg, force=force)
                 if tm is not None:
                     last_train_ts = now
@@ -631,6 +637,7 @@ def run_daemon(cfg: DebitMLConfig) -> None:
                             or tm.trained_at != last_scored_trained_at
                         )
                         if should_score_latest:
+                            write_task_state(task_path, {"stage": "ml_score_latest", "snapshot_ts": latest.isoformat().replace("+00:00","Z"), "horizon_minutes": int(cfg.horizon_minutes), "started_at": utc_now_iso()})
                             n = _score_snapshot(conn, cfg, tm, snapshot_ts=latest)
                             last_scored_snapshot_ts = latest
                             last_scored_trained_at = tm.trained_at
@@ -639,10 +646,12 @@ def run_daemon(cfg: DebitMLConfig) -> None:
                     else:
                         n = 0
 
+                    write_task_state(task_path, {"stage": "ml_score_backfill", "horizon_minutes": int(cfg.horizon_minutes), "limit": 200, "started_at": utc_now_iso()})
                     n2 = score_recent_backfill(conn, cfg, tm, limit=200)
                     if n or n2:
                         did = True
         except Exception:
+            write_task_state(task_path, {"stage": "error", "at": utc_now_iso()})
             pass
 
         time.sleep(cfg.poll_seconds if not did else 0.2)

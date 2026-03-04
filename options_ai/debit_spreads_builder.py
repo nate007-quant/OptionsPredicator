@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
+from options_ai.utils.task_state import utc_now_iso, write_task_state
+
 
 @dataclass(frozen=True)
 class DebitSpreadConfig:
@@ -621,6 +623,7 @@ def _candidate_snapshots_missing_labels(conn: psycopg.Connection, *, limit: int)
 
 
 def run_daemon(cfg: DebitSpreadConfig) -> None:
+    task_path = os.getenv('DEBIT_SPREADS_TASK_PATH', '/mnt/options_ai/state/task_debit_spreads.json')
     with psycopg.connect(cfg.db_dsn) as conn:
         ensure_schema(conn)
 
@@ -630,6 +633,7 @@ def run_daemon(cfg: DebitSpreadConfig) -> None:
             with psycopg.connect(cfg.db_dsn) as conn:
                 # Candidate generation (also computes gex levels)
                 for ts in _candidate_snapshots_missing_candidates(conn, limit=cfg.batch_limit, tz_local=cfg.tz_local):
+                    write_task_state(task_path, {"stage": "debit_candidates", "snapshot_ts": ts.isoformat().replace("+00:00","Z"), "started_at": utc_now_iso()})
                     n = compute_candidates_for_snapshot(
                         conn,
                         snapshot_ts=ts,
@@ -641,12 +645,16 @@ def run_daemon(cfg: DebitSpreadConfig) -> None:
 
                 # Label generation
                 for ts in _candidate_snapshots_missing_labels(conn, limit=cfg.batch_limit):
+                    write_task_state(task_path, {"stage": "debit_labels", "snapshot_ts": ts.isoformat().replace("+00:00","Z"), "horizons": list(cfg.horizons_minutes), "started_at": utc_now_iso()})
                     n = compute_labels_for_snapshot(conn, snapshot_ts=ts, cfg=cfg)
                     if n:
                         did = True
 
+            if not did:
+                write_task_state(task_path, None)
         except Exception:
             # Keep daemon alive; journalctl will show stack traces when run under systemd.
+            write_task_state(task_path, {"stage": "error", "at": utc_now_iso()})
             pass
 
         time.sleep(cfg.poll_seconds if not did else 2.0)

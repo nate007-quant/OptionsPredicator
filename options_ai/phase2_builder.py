@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
+from options_ai.utils.task_state import utc_now_iso, write_task_state
+
 
 TZ_LOCAL_DEFAULT = "America/Chicago"
 
@@ -600,6 +602,7 @@ def _candidate_label_snapshot_ts(conn: psycopg.Connection, *, limit: int) -> lis
 
 def run_phase2_daemon(cfg: Phase2Config) -> None:
     tz_local = cfg.tz_local
+    task_path = os.getenv('PHASE2_TASK_PATH', '/mnt/options_ai/state/task_phase2.json')
 
     with psycopg.connect(cfg.db_dsn) as conn:
         ensure_phase2_schema(conn)
@@ -610,6 +613,7 @@ def run_phase2_daemon(cfg: Phase2Config) -> None:
             with psycopg.connect(cfg.db_dsn) as conn:
                 # Features backfill
                 for ts in _candidate_snapshot_ts(conn, limit=cfg.batch_limit):
+                    write_task_state(task_path, {"stage": "phase2_features", "snapshot_ts": ts.isoformat().replace("+00:00","Z"), "started_at": utc_now_iso()})
                     compute_features_for_snapshot(
                         conn,
                         snapshot_ts=ts,
@@ -620,6 +624,7 @@ def run_phase2_daemon(cfg: Phase2Config) -> None:
 
                 # Labels backfill (only for feature snapshots with no labels yet)
                 for ts in _candidate_label_snapshot_ts(conn, limit=cfg.batch_limit):
+                    write_task_state(task_path, {"stage": "phase2_labels", "snapshot_ts": ts.isoformat().replace("+00:00","Z"), "horizons": list(cfg.horizons_minutes), "started_at": utc_now_iso()})
                     n = compute_labels_for_snapshot(
                         conn,
                         snapshot_ts=ts,
@@ -630,9 +635,12 @@ def run_phase2_daemon(cfg: Phase2Config) -> None:
                     )
                     if n:
                         did = True
+            if not did:
+                write_task_state(task_path, None)
         except Exception:
             # Keep daemon alive; rely on journalctl for stack traces.
             # (We intentionally avoid logging dependencies here.)
+            write_task_state(task_path, {"stage": "error", "at": utc_now_iso()})
             pass
 
         time.sleep(cfg.poll_seconds if not did else 0.1)
