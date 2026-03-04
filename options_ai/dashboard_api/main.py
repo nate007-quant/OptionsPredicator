@@ -466,7 +466,7 @@ def create_app() -> FastAPI:
         # state cursor files (best-effort)
         try:
             sf = {}
-            for name in sorted((data_root / 'state').glob('*backfill*.json')):
+            for name in sorted(list((data_root / 'state').glob('*backfill*.json')) + list((data_root / 'state').glob('task_*.json'))):
                 try:
                     st = name.stat()
                     sf[name.name] = {
