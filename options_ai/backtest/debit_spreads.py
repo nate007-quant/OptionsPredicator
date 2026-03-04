@@ -18,6 +18,7 @@ StrategyMode = Literal["anchor_based", "structural_walls"]
 LongLegMoneyness = Literal["ATM", "1_ITM"]
 RotationFilter = Literal["none", "spot_delta_5m"]
 ExpirationMode = Literal["0dte", "target_dte"]
+SpreadStyle = Literal["debit", "credit"]
 
 
 @dataclass(frozen=True)
@@ -42,10 +43,19 @@ class DebitBacktestConfig:
     max_trades_per_day: int = 1
     one_trade_at_a_time: bool = True
 
+    # debit = long vertical (pay debit); credit = short vertical (receive credit)
+    spread_style: SpreadStyle = "debit"
+
+    # max entry price in points (debit paid OR credit received)
     max_debit_points: float = 5.0
 
+    # Debit exits (spread_style=debit)
     stop_loss_pct: float = 0.50
     take_profit_pct: float = 2.00
+
+    # Credit exits (Option A; spread_style=credit)
+    credit_stop_loss_mult: float = 2.00
+    credit_take_profit_pct: float = 0.50
 
     max_future_lookahead_minutes: int = 120
     price_mode: PriceMode = "mid"
@@ -1121,8 +1131,15 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 symbols=(long_sym, short_sym),
             )
 
-            stop_level = entry_debit * (1.0 - float(cfg.stop_loss_pct))
-            tp_level = entry_debit * (1.0 + float(cfg.take_profit_pct))
+            # Exit thresholds
+            if cfg.spread_style == 'credit':
+                # TP when we've captured X% of the credit (spread value falls)
+                tp_level = entry_debit * (1.0 - float(cfg.credit_take_profit_pct))
+                # SL when spread value rises to (1 + mult) * entry_credit
+                stop_level = entry_debit * (1.0 + float(cfg.credit_stop_loss_mult))
+            else:
+                stop_level = entry_debit * (1.0 - float(cfg.stop_loss_pct))
+                tp_level = entry_debit * (1.0 + float(cfg.take_profit_pct))
 
             exit_ts: datetime | None = None
             exit_reason: str = "MISSING"
@@ -1139,16 +1156,29 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 raw = float(m_long - m_short)
                 spread_mid = _clamp(raw, 0.0, clamp_hi)
 
-                if spread_mid <= stop_level:
-                    exit_ts = p_ts
-                    exit_reason = "SL"
-                    exit_debit = spread_mid
-                    break
-                if spread_mid >= tp_level:
-                    exit_ts = p_ts
-                    exit_reason = "TP"
-                    exit_debit = spread_mid
-                    break
+                if cfg.spread_style == 'credit':
+                    # Short spread: lose when value rises, win when value falls
+                    if spread_mid >= stop_level:
+                        exit_ts = p_ts
+                        exit_reason = "SL"
+                        exit_debit = spread_mid
+                        break
+                    if spread_mid <= tp_level:
+                        exit_ts = p_ts
+                        exit_reason = "TP"
+                        exit_debit = spread_mid
+                        break
+                else:
+                    if spread_mid <= stop_level:
+                        exit_ts = p_ts
+                        exit_reason = "SL"
+                        exit_debit = spread_mid
+                        break
+                    if spread_mid >= tp_level:
+                        exit_ts = p_ts
+                        exit_reason = "TP"
+                        exit_debit = spread_mid
+                        break
 
             # If no SL/TP, time exit
             if exit_ts is None:
@@ -1170,9 +1200,16 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             pnl_dollars = None
             roi = None
             if exit_debit is not None:
-                change_points = float(exit_debit - entry_debit)
-                pnl_dollars = float(change_points * 100.0)
-                roi = float(change_points / entry_debit) if entry_debit > 0 else None
+                if cfg.spread_style == 'credit':
+                    change_points = float(entry_debit - exit_debit)
+                    pnl_dollars = float(change_points * 100.0)
+                    # Return on risk (max loss = width - credit)
+                    risk = float(width_points - entry_debit) if (width_points is not None) else None
+                    roi = float(change_points / risk) if (risk is not None and risk > 0) else None
+                else:
+                    change_points = float(exit_debit - entry_debit)
+                    pnl_dollars = float(change_points * 100.0)
+                    roi = float(change_points / entry_debit) if entry_debit > 0 else None
 
             if exit_reason == "MISSING" and (not cfg.include_missing_exits):
                 # still mark position as exited for gating
@@ -1259,9 +1296,12 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             "entry_end_ct": cfg.entry_end_ct,
             "max_trades_per_day": int(cfg.max_trades_per_day),
             "one_trade_at_a_time": bool(cfg.one_trade_at_a_time),
+            "spread_style": cfg.spread_style,
             "max_debit_points": float(cfg.max_debit_points),
             "stop_loss_pct": float(cfg.stop_loss_pct),
             "take_profit_pct": float(cfg.take_profit_pct),
+            "credit_stop_loss_mult": float(cfg.credit_stop_loss_mult),
+            "credit_take_profit_pct": float(cfg.credit_take_profit_pct),
             "max_future_lookahead_minutes": int(cfg.max_future_lookahead_minutes),
             "price_mode": cfg.price_mode,
             "tz_local": cfg.tz_local,

@@ -791,6 +791,14 @@ structural_walls: build trades around walls on-the-fly (anchor filters do not ap
                       <option value="structural_walls">Structural Walls</option>
                     </select>
                   </label>
+                  <label>Spread style <span class="tip" data-tip="debit: buy the vertical (pay debit).
+
+credit: sell the vertical (receive credit). Uses Option A exits: TP capture % and SL multiple.">i</span>
+                    <select id="btSpreadStyle">
+                      <option value="debit" selected>debit (long)</option>
+                      <option value="credit">credit (short)</option>
+                    </select>
+                  </label>
                   <label>Max trades/day <span class="tip" data-tip="Maximum entries per day in the backtest.">i</span> <input id="btMaxPerDay" type="number" min="1" max="50" value="1" style="width:110px;" /></label>
                   <label><input id="btOneAtATime" type="checkbox" checked /> One trade at a time <span class="tip" data-tip="If checked: the strategy will not enter a new trade until the previous trade has exited.">i</span></label>
                 </div>
@@ -899,8 +907,18 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
                 <legend>Risk / pricing</legend>
                 <div class="row">
                   <label>Max debit <span class="tip" data-tip="Maximum allowed entry debit in points.">i</span> <input id="btMaxDebit" type="number" step="0.01" value="5.00" style="width:110px;" /></label>
-                  <label>Stop loss % <input id="btSL" type="number" step="0.01" value="0.50" style="width:110px;" /></label>
-                  <label>Take profit % <input id="btTP" type="number" step="0.01" value="2.00" style="width:110px;" /></label>
+                  <span id="btRiskDebit">
+                    <label>Stop loss % <input id="btSL" type="number" step="0.01" value="0.50" style="width:110px;" /></label>
+                    <label>Take profit % <input id="btTP" type="number" step="0.01" value="2.00" style="width:110px;" /></label>
+                  </span>
+                  <span id="btRiskCredit" style="display:none;">
+                    <label>SL multiple <span class="tip" data-tip="Credit spreads (short).
+
+Stop out when spread value >= entry_credit * (1 + SL multiple).">i</span> <input id="btCreditSLMult" type="number" step="0.1" value="2.0" style="width:110px;" /></label>
+                    <label>TP capture % <span class="tip" data-tip="Credit spreads (short).
+
+Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 means capture 50% of the credit.">i</span> <input id="btCreditTPCapture" type="number" step="0.01" min="0" max="1" value="0.50" style="width:110px;" /></label>
+                  </span>
                 </div>
               </fieldset>
 
@@ -1380,6 +1398,14 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       if (tw) tw.style.display = showTerm ? '' : 'none';
       if (tolw) tolw.style.display = showTerm ? '' : 'none';
     
+
+
+      // Risk inputs: debit vs credit
+      const ss = document.getElementById('btSpreadStyle')?.value || 'debit';
+      const rd = document.getElementById('btRiskDebit');
+      const rc = document.getElementById('btRiskCredit');
+      if (rd) rd.style.display = (ss === 'credit') ? 'none' : '';
+      if (rc) rc.style.display = (ss === 'credit') ? '' : 'none';
       btUpdateHorizonOptions();
     }
 
@@ -1395,7 +1421,9 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
 
     function btStrategyKey() {
       const mode = document.getElementById('btStrategyMode')?.value || 'anchor_based';
-      return `debit_spreads:${mode}:${btExpKey()}`;
+      const ss = document.getElementById('btSpreadStyle')?.value || 'debit';
+      const prefix = (ss === 'credit') ? 'credit_spreads' : 'debit_spreads';
+      return `${prefix}:${mode}:${btExpKey()}`;
     }
 
     function btReadAllowedSpreads() {
@@ -1436,6 +1464,10 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
         max_debit_points: parseFloat(document.getElementById('btMaxDebit')?.value || '5'),
         stop_loss_pct: parseFloat(document.getElementById('btSL')?.value || '0.5'),
         take_profit_pct: parseFloat(document.getElementById('btTP')?.value || '2.0'),
+
+        spread_style: document.getElementById('btSpreadStyle')?.value || 'debit',
+        credit_stop_loss_mult: parseFloat(document.getElementById('btCreditSLMult')?.value || '2.0'),
+        credit_take_profit_pct: parseFloat(document.getElementById('btCreditTPCapture')?.value || '0.5'),
 
         max_future_lookahead_minutes: 120,
         price_mode: 'mid',
@@ -1515,6 +1547,9 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       setv('btShortCallOffset', p.short_call_offset_steps);
 
       setv('btMaxDebit', p.max_debit_points);
+      setv('btSpreadStyle', p.spread_style);
+      setv('btCreditSLMult', p.credit_stop_loss_mult);
+      setv('btCreditTPCapture', p.credit_take_profit_pct);
       setv('btSL', p.stop_loss_pct);
       setv('btTP', p.take_profit_pct);
 
@@ -1585,6 +1620,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       let p;
       try { p = btReadFormPayload(); } catch { p = {}; }
 
+      const ss = (p.spread_style === 'credit') ? 'cr' : 'db';
       const sm = (p.strategy_mode === 'structural_walls') ? 'sw' : 'ab';
       let exp = '0dte';
       if (p.expiration_mode && p.expiration_mode !== '0dte') {
@@ -1611,6 +1647,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       };
 
       const parts = [
+        ss,
         sm,
         exp,
         h,
@@ -2725,6 +2762,12 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       btRenderPresetLastRun(btPresetsData);
       safe('bt_runs', () => btRefreshRuns());
     });
+    document.getElementById('btSpreadStyle')?.addEventListener('change', () => {
+      updateBtMode();
+      safe('bt_presets', () => btReloadPresets());
+      safe('bt_runs', () => btRefreshRuns());
+    });
+
     document.getElementById('btStrategyMode')?.addEventListener('change', () => {
       updateBtMode();
       // Presets are keyed by strategy_mode; reload when strategy changes.

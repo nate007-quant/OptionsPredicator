@@ -1150,6 +1150,7 @@ def create_app() -> FastAPI:
             entry_end_ct=str(payload.get("entry_end_ct", "09:30")),
             max_trades_per_day=int(payload.get("max_trades_per_day", 1)),
             one_trade_at_a_time=bool(payload.get("one_trade_at_a_time", True)),
+            spread_style=str(payload.get("spread_style", "debit")),
             anchor_mode=str(payload.get("anchor_mode", "ATM")),
             anchor_policy=str(payload.get("anchor_policy", os.getenv("DEBIT_ANCHOR_POLICY", "any"))),
             min_p_bigwin=float(payload.get("min_p_bigwin", 0.0)),
@@ -1170,6 +1171,8 @@ def create_app() -> FastAPI:
             max_debit_points=float(payload.get("max_debit_points", 5.0)),
             stop_loss_pct=float(payload.get("stop_loss_pct", 0.50)),
             take_profit_pct=float(payload.get("take_profit_pct", 2.00)),
+            credit_stop_loss_mult=float(payload.get("credit_stop_loss_mult", 2.00)),
+            credit_take_profit_pct=float(payload.get("credit_take_profit_pct", 0.50)),
             max_future_lookahead_minutes=int(payload.get("max_future_lookahead_minutes", 120)),
             price_mode=str(payload.get("price_mode", "mid")),
             tz_local=str(payload.get("tz_local", "America/Chicago")),
@@ -1198,7 +1201,9 @@ def create_app() -> FastAPI:
                 tol = 2
             exp_key = f'dte{td}t{tol}'
 
-        strategy_key = f"debit_spreads:{strategy_mode}:{exp_key}"
+        spread_style = str(payload.get('spread_style', 'debit') or 'debit').strip().lower()
+        prefix = 'credit_spreads' if spread_style == 'credit' else 'debit_spreads'
+        strategy_key = f"{prefix}:{strategy_mode}:{exp_key}"
 
         preset_id_in = payload.get('preset_id', None)
         preset_id_final: int | None = None
