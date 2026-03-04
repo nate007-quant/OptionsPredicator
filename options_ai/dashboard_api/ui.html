@@ -288,6 +288,10 @@
     tbody tr:nth-child(odd) { background: rgba(255,255,255,0.02); }
     tbody tr:hover { background: rgba(96,165,250,0.06); }
 
+    thead th.sortable { cursor: pointer; user-select: none; }
+    thead th.sortable:hover { color: var(--text); }
+    thead th.sortable.active { color: var(--text); }
+
     .logs {
       max-height: 520px;
       overflow: auto;
@@ -990,21 +994,21 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
               </fieldset>
 
               <div style="overflow:auto; margin-top:12px;">
-                <table>
+                <table id="btRunsTableOuter">
                   <thead>
                     <tr>
                       <th></th>
-                      <th>created_at</th>
-                      <th>preset</th>
-                      <th>start</th>
-                      <th>end</th>
-                      <th>H</th>
-                      <th>trades</th>
-                      <th>total_pnl</th>
-                      <th>win_rate</th>
-                      <th>profit_factor</th>
-                      <th>avg_pnl</th>
-                      <th>max_dd</th>
+                      <th class="sortable" data-sort="created_at_utc">created_at</th>
+                      <th class="sortable" data-sort="preset_name_at_run">preset</th>
+                      <th class="sortable" data-sort="start_day">start</th>
+                      <th class="sortable" data-sort="end_day">end</th>
+                      <th class="sortable" data-sort="horizon_minutes">H</th>
+                      <th class="sortable" data-sort="trades">trades</th>
+                      <th class="sortable" data-sort="cum_pnl_dollars">total_pnl</th>
+                      <th class="sortable" data-sort="win_rate">win_rate</th>
+                      <th class="sortable" data-sort="profit_factor">profit_factor</th>
+                      <th class="sortable" data-sort="avg_pnl_dollars">avg_pnl</th>
+                      <th class="sortable" data-sort="max_drawdown_dollars">max_dd</th>
                       <th>actions</th>
                     </tr>
                   </thead>
@@ -1273,6 +1277,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
     let btEquityChart;
     let btPresetsData;
     let btRunsRaw = [];
+    let btRunsSort = { key: 'created_at_utc', dir: 'desc' };
     let btRunsSelected = new Set();
 
 
@@ -1672,6 +1677,116 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       try { localStorage.setItem('btRunsFilters', JSON.stringify(f)); } catch {}
     }
 
+
+    function btRunsSortDefaultsForKey(key) {
+      // heuristic defaults
+      const numericDesc = new Set(['cum_pnl_dollars','profit_factor','win_rate','avg_pnl_dollars','trades','horizon_minutes']);
+      const numericAsc = new Set(['max_drawdown_dollars']);
+      if (numericAsc.has(key)) return 'asc';
+      if (numericDesc.has(key)) return 'desc';
+      if (key === 'created_at_utc') return 'desc';
+      return 'asc';
+    }
+
+    function btRunsLoadSort() {
+      try {
+        const raw = localStorage.getItem('btRunsSort');
+        if (!raw) return { key: 'created_at_utc', dir: 'desc' };
+        const obj = JSON.parse(raw);
+        const key = (obj && obj.key) ? String(obj.key) : 'created_at_utc';
+        const dir = (obj && obj.dir) ? String(obj.dir) : btRunsSortDefaultsForKey(key);
+        return { key, dir: (dir === 'asc' ? 'asc' : 'desc') };
+      } catch {
+        return { key: 'created_at_utc', dir: 'desc' };
+      }
+    }
+
+    function btRunsSaveSort(s) {
+      try { localStorage.setItem('btRunsSort', JSON.stringify(s)); } catch {}
+    }
+
+    function btRunsGetSortVal(it, key) {
+      const p = it?.params || {};
+      if (key === 'created_at_utc') return it.created_at_utc || '';
+      if (key === 'preset_name_at_run') return it.preset_name_at_run || '';
+      if (key === 'start_day') return p.start_day || '';
+      if (key === 'end_day') return p.end_day || '';
+      if (key === 'horizon_minutes') return p.horizon_minutes ?? null;
+      if (key === 'trades') return btRunsMetric(it, 'trades');
+      if (key === 'cum_pnl_dollars') return btRunsMetric(it, 'cum_pnl_dollars');
+      if (key === 'win_rate') return btRunsMetric(it, 'win_rate');
+      if (key === 'profit_factor') return btRunsMetric(it, 'profit_factor');
+      if (key === 'avg_pnl_dollars') return btRunsMetric(it, 'avg_pnl_dollars');
+      if (key === 'max_drawdown_dollars') return btRunsMetric(it, 'max_drawdown_dollars');
+      return null;
+    }
+
+    function btRunsIsNumericSortKey(key) {
+      return new Set([
+        'horizon_minutes','trades','cum_pnl_dollars','win_rate','profit_factor','avg_pnl_dollars','max_drawdown_dollars'
+      ]).has(key);
+    }
+
+    function btRunsCompare(a, b, key, dir) {
+      const va = btRunsGetSortVal(a, key);
+      const vb = btRunsGetSortVal(b, key);
+
+      // nulls always last
+      const aNull = (va === null || va === undefined || va === '');
+      const bNull = (vb === null || vb === undefined || vb === '');
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;
+      if (bNull) return -1;
+
+      if (key === 'created_at_utc') {
+        const da = Date.parse(String(va));
+        const db = Date.parse(String(vb));
+        const cmp = (isFinite(da) && isFinite(db)) ? (da - db) : String(va).localeCompare(String(vb));
+        return dir === 'asc' ? cmp : -cmp;
+      }
+
+      if (btRunsIsNumericSortKey(key)) {
+        let na = Number(va);
+        let nb = Number(vb);
+        if (!isFinite(na)) na = (na === Infinity ? 1e99 : -1e99);
+        if (!isFinite(nb)) nb = (nb === Infinity ? 1e99 : -1e99);
+        const cmp = na - nb;
+        return dir === 'asc' ? cmp : -cmp;
+      }
+
+      const cmp = String(va).toLowerCase().localeCompare(String(vb).toLowerCase());
+      return dir === 'asc' ? cmp : -cmp;
+    }
+
+    function btRunsApplySort(items) {
+      const key = btRunsSort?.key || 'created_at_utc';
+      const dir = (btRunsSort?.dir === 'asc') ? 'asc' : 'desc';
+      // stable-ish: decorate with index
+      const decorated = (items || []).map((it, idx) => [it, idx]);
+      decorated.sort((x,y) => {
+        const cmp = btRunsCompare(x[0], y[0], key, dir);
+        return cmp !== 0 ? cmp : (x[1] - y[1]);
+      });
+      return decorated.map(x => x[0]);
+    }
+
+    function btRunsRenderSortIndicators() {
+      const table = document.getElementById('btRunsTableOuter');
+      if (!table) return;
+      const ths = table.querySelectorAll('thead th.sortable');
+      ths.forEach(th => {
+        th.classList.remove('active');
+        const base = th.getAttribute('data-base') || th.textContent || '';
+        th.setAttribute('data-base', base);
+        th.textContent = base;
+        const k = th.getAttribute('data-sort') || '';
+        if (k && k === btRunsSort.key) {
+          th.classList.add('active');
+          th.textContent = base + (btRunsSort.dir === 'asc' ? ' ▲' : ' ▼');
+        }
+      });
+    }
+
     function btRunsMetric(it, key) {
       const s = it?.summary || {};
       // tolerate some legacy keys
@@ -1739,7 +1854,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
 
       const rows = [];
       const passingIds = new Set();
-      for (const it of (items || [])) {
+      for (const it of (itemsSorted || [])) {
         const passThresh = btRunsPassesThresholds(it, f);
         const passKeep = keepEnabled ? keepSet.has(it.id) : true;
         const pass = passThresh && passKeep;
@@ -1764,6 +1879,11 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       const f = btRunsReadFiltersFromUI();
       btRunsSaveFilters(f);
 
+      // sort indicators
+      btRunsRenderSortIndicators();
+
+      const itemsSorted = btRunsApplySort(items);
+
       const tb = document.getElementById('btRunsTable');
       if (!tb) return;
       tb.innerHTML = '';
@@ -1774,7 +1894,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       let visible = 0;
       let passing = 0;
 
-      for (const it of (items || [])) {
+      for (const it of (itemsSorted || [])) {
         const p = it.params || {};
         const sum = it.summary || {};
 
@@ -2454,6 +2574,30 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
     document.getElementById('btRunsRefresh')?.addEventListener('click', () => safe('bt_runs', () => btRefreshRuns()));
+
+    // sortable backtest runs headers
+    (function initBtRunsSort() {
+      btRunsSort = btRunsLoadSort();
+      btRunsRenderSortIndicators();
+      const table = document.getElementById('btRunsTableOuter');
+      if (!table) return;
+      const ths = table.querySelectorAll('thead th.sortable');
+      ths.forEach(th => {
+        th.addEventListener('click', () => {
+          const key = th.getAttribute('data-sort') || '';
+          if (!key) return;
+          if (btRunsSort.key === key) {
+            btRunsSort.dir = (btRunsSort.dir === 'asc') ? 'desc' : 'asc';
+          } else {
+            btRunsSort.key = key;
+            btRunsSort.dir = btRunsSortDefaultsForKey(key);
+          }
+          btRunsSaveSort(btRunsSort);
+          btRunsRenderTable(btRunsRaw);
+        });
+      });
+    })();
+
 
     // Backtest run filters (client-side)
     ;['btRunsMinWin','btRunsMinPF','btRunsMinAvg','btRunsMinTotal','btRunsKeepTopPnl','btRunsKeepTopPF'].forEach(id => {
