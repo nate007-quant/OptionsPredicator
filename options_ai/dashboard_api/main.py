@@ -625,6 +625,89 @@ def create_app() -> FastAPI:
                         'debit_scores_0dte': lag_minutes(latest_score),
                     }
 
+
+
+            # Derived cursors from state files (best-effort): shows what the backfill loops are currently working through.
+            try:
+                now_utc = datetime.now(timezone.utc)
+                cursors: list[dict[str, Any]] = []
+
+                def add_cursor(stage: str, file_key: str, key: str, ts_val: Any) -> None:
+                    if ts_val is None:
+                        return
+                    # parse ts
+                    ts = None
+                    try:
+                        if isinstance(ts_val, str):
+                            ts = datetime.fromisoformat(ts_val.replace('Z', '+00:00'))
+                        elif isinstance(ts_val, datetime):
+                            ts = ts_val
+                    except Exception:
+                        ts = None
+                    if ts is not None and ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+
+                    meta = (out.get('state_files') or {}).get(file_key) or {}
+                    mtime_s = meta.get('mtime_utc')
+                    mtime = None
+                    try:
+                        if isinstance(mtime_s, str):
+                            mtime = datetime.fromisoformat(mtime_s.replace('Z', '+00:00'))
+                    except Exception:
+                        mtime = None
+
+                    lag_chain = None
+                    try:
+                        if latest_chain is not None and ts is not None:
+                            lag_chain = (latest_chain - ts).total_seconds() / 60.0
+                    except Exception:
+                        lag_chain = None
+
+                    updating_recently = None
+                    try:
+                        if mtime is not None:
+                            updating_recently = (now_utc - mtime).total_seconds() <= 15 * 60
+                    except Exception:
+                        updating_recently = None
+
+                    cursors.append({
+                        'stage': stage,
+                        'file': file_key,
+                        'key': key,
+                        'cursor_ts': ts.isoformat().replace('+00:00', 'Z') if ts is not None else ts_val,
+                        'lag_vs_latest_chain_minutes': lag_chain,
+                        'state_mtime_utc': mtime_s,
+                        'updating_recently': updating_recently,
+                    })
+
+                # Known state files
+                for fk, meta in (out.get('state_files') or {}).items():
+                    j = meta.get('json') if isinstance(meta, dict) else None
+                    if not isinstance(j, dict):
+                        continue
+                    # Phase2 0DTE
+                    if fk == 'phase2_0dte_backfill.json':
+                        add_cursor('phase2_features_0dte', fk, 'features_cursor_ts', j.get('features_cursor_ts'))
+                        add_cursor('phase2_labels_0dte', fk, 'labels_cursor_ts', j.get('labels_cursor_ts'))
+                    # Debit candidates 0DTE
+                    if fk == 'debit_0dte_backfill.json':
+                        add_cursor('debit_candidates_0dte', fk, 'candidates_cursor_ts', j.get('candidates_cursor_ts'))
+                    # Debit ML scores 0DTE (may have per-horizon cursors)
+                    if fk == 'debit_ml_0dte_backfill.json':
+                        for k, v in j.items():
+                            if str(k).startswith('scores_cursor_'):
+                                add_cursor('debit_scores_0dte', fk, str(k), v)
+                    # Term builders
+                    if fk.startswith('debit_term_backfill_'):
+                        add_cursor('debit_candidates_term', fk, 'candidates_cursor_ts', j.get('candidates_cursor_ts'))
+                    if fk.startswith('phase2_term_backfill_'):
+                        # legacy key name
+                        add_cursor('phase2_term', fk, 'cursor_ts', j.get('cursor_ts') or j.get('cursor'))
+
+                cursors.sort(key=lambda x: (x.get('stage') or '', x.get('file') or '', x.get('key') or ''))
+                out['cursors'] = cursors
+            except Exception:
+                out['cursors'] = []
             out['timescale'] = {'ok': True, 'error': None}
             return out
         except Exception as e:
