@@ -1038,7 +1038,7 @@ def create_app() -> FastAPI:
 
     @app.get('/api/backtest/runs')
     def backtest_runs_list(
-        strategy_key: str = Query(...),
+        strategy_key: str | None = Query(None),
         preset_id: int | None = Query(None),
         limit: int = Query(200, ge=1, le=2000),
     ) -> dict[str, Any]:
@@ -1046,9 +1046,12 @@ def create_app() -> FastAPI:
         sql = """
             SELECT id, strategy_key, created_at_utc, preset_id, preset_name_at_run, params_json, summary_json
             FROM backtest_runs
-            WHERE strategy_key = ?
+            WHERE 1=1
         """
-        params: list[Any] = [strategy_key]
+        params: list[Any] = []
+        if strategy_key is not None:
+            sql += " AND strategy_key = ?"
+            params.append(str(strategy_key))
         if preset_id is not None:
             sql += " AND preset_id = ?"
             params.append(int(preset_id))

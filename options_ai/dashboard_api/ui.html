@@ -960,6 +960,12 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
                     <option value="preset">Selected preset</option>
                   </select>
                 </label>
+                <label>Strategy
+                  <select id="btRunsStrategyScope">
+                    <option value="current" selected>Current</option>
+                    <option value="all">All</option>
+                  </select>
+                </label>
                 <label>Limit <input id="btRunsLimit" type="number" value="200" min="10" max="2000" style="width:90px;" /></label>
                 <button class="btn-primary" id="btRunsRefresh">Refresh</button>
                 <span class="hint" id="btRunsNote"></span>
@@ -998,6 +1004,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
                   <thead>
                     <tr>
                       <th></th>
+                      <th class="sortable" data-sort="strategy_key">strategy</th>
                       <th class="sortable" data-sort="created_at_utc">created_at</th>
                       <th class="sortable" data-sort="preset_name_at_run">preset</th>
                       <th class="sortable" data-sort="start_day">start</th>
@@ -1707,6 +1714,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
 
     function btRunsGetSortVal(it, key) {
       const p = it?.params || {};
+      if (key === 'strategy_key') return it.strategy_key || '';
       if (key === 'created_at_utc') return it.created_at_utc || '';
       if (key === 'preset_name_at_run') return it.preset_name_at_run || '';
       if (key === 'start_day') return p.start_day || '';
@@ -1931,6 +1939,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
         });
         tdSel.appendChild(cb);
 
+        const tdStrategy = document.createElement('td'); tdStrategy.textContent = it.strategy_key || '';
         const tdCreated = document.createElement('td'); tdCreated.textContent = it.created_at_utc || '';
         const tdPreset = document.createElement('td'); tdPreset.textContent = it.preset_name_at_run || '—';
         const tdStart = document.createElement('td'); tdStart.textContent = p.start_day || '—';
@@ -1972,6 +1981,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
         tdAct.appendChild(delBtn);
 
         tr.appendChild(tdSel);
+        tr.appendChild(tdStrategy);
         tr.appendChild(tdCreated);
         tr.appendChild(tdPreset);
         tr.appendChild(tdStart);
@@ -2028,10 +2038,14 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
     }
 
     async function btRunsRefreshRunsData() {
+      const stratScope = document.getElementById('btRunsStrategyScope')?.value || 'current';
       const sk = btStrategyKey();
       const scope = document.getElementById('btRunsScope')?.value || 'all';
       const lim = parseInt(document.getElementById('btRunsLimit')?.value || '200', 10);
-      let url = `/api/backtest/runs?strategy_key=${encodeURIComponent(sk)}&limit=${encodeURIComponent(String(lim))}`;
+      let url = `/api/backtest/runs?limit=${encodeURIComponent(String(lim))}`;
+      if (stratScope !== 'all') {
+        url += `&strategy_key=${encodeURIComponent(sk)}`;
+      }
       if (scope === 'preset') {
         const pid = btSelectedPresetId();
         if (pid) url += `&preset_id=${encodeURIComponent(String(pid))}`;
@@ -2574,6 +2588,7 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
     document.getElementById('btRunsRefresh')?.addEventListener('click', () => safe('bt_runs', () => btRefreshRuns()));
+    document.getElementById('btRunsStrategyScope')?.addEventListener('change', () => safe('bt_runs', () => btRefreshRuns()));
 
     // sortable backtest runs headers
     (function initBtRunsSort() {
