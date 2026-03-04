@@ -487,12 +487,19 @@ def create_app() -> FastAPI:
                         r = cur.fetchone()
                         return r[0] if r else None
 
+                    def max_ts_le(table: str, le: Any) -> Any:
+                        if le is None:
+                            return max_ts(table)
+                        cur.execute(f"SELECT max(snapshot_ts) FROM {table} WHERE snapshot_ts <= %s", (le,))
+                        r = cur.fetchone()
+                        return r[0] if r else None
+
                     latest_chain = max_ts('spx.option_chain')
-                    latest_feat = max_ts('spx.chain_features_0dte')
-                    latest_label = max_ts('spx.chain_labels_0dte')
-                    latest_cand = max_ts('spx.debit_spread_candidates_0dte')
-                    latest_dlbl = max_ts('spx.debit_spread_labels_0dte')
-                    latest_score = max_ts('spx.debit_spread_scores_0dte')
+                    latest_feat = max_ts_le('spx.chain_features_0dte', latest_chain)
+                    latest_label = max_ts_le('spx.chain_labels_0dte', latest_chain)
+                    latest_cand = max_ts_le('spx.debit_spread_candidates_0dte', latest_chain)
+                    latest_dlbl = max_ts_le('spx.debit_spread_labels_0dte', latest_chain)
+                    latest_score = max_ts_le('spx.debit_spread_scores_0dte', latest_chain)
 
                     out['latest'] = {
                         'option_chain': latest_chain,
@@ -504,10 +511,10 @@ def create_app() -> FastAPI:
                     }
 
                     # horizon breakdowns
-                    cur.execute("SELECT horizon_minutes, max(snapshot_ts) FROM spx.chain_labels_0dte GROUP BY horizon_minutes ORDER BY horizon_minutes")
+                    cur.execute("SELECT horizon_minutes, max(snapshot_ts) FROM spx.chain_labels_0dte WHERE snapshot_ts <= %s GROUP BY horizon_minutes ORDER BY horizon_minutes", (latest_chain,))
                     out['labels_by_horizon'] = {int(r[0]): r[1] for r in cur.fetchall() if r and r[0] is not None}
 
-                    cur.execute("SELECT horizon_minutes, max(snapshot_ts) FROM spx.debit_spread_scores_0dte GROUP BY horizon_minutes ORDER BY horizon_minutes")
+                    cur.execute("SELECT horizon_minutes, max(snapshot_ts) FROM spx.debit_spread_scores_0dte WHERE snapshot_ts <= %s GROUP BY horizon_minutes ORDER BY horizon_minutes", (latest_chain,))
                     out['scores_by_horizon'] = {int(r[0]): r[1] for r in cur.fetchall() if r and r[0] is not None}
 
                     # recent window counts (approx backlog)
@@ -606,7 +613,7 @@ def create_app() -> FastAPI:
                         if latest_chain is None or ts is None:
                             return None
                         try:
-                            return max(0.0, (latest_chain - ts).total_seconds() / 60.0)
+                            return (latest_chain - ts).total_seconds() / 60.0
                         except Exception:
                             return None
 
