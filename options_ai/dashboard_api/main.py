@@ -1222,22 +1222,46 @@ def create_app() -> FastAPI:
                     preset_id_final = None
                     preset_name_at_run = None
 
-            cur = con.execute(
-                """
-                INSERT INTO backtest_runs(strategy_key, created_at_utc, preset_id, preset_name_at_run, params_json, summary_json)
-                VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    strategy_key,
-                    now,
-                    preset_id_final,
-                    preset_name_at_run,
-                    _json.dumps(params_payload, separators=(',', ':'), sort_keys=True),
-                    _json.dumps(summary, separators=(',', ':'), sort_keys=True),
-                ),
-            )
-            run_id = int(cur.lastrowid)
+            params_json = _json.dumps(params_payload, separators=(',', ':'), sort_keys=True)
+            summary_json = _json.dumps(summary, separators=(',', ':'), sort_keys=True)
 
+            # De-dupe runs to keep the history grid clean.
+            # If the strategy_key + params_json + summary_json match an existing run, reuse it.
+            dup = con.execute(
+                """
+                SELECT id
+                FROM backtest_runs
+                WHERE strategy_key = ?
+                  AND params_json = ?
+                  AND summary_json = ?
+                ORDER BY created_at_utc DESC
+                LIMIT 1
+                """,
+                (strategy_key, params_json, summary_json),
+            ).fetchone()
+
+            is_duplicate = False
+            if dup and dup['id'] is not None:
+                run_id = int(dup['id'])
+                is_duplicate = True
+            else:
+                cur = con.execute(
+                    """
+                    INSERT INTO backtest_runs(strategy_key, created_at_utc, preset_id, preset_name_at_run, params_json, summary_json)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        strategy_key,
+                        now,
+                        preset_id_final,
+                        preset_name_at_run,
+                        params_json,
+                        summary_json,
+                    ),
+                )
+                run_id = int(cur.lastrowid)
+
+            # Always update preset "last run" pointers (even if duplicate): you did run it again.
             if preset_id_final is not None:
                 con.execute(
                     """
@@ -1248,7 +1272,7 @@ def create_app() -> FastAPI:
                     (
                         run_id,
                         now,
-                        _json.dumps(summary, separators=(',', ':'), sort_keys=True),
+                        summary_json,
                         now,
                         preset_id_final,
                     ),
@@ -1258,6 +1282,7 @@ def create_app() -> FastAPI:
         # Keep existing shape; add identifiers so UI can link/refresh
         if isinstance(result, dict):
             result['run_id'] = run_id
+            result['run_duplicate'] = bool(is_duplicate)
             result['preset_id'] = preset_id_final
         return result
 

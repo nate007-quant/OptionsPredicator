@@ -2115,6 +2115,10 @@ Maximum distance (points) from spot to wall/magnet allowed to take a trade.">i</
       }
 
       if (note) note.textContent = `done: ${((data.trades||[]).length)} trades`;
+
+      if (data && data.run_duplicate) {
+        toast('duplicate backtest run (not saved)', 'info');
+      }
       return data;
     }
 
