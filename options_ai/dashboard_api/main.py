@@ -443,6 +443,7 @@ def create_app() -> FastAPI:
         newest option_chain snapshot.
         """
         dsn = _pg_dsn()
+        tz_local = os.getenv('TZ_LOCAL', 'America/Chicago').strip() or 'America/Chicago'
         out: dict[str, Any] = {
             'ok': True,
             'window': int(window),
@@ -529,8 +530,10 @@ def create_app() -> FastAPI:
                     cur.execute(
                         """
                         WITH oc AS (
+                          -- Only count snapshots that actually have a 0DTE expiration for that local trade date.
                           SELECT DISTINCT snapshot_ts
                           FROM spx.option_chain
+                          WHERE expiration_date = ((snapshot_ts AT TIME ZONE %s)::date)
                           ORDER BY snapshot_ts DESC
                           LIMIT %s
                         )
@@ -541,7 +544,7 @@ def create_app() -> FastAPI:
                         LEFT JOIN spx.chain_features_0dte f
                           ON f.snapshot_ts = oc.snapshot_ts
                         """,
-                        (int(window),),
+                        (tz_local, int(window)),
                     )
                     r = cur.fetchone()
                     out['counts_recent']['features_missing'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
