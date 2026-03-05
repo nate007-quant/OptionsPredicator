@@ -82,6 +82,9 @@ class DebitSpreadsStrategy(StrategyDefinition):
             ParamSpec("entry_end_ct", "str", "09:30", sweepable=False, refineable=False, applies_when=lambda p: p.get("entry_mode") == "time_range"),
             ParamSpec("max_trades_per_day", "int", 1, min=1, max=10, step=1),
             ParamSpec("one_trade_at_a_time", "bool", True),
+            ParamSpec("spread_style", "enum", "debit", choices=["debit", "credit"], sweepable=False, refineable=False),
+            ParamSpec("credit_stop_loss_mult", "float", 2.00, min=0.5, max=20.0, step=0.1, applies_when=lambda p: p.get("spread_style") == "credit"),
+            ParamSpec("credit_take_profit_pct", "float", 0.50, min=0.05, max=1.0, step=0.01, applies_when=lambda p: p.get("spread_style") == "credit"),
             ParamSpec("max_debit_points", "float", 5.0, min=0.25, max=20.0, step=0.25),
             ParamSpec("stop_loss_pct", "float", 0.50, min=0.01, max=1.0, step=0.01),
             ParamSpec("take_profit_pct", "float", 2.00, min=0.10, max=10.0, step=0.05),
@@ -146,6 +149,7 @@ class DebitSpreadsStrategy(StrategyDefinition):
         base["expiration_mode"] = _enum("expiration_mode", ["0dte", "target_dte"])
         base["entry_mode"] = _enum("entry_mode", ["time_range", "first_n_minutes"])
         base["strategy_mode"] = _enum("strategy_mode", ["anchor_based", "structural_walls"])
+        base["spread_style"] = _enum("spread_style", ["debit", "credit"])
 
         # applicability pruning
         def applies(spec: ParamSpec) -> bool:
@@ -241,6 +245,11 @@ class DebitSpreadsStrategy(StrategyDefinition):
             out.pop("target_dte_days", None)
             out.pop("dte_tolerance_days", None)
 
+        # prune credit-only params when not applicable
+        if out.get("spread_style") != "credit":
+            out.pop("credit_stop_loss_mult", None)
+            out.pop("credit_take_profit_pct", None)
+
         if out.get("entry_mode") == "first_n_minutes":
             out.pop("entry_start_ct", None)
             out.pop("entry_end_ct", None)
@@ -278,7 +287,8 @@ class DebitSpreadsStrategy(StrategyDefinition):
             td = int(canonical_params.get("target_dte_days") or 7)
             tol = int(canonical_params.get("dte_tolerance_days") or 2)
             exp_key = f"dte{td}t{tol}"
-        return f"debit_spreads:{strategy_mode}:{exp_key}"
+        prefix = "credit_spreads" if str(canonical_params.get("spread_style") or "debit") == "credit" else "debit_spreads"
+        return f"{prefix}:{strategy_mode}:{exp_key}"
 
     def run(self, canonical_params: dict[str, Any]) -> dict[str, Any]:
         dsn = os.getenv("SPX_CHAIN_DATABASE_URL", "").strip() or None
@@ -306,6 +316,9 @@ class DebitSpreadsStrategy(StrategyDefinition):
             entry_end_ct=str(g("entry_end_ct", "09:30")),
             max_trades_per_day=int(g("max_trades_per_day", 1)),
             one_trade_at_a_time=bool(g("one_trade_at_a_time", True)),
+            spread_style=str(g("spread_style", "debit")),
+            credit_stop_loss_mult=float(g("credit_stop_loss_mult", 2.00)),
+            credit_take_profit_pct=float(g("credit_take_profit_pct", 0.50)),
             anchor_mode=str(g("anchor_mode", "ATM")),
             anchor_policy=str(g("anchor_policy", os.getenv("DEBIT_ANCHOR_POLICY", "any"))),
             min_p_bigwin=float(g("min_p_bigwin", 0.0)),

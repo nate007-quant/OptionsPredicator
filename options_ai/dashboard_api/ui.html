@@ -1462,37 +1462,55 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const strategy_mode = document.getElementById('btStrategyMode')?.value || 'anchor_based';
       const expiration_mode = document.getElementById('btExpMode')?.value || '0dte';
+      const entry_mode = document.getElementById('btEntryMode')?.value || 'time_range';
+      const spread_style = document.getElementById('btSpreadStyle')?.value || 'debit';
 
       const base = {
         strategy_mode,
         start_day: document.getElementById('btStart')?.value,
         end_day: document.getElementById('btEnd')?.value,
         expiration_mode,
-        target_dte_days: (expiration_mode === 'target_dte') ? parseInt(document.getElementById('btTargetDte')?.value || '7', 10) : null,
-        dte_tolerance_days: parseInt(document.getElementById('btDteTol')?.value || '2', 10),
         horizon_minutes: parseInt(document.getElementById('btH')?.value || '30', 10),
 
-        entry_mode: document.getElementById('btEntryMode')?.value || 'time_range',
+        entry_mode,
         session_start_ct: document.getElementById('btSessionStart')?.value || '08:30',
-        entry_first_n_minutes: parseInt(document.getElementById('btFirstN')?.value || '60', 10),
-        entry_start_ct: document.getElementById('btEntryStart')?.value || '08:40',
-        entry_end_ct: document.getElementById('btEntryEnd')?.value || '09:30',
 
         max_trades_per_day: parseInt(document.getElementById('btMaxPerDay')?.value || '1', 10),
         one_trade_at_a_time: !!document.getElementById('btOneAtATime')?.checked,
 
         max_debit_points: parseFloat(document.getElementById('btMaxDebit')?.value || '5'),
+
+        // debit exits
         stop_loss_pct: parseFloat(document.getElementById('btSL')?.value || '0.5'),
         take_profit_pct: parseFloat(document.getElementById('btTP')?.value || '2.0'),
 
-        spread_style: document.getElementById('btSpreadStyle')?.value || 'debit',
-        credit_stop_loss_mult: parseFloat(document.getElementById('btCreditSLMult')?.value || '2.0'),
-        credit_take_profit_pct: parseFloat(document.getElementById('btCreditTPCapture')?.value || '0.5'),
+        // credit/debit selector
+        spread_style,
 
         max_future_lookahead_minutes: 120,
         price_mode: 'mid',
         tz_local: 'America/Chicago'
       };
+
+      // expiration extras (only when applicable)
+      if (expiration_mode === 'target_dte') {
+        base.target_dte_days = parseInt(document.getElementById('btTargetDte')?.value || '7', 10);
+        base.dte_tolerance_days = parseInt(document.getElementById('btDteTol')?.value || '2', 10);
+      }
+
+      // entry window extras (only when applicable)
+      if (entry_mode === 'first_n_minutes') {
+        base.entry_first_n_minutes = parseInt(document.getElementById('btFirstN')?.value || '60', 10);
+      } else {
+        base.entry_start_ct = document.getElementById('btEntryStart')?.value || '08:40';
+        base.entry_end_ct = document.getElementById('btEntryEnd')?.value || '09:30';
+      }
+
+      // credit exits (only when applicable)
+      if (spread_style === 'credit') {
+        base.credit_stop_loss_mult = parseFloat(document.getElementById('btCreditSLMult')?.value || '2.0');
+        base.credit_take_profit_pct = parseFloat(document.getElementById('btCreditTPCapture')?.value || '0.5');
+      }
 
       if (strategy_mode === 'anchor_based') {
         return {
