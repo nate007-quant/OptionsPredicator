@@ -1322,6 +1322,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
+    let btHiddenOverrides = {};  // preserves params not represented in the form
     let btEquityChart;
     let btPresetsData;
     let btRunsRaw = [];
@@ -1342,6 +1343,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!e.value) e.value = fmt(end);
     }
 
+
+
+    function btCaptureHiddenOverrides(p) {
+      if (!p) return;
+      // These fields are part of the persisted params schema, but not all are surfaced in the UI.
+      // If we don't preserve them, reruns/presets won't match sampler results.
+      const keys = ['include_missing_exits', 'max_future_lookahead_minutes', 'tz_local', 'price_mode'];
+      for (const k of keys) {
+        if (p[k] !== undefined) btHiddenOverrides[k] = p[k];
+      }
+    }
     function renderBtEquity(curve) {
       if (!chartsAvailable()) return;
       const ctx = document.getElementById('btEquityChart');
@@ -1487,9 +1499,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         // credit/debit selector
         spread_style,
 
-        max_future_lookahead_minutes: 120,
-        price_mode: 'mid',
-        tz_local: 'America/Chicago'
+        include_missing_exits: (btHiddenOverrides.include_missing_exits !== undefined) ? !!btHiddenOverrides.include_missing_exits : false,
+        max_future_lookahead_minutes: (btHiddenOverrides.max_future_lookahead_minutes !== undefined) ? parseInt(String(btHiddenOverrides.max_future_lookahead_minutes), 10) : 120,
+        price_mode: (btHiddenOverrides.price_mode !== undefined) ? String(btHiddenOverrides.price_mode) : 'mid',
+        tz_local: (btHiddenOverrides.tz_local !== undefined) ? String(btHiddenOverrides.tz_local) : 'America/Chicago'
       };
 
       // expiration extras (only when applicable)
@@ -1549,6 +1562,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     function btApplyPayloadToForm(p) {
+      btCaptureHiddenOverrides(p);
       if (!p) return;
       const setv = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = String(v); };
       const setc = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
@@ -1560,6 +1574,21 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btTargetDte', p.target_dte_days);
       setv('btDteTol', p.dte_tolerance_days);
       setv('btH', p.horizon_minutes);
+
+      // If horizon is a value not present in the <select> options (e.g. sampler found 70), add it so reruns match.
+      const hSel = document.getElementById('btH');
+      if (hSel && p.horizon_minutes != null) {
+        const hv = String(p.horizon_minutes);
+        let ok = false;
+        for (const opt of Array.from(hSel.options || [])) { if (String(opt.value) === hv) { ok = true; break; } }
+        if (!ok) {
+          const opt = document.createElement('option');
+          opt.value = hv;
+          opt.textContent = hv + ' (custom)';
+          hSel.appendChild(opt);
+        }
+        hSel.value = hv;
+      }
       setv('btEntryMode', p.entry_mode);
       setv('btSessionStart', p.session_start_ct);
       setv('btFirstN', p.entry_first_n_minutes);
