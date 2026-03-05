@@ -50,7 +50,32 @@ class BacktestSamplerService:
     def _connect(self):
         return self._executor._connect()
 
+    def _has_live_worker(self) -> bool:
+        return self._worker is not None and self._worker.is_alive()
+
+    def reconcile_orphaned_sessions(self) -> int:
+        """Mark DB sessions as stopped/failed if they claim to be running but there is no live worker thread.
+
+        This primarily handles process restarts: the in-memory thread is gone, but the last session row
+        would otherwise remain 'running' forever and block new sampler starts.
+        """
+        if self._has_live_worker():
+            return 0
+        now = now_utc_iso()
+        with self._connect() as con:
+            rows = con.execute("SELECT id, cancel_requested FROM backtest_sampler_sessions WHERE status IN ('running','stopping')").fetchall()
+            if not rows:
+                return 0
+            for r in rows:
+                sid = int(r[0])
+                cancel = int(r[1] or 0)
+                new_status = 'stopped' if cancel == 1 else 'failed'
+                con.execute("UPDATE backtest_sampler_sessions SET status=?, stopped_at_utc=? WHERE id=?", (new_status, now, sid))
+            con.commit()
+            return len(rows)
+
     def _ensure_no_active(self) -> None:
+        self.reconcile_orphaned_sessions()
         with self._connect() as con:
             r = con.execute(
                 """SELECT id FROM backtest_sampler_sessions WHERE status IN ('running','stopping') ORDER BY id DESC LIMIT 1"""
@@ -120,6 +145,13 @@ class BacktestSamplerService:
             st = str(r[1])
             if st not in {"running", "stopping"}:
                 return {"sampler_id": int(sampler_id), "status": st}
+
+            # If the worker thread isn't actually alive (e.g. service restarted), don't leave it stuck.
+            if not self._has_live_worker():
+                con.execute("UPDATE backtest_sampler_sessions SET cancel_requested=1, status='stopped', stopped_at_utc=? WHERE id=?", (now_utc_iso(), int(sampler_id)))
+                con.commit()
+                return {"sampler_id": int(sampler_id), "status": "stopped"}
+
             con.execute(
                 "UPDATE backtest_sampler_sessions SET cancel_requested=1, status='stopping' WHERE id=?",
                 (int(sampler_id),),
@@ -128,6 +160,8 @@ class BacktestSamplerService:
         return {"sampler_id": int(sampler_id), "status": "stopping"}
 
     def status(self, *, sampler_id: int | None = None) -> SamplerStatus | None:
+        # If process restarted, a DB session might say running while the in-memory worker is gone.
+        self.reconcile_orphaned_sessions()
         with self._connect() as con:
             if sampler_id is None:
                 r = con.execute(
