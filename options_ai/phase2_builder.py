@@ -657,6 +657,6 @@ def load_phase2_config_from_env() -> Phase2Config:
         label_eps_atm_iv=float(os.getenv("LABEL_EPS_ATM_IV", "0.0025")),
         label_eps_skew_25d=float(os.getenv("LABEL_EPS_SKEW_25D", "0.0025")),
         min_contracts=int(os.getenv("MIN_CONTRACTS", "50")),
-        poll_seconds=float(os.getenv("PHASE2_POLL_SECONDS", "15")),
+        poll_seconds=float(os.getenv("PHASE2_POLL_SECONDS", "60")),
         batch_limit=int(os.getenv("PHASE2_BATCH_LIMIT", "200")),
     )
