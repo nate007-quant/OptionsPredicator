@@ -1026,6 +1026,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                     <input id="btRunsKeepTopPF" type="number" min="0" max="2000" value="0" style="width:110px;" />
                   </label>
                   <label><input id="btRunsOnlyShowPassing" type="checkbox" checked /> Only show passing/kept</label>
+                  <label><input id="btRunsShowZeroTrades" type="checkbox" /> Show 0-trade runs</label>
                 </div>
 
                 <div class="row" style="margin-top:10px;">
@@ -2247,6 +2248,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const scope = document.getElementById('btRunsScope')?.value || 'all';
       const lim = parseInt(document.getElementById('btRunsLimit')?.value || '200', 10);
       let url = `/api/backtest/runs?limit=${encodeURIComponent(String(lim))}`;
+      const zt = document.getElementById('btRunsShowZeroTrades');
+      if (zt && zt.checked) url += `&include_zero_trades=1`;
       if (stratScope !== 'all') {
         url += `&strategy_key=${encodeURIComponent(sk)}`;
       }
@@ -2953,6 +2956,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById(id)?.addEventListener('keyup', () => btRunsRenderTable(btRunsRaw));
     });
     document.getElementById('btRunsOnlyShowPassing')?.addEventListener('change', () => btRunsRenderTable(btRunsRaw));
+    document.getElementById('btRunsShowZeroTrades')?.addEventListener('change', () => safe('bt_runs', () => btRefreshRuns()));
 
     document.getElementById('btRunsResetFilters')?.addEventListener('click', () => {
       const f = btRunsFiltersDefault();

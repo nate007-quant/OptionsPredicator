@@ -1430,6 +1430,7 @@ def create_app() -> FastAPI:
         strategy_key: str | None = Query(None),
         preset_id: int | None = Query(None),
         limit: int = Query(200, ge=1, le=2000),
+        include_zero_trades: bool = Query(False),
     ) -> dict[str, Any]:
         import json as _json
         sql = """
@@ -1461,6 +1462,17 @@ def create_app() -> FastAPI:
                 summary_obj = _json.loads(r['summary_json'])
             except Exception:
                 summary_obj = None
+
+
+            if not include_zero_trades and isinstance(summary_obj, dict):
+                try:
+                    t0 = summary_obj.get('trades')
+                    if t0 is None:
+                        t0 = summary_obj.get('n_trades')
+                    if t0 is not None and int(t0) == 0:
+                        continue
+                except Exception:
+                    pass
             items.append({
                 'id': int(r['id']),
                 'strategy_key': r['strategy_key'],
