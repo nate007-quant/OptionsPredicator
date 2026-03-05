@@ -1409,8 +1409,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         sel.appendChild(opt);
       }
 
-      // keep previous selection if still valid
+      // keep previous selection if still valid; otherwise preserve it as a custom option
       if (Number.isFinite(prev) && choices.includes(prev)) {
+        sel.value = String(prev);
+      } else if (Number.isFinite(prev) && prev > 0) {
+        const opt = document.createElement('option');
+        opt.value = String(prev);
+        opt.textContent = String(prev) + ' (custom)';
+        sel.appendChild(opt);
         sel.value = String(prev);
       } else {
         sel.value = String(choices[0] || 30);
