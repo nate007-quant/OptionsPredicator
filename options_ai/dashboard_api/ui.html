@@ -2051,6 +2051,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       btRunsVisibleIds = [];
 
+
       const keepSet = btRunsComputeKeepSet(items, f);
       const keepEnabled = (f.keepTopPnl > 0) || (f.keepTopPF > 0);
 
@@ -2365,6 +2366,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const pid = btSelectedPresetId();
       if (pid) payload.preset_id = pid;
 
+      const fr = document.getElementById('btForceRerun');
+      if (fr && fr.checked) payload.force_run = true;
+
       const note = document.getElementById('btNote');
       if (note) note.textContent = 'running…';
 
@@ -2388,7 +2392,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (tb) {
         tb.innerHTML = '';
 
-      btRunsVisibleIds = [];
         for (const t of (data.trades || [])) {
           const tr = document.createElement('tr');
           const pnl = t.pnl_dollars;
@@ -2443,7 +2446,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!tb) return data;
       tb.innerHTML = '';
 
-      btRunsVisibleIds = [];
 
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
@@ -2491,7 +2493,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const tb = document.getElementById('debitTable');
       tb.innerHTML = '';
 
-      btRunsVisibleIds = [];
       for (const it of (data.candidates || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -2548,7 +2549,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const tb = document.getElementById('queueTable');
       tb.innerHTML = '';
 
-      btRunsVisibleIds = [];
       for (const it of (data.queue.items || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
