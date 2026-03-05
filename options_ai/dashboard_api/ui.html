@@ -2219,13 +2219,25 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     async function btRunsDeleteIds(ids) {
-      if (!ids || ids.length === 0) return;
-      const ok = confirm(`Delete ${ids.length} run(s)? This cannot be undone.`);
+      const raw = Array.isArray(ids) ? ids : [];
+      const norm = raw.map(x => Number(x)).filter(x => Number.isFinite(x)).map(x => Math.trunc(x));
+      const uniq = Array.from(new Set(norm));
+      if (uniq.length === 0) return;
+
+      const ok = confirm(`Delete ${uniq.length} run(s)? This cannot be undone.`);
       if (!ok) return;
-      await jpost('/api/backtest/runs/bulk_delete', {ids});
-      for (const id of ids) btRunsSelected.delete(id);
+
+      const CHUNK = 5000;
+      let deletedTotal = 0;
+      for (let i = 0; i < uniq.length; i += CHUNK) {
+        const part = uniq.slice(i, i + CHUNK);
+        const resp = await jpost('/api/backtest/runs/bulk_delete', { ids: part });
+        if (resp && resp.deleted_count != null) deletedTotal += Number(resp.deleted_count);
+      }
+
+      for (const id of uniq) btRunsSelected.delete(id);
       btRunsUpdateSelNote();
-      toast(`deleted ${ids.length} run(s)`, 'warn');
+      toast(`deleted ${deletedTotal} run(s)`, 'warn');
       await btRefreshRuns();
     }
 

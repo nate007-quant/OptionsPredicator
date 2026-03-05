@@ -1495,13 +1495,16 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail='ids must be a non-empty list')
         if len(ids) > 5000:
             raise HTTPException(status_code=400, detail='too many ids (max 5000)')
-
         norm: list[int] = []
+        invalid: list[Any] = []
         for x in ids:
             try:
                 norm.append(int(x))
             except Exception:
-                raise HTTPException(status_code=400, detail='ids must be integers')
+                invalid.append(x)
+
+        if not norm:
+            raise HTTPException(status_code=400, detail={'message': 'no valid ids', 'invalid_count': len(invalid)})
 
         q = ','.join(['?'] * len(norm))
         with _connect(db_path) as con:
