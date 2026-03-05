@@ -947,6 +947,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               </div>
               <div class="row" style="margin-top:12px;">
                 <button class="btn-primary" id="runBacktest">Run Backtest</button>
+                <label style="margin-left:10px;"><input id="btForceRerun" type="checkbox" /> Force rerun</label>
                 <button class="btn-primary" id="runBacktestSampler" style="margin-left:8px;">Run Backtest Sampler</button>
                 <span class="hint" id="btSamplerCounters" style="margin-left:10px;"></span>
                 <span class="hint" id="btNote" style="margin-left:10px;"></span>
@@ -2413,28 +2414,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (note) note.textContent = `done: ${((data.trades||[]).length)} trades`;
 
       if (data && data.run_duplicate) {
-        // Dedupe can skip execution. Offer a forced rerun (updates existing run_id in DB).
-        const ok = confirm('This parameter set already exists (deduped). Force rerun anyway?');
-        if (ok) {
-          payload.force_run = true;
-          const resp2 = await fetch('/api/backtest/debit_spreads/run', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-          if (!resp2.ok) {
-            const t2 = await resp2.text();
-            throw new Error(`backtest http ${resp2.status}: ${t2}`);
-          }
-          const data2 = await resp2.json();
-          if (sum) sum.textContent = JSON.stringify(data2.summary || {}, null, 2);
-          renderBtEquity(data2.equity_curve || []);
-          if (note) note.textContent = `done: ${((data2.trades||[]).length)} trades`;
-          toast('forced rerun completed', 'warn');
-          await btRefreshRuns();
-          return data2;
-        }
-        toast('Duplicate run: showing saved summary (no rerun)', 'info');
+        toast('Duplicate backtest params (deduped). Enable Force rerun to re-execute.', 'info');
       }
       await btRefreshRuns();
       return data;
