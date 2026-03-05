@@ -243,7 +243,7 @@ def _pick_expiration_for_target_dte(
             FROM (
               SELECT DISTINCT
                 expiration_date,
-                ABS((expiration_date - ((%s AT TIME ZONE %s)::date)) - %s) AS dte_diff
+                ABS((expiration_date - (%s AT TIME ZONE %s)::date) - %s) AS dte_diff
               FROM spx.option_chain
               WHERE snapshot_ts = %s
             ) t

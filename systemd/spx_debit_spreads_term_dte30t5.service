@@ -1,0 +1,40 @@
+# TERM multi-anchor debit spread builder (DTE30±5)
+#
+# Install:
+#   sudo cp systemd/spx_debit_spreads_term_dte30t5.service /etc/systemd/system/spx_debit_spreads_term_dte30t5.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spx_debit_spreads_term_dte30t5
+#
+# Logs:
+#   journalctl -u spx_debit_spreads_term_dte30t5 -f
+
+[Unit]
+Description=SPX TERM multi-anchor debit spread candidates + labels (dte30t5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+
+Environment=TARGET_DTE_DAYS=30
+Environment=DTE_TOLERANCE_DAYS=5
+Environment=TERM_BUCKET=term_dte30t5
+
+Environment=DEBIT_HORIZONS_MINUTES=21600,43200
+Environment=MAX_FUTURE_LOOKAHEAD_MINUTES=20160
+
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.debit_spreads_term_main
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

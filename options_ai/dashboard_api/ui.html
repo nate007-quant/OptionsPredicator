@@ -357,6 +357,7 @@
                    border:6px solid transparent; border-bottom-color: rgba(255,255,255,0.18);
                    opacity:0; pointer-events:none; transition:opacity 120ms ease; z-index:51; }
     .tip:hover::after, .tip:hover::before { opacity: 1; }
+    tbody tr.selected { outline: 2px solid rgba(63,161,255,0.65); }
 </style>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -946,7 +947,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               </div>
               <div class="row" style="margin-top:12px;">
                 <button class="btn-primary" id="runBacktest">Run Backtest</button>
-                <span class="hint" id="btNote"></span>
+                <button class="btn-primary" id="runBacktestSampler" style="margin-left:8px;">Run Backtest Sampler</button>
+                <span class="hint" id="btSamplerCounters" style="margin-left:10px;"></span>
+                <span class="hint" id="btNote" style="margin-left:10px;"></span>
               </div>
             </div>
           </div>
@@ -1001,7 +1004,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 </label>
                 <label>Limit <input id="btRunsLimit" type="number" value="200" min="10" max="2000" style="width:90px;" /></label>
                 <button class="btn-primary" id="btRunsRefresh">Refresh</button>
-                <span class="hint" id="btRunsNote"></span>
+                <button id="btRefineSelected" disabled style="margin-left:8px;">Refine from selected</button>
+                <span class="hint" id="btRunsNote" style="margin-left:10px;"></span>
               </div>
 
               <fieldset class="fs" style="margin-top:10px;">
@@ -1314,6 +1318,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     // Backtest
+    let btSelectedRunId = null;
+    let btSelectedRunRefined = false;
+    let btSamplerId = null;
+    let btSamplerPoll = null;
     let btEquityChart;
     let btPresetsData;
     let btRunsRaw = [];
@@ -2097,6 +2105,23 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tr.appendChild(tdAct);
 
         tr.addEventListener('click', () => {
+          // selection (for refinement)
+          btSelectedRunId = it.id;
+          btSelectedRunRefined = !!it.refinement_launched;
+          for (const rr of (tb.querySelectorAll('tr')||[])) rr.classList.remove('selected');
+          tr.classList.add('selected');
+
+          const btn = document.getElementById('btRefineSelected');
+          if (btn) {
+            if (btSelectedRunRefined) {
+              btn.disabled = true;
+              btn.textContent = 'Refinement created';
+            } else {
+              btn.disabled = false;
+              btn.textContent = 'Refine from selected';
+            }
+          }
+
           btApplyPayloadToForm(p);
           toast('loaded params from run', 'info');
         });
@@ -2164,6 +2189,98 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       btRunsRenderTable(btRunsRaw);
       return data;
     }
+
+
+    function btSetSamplerUI(st) {
+      const btn = document.getElementById('runBacktestSampler');
+      const counters = document.getElementById('btSamplerCounters');
+      const runBtn = document.getElementById('runBacktest');
+
+      if (!st || !st.status) {
+        if (btn) btn.textContent = 'Run Backtest Sampler';
+        if (counters) counters.textContent = '';
+        if (runBtn) runBtn.disabled = false;
+        return;
+      }
+
+      const running = (st.status === 'running' || st.status === 'stopping');
+      if (btn) btn.textContent = running ? 'Stop Backtest Sampler' : 'Run Backtest Sampler';
+      if (counters) {
+        const runs = st.runs_completed ?? 0;
+        const dup = st.duplicates_skipped ?? 0;
+        const fail = st.runs_failed ?? 0;
+        counters.textContent = `runs: ${runs}  dup: ${dup}` + (fail ? `  fail: ${fail}` : '');
+      }
+      if (runBtn) runBtn.disabled = running;
+    }
+
+    async function samplerPollOnce() {
+      const st = await jget(`/api/backtest/sampler/status${btSamplerId ? ('?sampler_id=' + btSamplerId) : ''}`);
+      if (st && st.sampler_id) btSamplerId = st.sampler_id;
+      btSetSamplerUI(st);
+      if (st && (st.status === 'stopped' || st.status === 'failed')) {
+        if (btSamplerPoll) { clearInterval(btSamplerPoll); btSamplerPoll = null; }
+        await btRefreshRuns();
+      }
+      return st;
+    }
+
+    async function samplerStartOrStop() {
+      const st = await samplerPollOnce();
+      if (st && (st.status === 'running' || st.status === 'stopping')) {
+        await jpost('/api/backtest/sampler/stop', { sampler_id: st.sampler_id });
+        toast('sampler stop requested', 'info');
+        return;
+      }
+
+      setDateDefaults();
+      updateBtMode();
+      const payload = btReadFormPayload();
+
+      const resp = await jpost('/api/backtest/sampler/start', {
+        strategy_id: 'debit_spreads',
+        base_params: payload,
+        budget: 350
+      });
+      btSamplerId = resp.sampler_id;
+      toast('sampler started', 'ok');
+      if (btSamplerPoll) clearInterval(btSamplerPoll);
+      btSamplerPoll = setInterval(() => safe('sampler', samplerPollOnce), 2000);
+      await samplerPollOnce();
+    }
+
+    async function refineFromSelectedRun() {
+      if (!btSelectedRunId) throw new Error('select a run row first');
+      const btn = document.getElementById('btRefineSelected');
+      if (btn) btn.disabled = true;
+      try {
+        const resp = await jpost('/api/backtest/sampler/refine_from_run', { parent_run_id: btSelectedRunId, budget: 200 });
+        btSamplerId = resp.sampler_id;
+        btSelectedRunRefined = true;
+        toast('refinement sampler started', 'ok');
+        if (btSamplerPoll) clearInterval(btSamplerPoll);
+        btSamplerPoll = setInterval(() => safe('sampler', samplerPollOnce), 2000);
+        await samplerPollOnce();
+        await btRefreshRuns();
+      } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        if (msg.includes('refinement already launched')) {
+          btSelectedRunRefined = true;
+        }
+        throw e;
+      } finally {
+        if (btn) {
+          if (btSelectedRunRefined) {
+            btn.disabled = true;
+            btn.textContent = 'Refinement created';
+          } else {
+            btn.disabled = false;
+            btn.textContent = 'Refine from selected';
+          }
+        }
+      }
+    }
+
     async function runBacktestDebitSpreads() {
       setDateDefaults();
       updateBtMode();
@@ -2711,6 +2828,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
+    document.getElementById('runBacktestSampler')?.addEventListener('click', () => safe('sampler', () => samplerStartOrStop()));
+    document.getElementById('btRefineSelected')?.addEventListener('click', () => safe('sampler', () => refineFromSelectedRun()));
     document.getElementById('btPresetSaveAs')?.addEventListener('click', () => safe('bt_preset_saveas', () => btPresetSaveAs()));
     document.getElementById('btPresetSave')?.addEventListener('click', () => safe('bt_preset_save', () => btPresetSave()));
     document.getElementById('btPresetDelete')?.addEventListener('click', () => safe('bt_preset_delete', () => btPresetDelete()));
@@ -2858,6 +2977,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       btRunsSaveFilters(f0);
 
 // Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
+      // Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
+      await safe('sampler', () => samplerPollOnce());
       await safe('bt_presets', () => btReloadPresets());
       await safe('bt_runs', () => btRefreshRuns());
 
