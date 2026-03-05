@@ -1469,6 +1469,8 @@ def create_app() -> FastAPI:
                 'preset_name_at_run': r['preset_name_at_run'],
                 'params': params_obj,
                 'summary': summary_obj,
+                'refinement_launched': bool(r['refinement_launched'] or 0),
+                'refinement_sampler_id': (int(r['refinement_sampler_id']) if r['refinement_sampler_id'] is not None else None),
             })
 
         return {'strategy_key': strategy_key, 'preset_id': preset_id, 'limit': int(limit), 'items': items}
