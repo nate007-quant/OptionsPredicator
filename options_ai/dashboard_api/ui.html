@@ -1031,6 +1031,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                   <button id="btRunsResetFilters">Reset filters</button>
                   <button id="btRunsSelectFailing">Select failing</button>
                   <button class="btn-danger" id="btRunsDeleteSelected">Delete selected</button>
+                  <label style="margin-left:10px;"><input id="btRunsSelectAllVisible" type="checkbox" /> Select all visible</label>
                   <button class="btn-danger" id="btRunsDeleteFailing">Delete failing</button>
                   <span class="hint" id="btRunsSelNote"></span>
                 </div>
@@ -1328,6 +1329,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let btRunsRaw = [];
     let btRunsSort = { key: 'created_at_utc', dir: 'desc' };
     let btRunsSelected = new Set();
+    let btRunsVisibleIds = []; // ids currently rendered after filters
 
 
 
@@ -2174,6 +2176,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         });
 
         tb.appendChild(tr);
+        btRunsVisibleIds.push(it.id);
       }
 
       const note = document.getElementById('btRunsNote');
@@ -2182,7 +2185,23 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         note.textContent = `runs: ${(items||[]).length} | visible: ${visible} | passing: ${passing} | ${mode}`;
       }
 
+      btRunsUpdateSelectAllState();
       btRunsUpdateSelNote();
+    }
+
+    function btRunsUpdateSelectAllState() {
+      const cb = document.getElementById('btRunsSelectAllVisible');
+      if (!cb) return;
+      const vis = btRunsVisibleIds || [];
+      if (vis.length === 0) {
+        cb.checked = false;
+        cb.indeterminate = false;
+        return;
+      }
+      let nSel = 0;
+      for (const id of vis) { if (btRunsSelected.has(id)) nSel += 1; }
+      cb.checked = (nSel === vis.length);
+      cb.indeterminate = (nSel > 0 && nSel < vis.length);
     }
 
     function btRunsComputeFailingIds(items) {
@@ -2376,6 +2395,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <td>${t.pred_change==null?'—':fmtNum(t.pred_change,2)}</td>
           `;
           tb.appendChild(tr);
+        btRunsVisibleIds.push(it.id);
         }
       }
 
@@ -2427,6 +2447,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <td>${pred}</td>
         `;
         tb.appendChild(tr);
+        btRunsVisibleIds.push(it.id);
       }
 
       const sum = document.getElementById('debitHistSummary');
@@ -2470,6 +2491,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <td style="font-family:var(--mono); font-size:11px;">${it.short_symbol || ''}</td>
         `;
         tb.appendChild(tr);
+        btRunsVisibleIds.push(it.id);
       }
 
       const note = document.getElementById('debitNote');
@@ -2514,6 +2536,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
         tb.appendChild(tr);
+        btRunsVisibleIds.push(it.id);
       }
 
       // Currently processing
@@ -2928,6 +2951,19 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       btRunsRenderTable(btRunsRaw);
       toast(`selected failing: ${failing.length}`, 'info');
     });
+
+    document.getElementById('btRunsSelectAllVisible')?.addEventListener('change', (ev) => safe('bt_runs_select_all', async () => {
+      const on = !!ev.target.checked;
+      if (on) {
+        for (const id of (btRunsVisibleIds || [])) btRunsSelected.add(id);
+      } else {
+        for (const id of (btRunsVisibleIds || [])) btRunsSelected.delete(id);
+      }
+      btRunsUpdateSelNote();
+      btRunsUpdateSelectAllState();
+      // re-render so checkboxes reflect new selection state
+      btRunsRenderTable(btRunsRaw);
+    }));
 
     document.getElementById('btRunsDeleteSelected')?.addEventListener('click', () => safe('bt_runs_delete_selected', async () => {
       const ids = Array.from(btRunsSelected.values());
