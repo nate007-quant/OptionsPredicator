@@ -23,6 +23,9 @@ except Exception:  # pragma: no cover
     psycopg = None  # type: ignore
 
 
+from options_ai.utils.task_state import utc_now_iso, write_task_state
+
+
 # Example filename:
 #   SPX-5940.17-2025-03-28-20250303-100058.json
 # Also supported (weekly snapshots with non-numeric spot token):
@@ -534,6 +537,7 @@ def _list_json_files(input_dir: Path) -> list[Path]:
 
 
 def run_chain_ingest_daemon(cfg: ChainIngestConfig) -> None:
+    task_path = os.getenv('CHAIN_INGEST_TASK_PATH', '/mnt/options_ai/state/task_chain_ingest.json')
     _ensure_dirs(cfg)
     ensure_timescale_schema(cfg.database_url)
 
