@@ -1345,16 +1345,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!e.value) e.value = fmt(end);
     }
 
-
-
     function btCaptureHiddenOverrides(p) {
+      // Reset to defaults each time we load params from a run/preset.
+      // Otherwise, hidden values can leak from a previous selection and cause reruns to mismatch.
+      btHiddenOverrides = {
+        include_missing_exits: false,
+        max_future_lookahead_minutes: 120,
+        tz_local: 'America/Chicago',
+        price_mode: 'mid'
+      };
       if (!p) return;
-      // These fields are part of the persisted params schema, but not all are surfaced in the UI.
-      // If we don't preserve them, reruns/presets won't match sampler results.
+
       const keys = ['include_missing_exits', 'max_future_lookahead_minutes', 'tz_local', 'price_mode'];
       for (const k of keys) {
         if (p[k] !== undefined) btHiddenOverrides[k] = p[k];
       }
+    }
     }
     function renderBtEquity(curve) {
       if (!chartsAvailable()) return;
