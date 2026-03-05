@@ -29,6 +29,10 @@ from options_ai.runtime_overrides import (
 from options_ai.utils_web.tail import tail_jsonl
 from options_ai.queries import fetch_tokens_summary, fetch_tokens_hourly_series
 from options_ai.backtest.debit_spreads import DebitBacktestConfig, run_backtest_debit_spreads
+from options_ai.backtest.executor import BacktestExecutor
+from options_ai.backtest.registry import StrategyRegistry, params_hash
+from options_ai.backtest.sampler_service import BacktestSamplerService
+from options_ai.backtest.sqlite_migrations import migrate_backtest_schema, backfill_params_hash
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -160,8 +164,17 @@ def _db_path_from_database_url(database_url: str) -> str:
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path, timeout=2.0)
+    con = sqlite3.connect(db_path, timeout=30.0)
     con.row_factory = sqlite3.Row
+    # WAL + busy timeout to mitigate locking during sampler runs
+    try:
+        con.execute('PRAGMA journal_mode=WAL;')
+    except Exception:
+        pass
+    try:
+        con.execute('PRAGMA busy_timeout=10000;')
+    except Exception:
+        pass
     return con
 
 
@@ -293,6 +306,10 @@ def create_app() -> FastAPI:
                 ON backtest_runs(preset_id, created_at_utc DESC);
                 """
             )
+            # Migrations: add dedupe/hash + refinement latch + sampler sessions
+            migrate_backtest_schema(con)
+            # Backfill params_hash for old rows (params_json already canonical in this app)
+            backfill_params_hash(con, hash_fn=lambda strategy_key, schema_version, params_json: params_hash(strategy_key=strategy_key, schema_version=int(schema_version), params_json_canonical=str(params_json)))
             con.commit()
 
     def _validate_preset_name(name: str) -> str:
@@ -1034,7 +1051,84 @@ def create_app() -> FastAPI:
         return backtest_presets_list(strategy_key=strategy_key)
 
 
-    # ---- Backtest Runs (history grid) ----
+    # ---- Backtest Strategies (metadata) ----
+
+    @app.get('/api/backtest/strategies')
+    def backtest_strategies() -> dict[str, Any]:
+        return {'items': strategy_registry.list()}
+
+    @app.get('/api/backtest/strategies/{strategy_id}/schema')
+    def backtest_strategy_schema(strategy_id: str) -> dict[str, Any]:
+        sdef = strategy_registry.get(strategy_id)
+        return {'id': sdef.id, 'display_name': getattr(sdef, 'display_name', sdef.id), 'schema_version': int(getattr(sdef, 'schema_version', 1))}
+
+    @app.get('/api/backtest/strategies/{strategy_id}/param_specs')
+    def backtest_strategy_param_specs(strategy_id: str) -> dict[str, Any]:
+        sdef = strategy_registry.get(strategy_id)
+        items = []
+        for sp in sdef.param_specs():
+            items.append({
+                'key': sp.key,
+                'typ': sp.typ,
+                'default': sp.default,
+                'min': sp.min,
+                'max': sp.max,
+                'step': sp.step,
+                'choices': sp.choices,
+                'sweepable': bool(sp.sweepable),
+                'refineable': bool(sp.refineable),
+            })
+        return {'strategy_id': strategy_id, 'items': items}
+
+
+# ---- Sampler control ----
+
+    @app.post('/api/backtest/sampler/start')
+    def sampler_start(body: dict[str, Any]) -> dict[str, Any]:
+        sid = str((body or {}).get('strategy_id') or 'debit_spreads')
+        base_params = (body or {}).get('base_params')
+        if not isinstance(base_params, dict):
+            raise HTTPException(status_code=400, detail='base_params must be an object')
+        budget = int((body or {}).get('budget') or 300)
+        seed = (body or {}).get('seed')
+        search_plan = (body or {}).get('search_plan')
+        if search_plan is not None and not isinstance(search_plan, dict):
+            raise HTTPException(status_code=400, detail='search_plan must be an object')
+        return sampler_service.start(strategy_id=sid, base_params=base_params, budget=budget, seed=(int(seed) if seed not in (None,'') else None), search_plan=search_plan)
+
+    @app.get('/api/backtest/sampler/status')
+    def sampler_status(sampler_id: int | None = Query(None)) -> dict[str, Any]:
+        st = sampler_service.status(sampler_id=int(sampler_id) if sampler_id is not None else None)
+        if st is None:
+            return {'sampler_id': sampler_id, 'status': None}
+        return {
+            'sampler_id': st.sampler_id,
+            'status': st.status,
+            'runs_completed': st.runs_completed,
+            'duplicates_skipped': st.duplicates_skipped,
+            'runs_failed': st.runs_failed,
+            'last_run_id': st.last_run_id,
+        }
+
+    @app.post('/api/backtest/sampler/stop')
+    def sampler_stop(body: dict[str, Any]) -> dict[str, Any]:
+        sid = (body or {}).get('sampler_id')
+        if sid in (None, ''):
+            raise HTTPException(status_code=400, detail='sampler_id required')
+        return sampler_service.stop(sampler_id=int(sid))
+
+    @app.post('/api/backtest/sampler/refine_from_run')
+    def sampler_refine_from_run(body: dict[str, Any]) -> dict[str, Any]:
+        rid = (body or {}).get('parent_run_id')
+        if rid in (None, ''):
+            raise HTTPException(status_code=400, detail='parent_run_id required')
+        budget = int((body or {}).get('budget') or 200)
+        rounds = int((body or {}).get('rounds') or 3)
+        shrink = float((body or {}).get('shrink') or 0.5)
+        return sampler_service.refine_from_run(parent_run_id=int(rid), budget=budget, rounds=rounds, shrink=shrink)
+
+
+# ---- Backtest Runs (history grid) ----
 
     @app.get('/api/backtest/runs')
     def backtest_runs_list(
@@ -1044,7 +1138,8 @@ def create_app() -> FastAPI:
     ) -> dict[str, Any]:
         import json as _json
         sql = """
-            SELECT id, strategy_key, created_at_utc, preset_id, preset_name_at_run, params_json, summary_json
+            SELECT id, strategy_key, created_at_utc, preset_id, preset_name_at_run, params_json, summary_json,
+                   COALESCE(refinement_launched,0) AS refinement_launched, refinement_sampler_id
             FROM backtest_runs
             WHERE strategy_key = ?
         """
@@ -1092,99 +1187,20 @@ def create_app() -> FastAPI:
 
     @app.post("/api/backtest/debit_spreads/run")
     def backtest_debit_spreads_run(payload: dict[str, Any]) -> dict[str, Any]:
-        """Run a Timescale-backed backtest for debit spreads (0DTE default; optional target DTE)."""
-        dsn = _pg_dsn()
-        if not dsn:
-            raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
+        """Run a Timescale-backed backtest for debit spreads.
 
-        try:
-            start_day = date.fromisoformat(str(payload.get("start_day")))
-            end_day = date.fromisoformat(str(payload.get("end_day")))
-        except Exception:
-            raise HTTPException(status_code=400, detail="start_day/end_day required as YYYY-MM-DD")
-
-        cfg = DebitBacktestConfig(
-            start_day=start_day,
-            end_day=end_day,
-            expiration_mode=str(payload.get("expiration_mode", "0dte")),
-            target_dte_days=(
-                int(payload.get("target_dte_days"))
-                if payload.get("target_dte_days") not in (None, "")
-                else None
-            ),
-            dte_tolerance_days=int(payload.get("dte_tolerance_days", 2)),
-            horizon_minutes=int(payload.get("horizon_minutes", 30)),
-            entry_mode=str(payload.get("entry_mode", "time_range")),
-            session_start_ct=str(payload.get("session_start_ct", "08:30")),
-            entry_first_n_minutes=int(payload.get("entry_first_n_minutes", 60)),
-            entry_start_ct=str(payload.get("entry_start_ct", "08:40")),
-            entry_end_ct=str(payload.get("entry_end_ct", "09:30")),
-            max_trades_per_day=int(payload.get("max_trades_per_day", 1)),
-            one_trade_at_a_time=bool(payload.get("one_trade_at_a_time", True)),
-            anchor_mode=str(payload.get("anchor_mode", "ATM")),
-            anchor_policy=str(payload.get("anchor_policy", os.getenv("DEBIT_ANCHOR_POLICY", "any"))),
-            min_p_bigwin=float(payload.get("min_p_bigwin", 0.0)),
-            min_pred_change=float(payload.get("min_pred_change", 0.0)),
-            strategy_mode=str(payload.get("strategy_mode", "anchor_based")),
-            enable_pw_trade=bool(payload.get("enable_pw_trade", True)),
-            enable_cw_trade=bool(payload.get("enable_cw_trade", True)),
-            long_leg_moneyness=str(payload.get("long_leg_moneyness", "ATM")),
-            max_width_points=float(payload.get("max_width_points", 25)),
-            min_width_points=float(payload.get("min_width_points", 5)),
-            proximity_min_points=float(payload.get("proximity_min_points", 0)),
-            proximity_max_points=float(payload.get("proximity_max_points", 30)),
-            rotation_filter=str(payload.get("rotation_filter", "spot_delta_5m")),
-            prefer_pw_on_tie=bool(payload.get("prefer_pw_on_tie", True)),
-            short_put_offset_steps=int(payload.get("short_put_offset_steps", 0)),
-            short_call_offset_steps=int(payload.get("short_call_offset_steps", 0)),
-            allowed_spreads=tuple(payload.get("allowed_spreads", ["CALL", "PUT"])),
-            max_debit_points=float(payload.get("max_debit_points", 5.0)),
-            stop_loss_pct=float(payload.get("stop_loss_pct", 0.50)),
-            take_profit_pct=float(payload.get("take_profit_pct", 2.00)),
-            max_future_lookahead_minutes=int(payload.get("max_future_lookahead_minutes", 120)),
-            price_mode=str(payload.get("price_mode", "mid")),
-            tz_local=str(payload.get("tz_local", "America/Chicago")),
-            include_missing_exits=bool(payload.get("include_missing_exits", False)),
-        )
-
-        with _pg_connect(dsn) as conn:
-            result = run_backtest_debit_spreads(conn, cfg)
-
-        # Persist run summary in SQLite for history/compare grid
+        Persisted to SQLite backtest_runs with global dedupe by (strategy_key, schema_version, params_hash).
+        """
         import json as _json
-        now = _now_utc_iso()
-        strategy_mode = str(payload.get('strategy_mode', 'anchor_based'))
 
-        exp_mode = str(payload.get('expiration_mode', '0dte') or '0dte').strip().lower()
-        if exp_mode == '0dte':
-            exp_key = 'exp0dte'
-        else:
-            try:
-                td = int(payload.get('target_dte_days') or 7)
-            except Exception:
-                td = 7
-            try:
-                tol = int(payload.get('dte_tolerance_days') or 2)
-            except Exception:
-                tol = 2
-            exp_key = f'dte{td}t{tol}'
-
-        strategy_key = f"debit_spreads:{strategy_mode}:{exp_key}"
-
-        preset_id_in = payload.get('preset_id', None)
+        pid_in = (payload or {}).get('preset_id', None)
         preset_id_final: int | None = None
         preset_name_at_run: str | None = None
 
-        # Store "pure" params (omit preset_id)
-        params_payload = dict(payload or {})
-        params_payload.pop('preset_id', None)
-
-        summary = (result or {}).get('summary') or {}
-
         with _connect(db_path) as con:
-            if preset_id_in is not None:
+            if pid_in is not None:
                 try:
-                    pid = int(preset_id_in)
+                    pid = int(pid_in)
                     row = con.execute('SELECT id, name FROM backtest_presets WHERE id=?', (pid,)).fetchone()
                     if row:
                         preset_id_final = int(row['id'])
@@ -1193,43 +1209,31 @@ def create_app() -> FastAPI:
                     preset_id_final = None
                     preset_name_at_run = None
 
-            cur = con.execute(
-                """
-                INSERT INTO backtest_runs(strategy_key, created_at_utc, preset_id, preset_name_at_run, params_json, summary_json)
-                VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    strategy_key,
-                    now,
-                    preset_id_final,
-                    preset_name_at_run,
-                    _json.dumps(params_payload, separators=(',', ':'), sort_keys=True),
-                    _json.dumps(summary, separators=(',', ':'), sort_keys=True),
-                ),
-            )
-            run_id = int(cur.lastrowid)
+        result = backtest_executor.execute_and_persist(
+            strategy_id='debit_spreads',
+            payload=dict(payload or {}),
+            preset_id=preset_id_final,
+            preset_name_at_run=preset_name_at_run,
+            strict=True,
+        )
 
-            if preset_id_final is not None:
-                con.execute(
-                    """
-                    UPDATE backtest_presets
-                    SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
-                    WHERE id=?
-                    """,
-                    (
-                        run_id,
-                        now,
-                        _json.dumps(summary, separators=(',', ':'), sort_keys=True),
-                        now,
-                        preset_id_final,
-                    ),
-                )
-            con.commit()
+        if preset_id_final is not None:
+            run_id = int(result.get('run_id')) if isinstance(result, dict) and result.get('run_id') else None
+            if run_id is not None:
+                with _connect(db_path) as con:
+                    row = con.execute('SELECT summary_json FROM backtest_runs WHERE id=?', (run_id,)).fetchone()
+                    summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
+                    now = _now_utc_iso()
+                    con.execute(
+                        """
+                        UPDATE backtest_presets
+                        SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
+                        WHERE id=?
+                        """,
+                        (run_id, now, summary_json, now, preset_id_final),
+                    )
+                    con.commit()
 
-        # Keep existing shape; add identifiers so UI can link/refresh
-        if isinstance(result, dict):
-            result['run_id'] = run_id
-            result['preset_id'] = preset_id_final
         return result
 
     @app.get("/api/debit_spreads/top")
