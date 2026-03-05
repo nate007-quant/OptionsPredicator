@@ -2020,27 +2020,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return keep;
     }
 
-    function btRunsComputeRender(items, f) {
-      const keepSet = btRunsComputeKeepSet(items, f);
-      const keepEnabled = (f.keepTopPnl > 0) || (f.keepTopPF > 0);
-
-      const rows = [];
-      const passingIds = new Set();
-      for (const it of (itemsSorted || [])) {
-        const rid = Number(it && it.id);
-        if (!Number.isFinite(rid)) continue;
-        const passThresh = btRunsPassesThresholds(it, f);
-        const passKeep = keepEnabled ? keepSet.has(it.id) : true;
-        const pass = passThresh && passKeep;
-        if (pass) passingIds.add(it.id);
-        if (f.onlyShowPassing) {
-          if (pass) rows.push([it, pass]);
-        } else {
-          rows.push([it, pass]);
-        }
-      }
-      return {rows, passingIds};
-    }
+    // (removed unused btRunsComputeRender helper)
 
     function btRunsUpdateSelNote() {
       const el = document.getElementById('btRunsSelNote');
@@ -2061,6 +2041,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const tb = document.getElementById('btRunsTable');
       if (!tb) return;
       tb.innerHTML = '';
+
+      btRunsVisibleIds = [];
 
       const keepSet = btRunsComputeKeepSet(items, f);
       const keepEnabled = (f.keepTopPnl > 0) || (f.keepTopPF > 0);
@@ -2398,6 +2380,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const tb = document.getElementById('btTrades');
       if (tb) {
         tb.innerHTML = '';
+
+      btRunsVisibleIds = [];
         for (const t of (data.trades || [])) {
           const tr = document.createElement('tr');
           const pnl = t.pnl_dollars;
@@ -2417,7 +2401,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <td>${t.pred_change==null?'—':fmtNum(t.pred_change,2)}</td>
           `;
           tb.appendChild(tr);
-        btRunsVisibleIds.push(rid);
         }
       }
 
@@ -2474,6 +2457,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!tb) return data;
       tb.innerHTML = '';
 
+      btRunsVisibleIds = [];
+
       for (const it of (data.items || [])) {
         const tr = document.createElement('tr');
         const roi = (it.roi === null || it.roi === undefined) ? '—' : (100*Number(it.roi)).toFixed(1) + '%';
@@ -2491,7 +2476,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <td>${pred}</td>
         `;
         tb.appendChild(tr);
-        btRunsVisibleIds.push(rid);
       }
 
       const sum = document.getElementById('debitHistSummary');
@@ -2520,6 +2504,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const tb = document.getElementById('debitTable');
       tb.innerHTML = '';
+
+      btRunsVisibleIds = [];
       for (const it of (data.candidates || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -2535,7 +2521,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <td style="font-family:var(--mono); font-size:11px;">${it.short_symbol || ''}</td>
         `;
         tb.appendChild(tr);
-        btRunsVisibleIds.push(rid);
       }
 
       const note = document.getElementById('debitNote');
@@ -2576,11 +2561,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       // Queue table
       const tb = document.getElementById('queueTable');
       tb.innerHTML = '';
+
+      btRunsVisibleIds = [];
       for (const it of (data.queue.items || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
         tb.appendChild(tr);
-        btRunsVisibleIds.push(rid);
       }
 
       // Currently processing
