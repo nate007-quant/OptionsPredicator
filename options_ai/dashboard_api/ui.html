@@ -1383,7 +1383,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     function btHorizonChoices() {
       const em = document.getElementById('btExpMode')?.value || '0dte';
-      if (em === '0dte') return [30]; // matches current 0DTE ML scorer horizon
+      if (em === '0dte') return [15, 30, 45, 60, 90, 120]; // supported 0DTE horizons
 
       const td = parseInt(document.getElementById('btTargetDte')?.value || '7', 10);
       // TERM horizon choices (minutes) by target DTE

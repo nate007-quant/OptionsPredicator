@@ -14,6 +14,9 @@ from options_ai.backtest.executor import BacktestExecutor, now_utc_iso, score_su
 from options_ai.backtest.registry import StrategyRegistry, ParamSpec, canonical_json
 
 
+ALLOWED_0DTE_HORIZONS = [15, 30, 45, 60, 90, 120]
+
+
 @dataclass
 class SamplerStatus:
     sampler_id: int
@@ -335,6 +338,9 @@ class BacktestSamplerService:
                             k = 1 if rng.random() < 0.65 else min(2, len(sp.choices))
                             cand[sp.key] = sorted(set(rng.sample(list(sp.choices), k=k)))
                     elif sp.typ == "int":
+                        if sp.key == 'horizon_minutes' and str(cand.get('expiration_mode') or '').lower() == '0dte':
+                            cand[sp.key] = rng.choice(ALLOWED_0DTE_HORIZONS)
+                            continue
                         lo = int(sp.min) if sp.min is not None else 0
                         hi = int(sp.max) if sp.max is not None else lo
                         stp = int(sp.step) if sp.step is not None else 1
@@ -356,6 +362,12 @@ class BacktestSamplerService:
                             cand[sp.key] = rng.uniform(lo, hi)
                 return cand
 
+            def _snap_horizon_0dte(v: float | int) -> int:
+                # snap to closest allowed horizon
+                x = float(v)
+                best = min(ALLOWED_0DTE_HORIZONS, key=lambda h: abs(float(h) - x))
+                return int(best)
+
             def neighborhood(center: dict[str, Any], *, scale: float) -> list[dict[str, Any]]:
                 neigh: list[dict[str, Any]] = []
                 for sp in sweep_specs:
@@ -376,7 +388,10 @@ class BacktestSamplerService:
                     for sign in (-1.0, 1.0):
                         cand = dict(center)
                         if sp.typ == "int":
-                            cand[sp.key] = int(round(int(v) + sign * step))
+                            nv = int(round(int(v) + sign * step))
+                            if sp.key == 'horizon_minutes' and str(center.get('expiration_mode') or '').lower() == '0dte':
+                                nv = _snap_horizon_0dte(nv)
+                            cand[sp.key] = int(nv)
                         else:
                             cand[sp.key] = float(v) + sign * step
                         neigh.append(cand)

@@ -583,9 +583,9 @@ def _fetch_candidates_for_window(
               AND c.debit_points <= %s
               AND c.anchor_type = ANY(%s)
               AND c.spread_type = ANY(%s)
-              AND (s.p_bigwin IS NULL OR s.p_bigwin >= %s)
-              AND (s.pred_change IS NULL OR s.pred_change >= %s)
-              AND (s.pred_change IS NULL OR s.pred_change > 0)
+              AND (%s <= 0 OR (s.p_bigwin IS NOT NULL AND s.p_bigwin >= %s))
+              AND (%s <= 0 OR (s.pred_change IS NOT NULL AND s.pred_change >= %s))
+              AND (%s <= 0 OR (s.pred_change IS NOT NULL AND s.pred_change > 0))
               AND (
                 (%s::text[] IS NULL AND %s::text[] IS NULL)
                 OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
@@ -606,6 +606,9 @@ def _fetch_candidates_for_window(
                 allowed_anchors,
                 list(allowed_spreads),
                 float(min_p_bigwin),
+                float(min_p_bigwin),
+                float(min_pred_change),
+                float(min_pred_change),
                 float(min_pred_change),
                 call_anchors,
                 put_anchors,
@@ -898,6 +901,15 @@ def _build_structural_candidate(
 
 
 def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfig) -> dict[str, Any]:
+    # Does the ML scores table contain rows for this horizon?
+    scores_available = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT 1 FROM spx.debit_spread_scores_0dte WHERE horizon_minutes=%s LIMIT 1', (int(cfg.horizon_minutes),))
+            scores_available = cur.fetchone() is not None
+    except Exception:
+        scores_available = False
+
     tz_local = cfg.tz_local
 
     # entry window
@@ -1268,6 +1280,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
     sum_loss = sum(v for v in pnl_vals if v < 0)
 
     summary = {
+        'scores_available_for_horizon': bool(scores_available),
         "days": len(_daterange(cfg.start_day, cfg.end_day)),
         "trades": len(trades),
         "wins": wins,
