@@ -1538,12 +1538,15 @@ def create_app() -> FastAPI:
                     preset_id_final = None
                     preset_name_at_run = None
 
+        force_run = bool((payload or {}).get('force_run') or False)
+
         result = backtest_executor.execute_and_persist(
             strategy_id='debit_spreads',
             payload=dict(payload or {}),
             preset_id=preset_id_final,
             preset_name_at_run=preset_name_at_run,
             strict=True,
+            force_run=force_run,
         )
 
         # Back-compat for UI: legacy flag name

@@ -2027,6 +2027,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const rows = [];
       const passingIds = new Set();
       for (const it of (itemsSorted || [])) {
+        const rid = Number(it && it.id);
+        if (!Number.isFinite(rid)) continue;
         const passThresh = btRunsPassesThresholds(it, f);
         const passKeep = keepEnabled ? keepSet.has(it.id) : true;
         const pass = passThresh && passKeep;
@@ -2067,6 +2069,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       let passing = 0;
 
       for (const it of (itemsSorted || [])) {
+        const rid = Number(it && it.id);
+        if (!Number.isFinite(rid)) continue;
         const p = it.params || {};
         const sum = it.summary || {};
 
@@ -2094,11 +2098,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const tdSel = document.createElement('td');
         const cb = document.createElement('input');
         cb.type = 'checkbox';
-        cb.checked = btRunsSelected.has(it.id);
+        cb.checked = btRunsSelected.has(rid);
         cb.addEventListener('click', (ev) => ev.stopPropagation());
         cb.addEventListener('change', () => {
-          if (cb.checked) btRunsSelected.add(it.id);
-          else btRunsSelected.delete(it.id);
+          if (cb.checked) btRunsSelected.add(rid);
+          else btRunsSelected.delete(rid);
           btRunsUpdateSelNote();
         });
         tdSel.appendChild(cb);
@@ -2134,9 +2138,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         delBtn.style.padding = '4px 8px';
         delBtn.addEventListener('click', async (ev) => {
           ev.stopPropagation();
-          const ok = confirm(`Delete run ${it.id}?`);
+          const ok = confirm(`Delete run ${rid}?`);
           if (!ok) return;
-          await safe('bt_run_delete', () => jpost('/api/backtest/runs/bulk_delete', {ids:[it.id]}));
+          await safe('bt_run_delete', () => jpost('/api/backtest/runs/bulk_delete', {ids:[rid]}));
           btRunsSelected.delete(it.id);
           btRunsUpdateSelNote();
           toast('run deleted', 'warn');
@@ -2182,7 +2186,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         });
 
         tb.appendChild(tr);
-        btRunsVisibleIds.push(it.id);
+        btRunsVisibleIds.push(rid);
       }
 
       const note = document.getElementById('btRunsNote');
@@ -2413,15 +2417,37 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <td>${t.pred_change==null?'—':fmtNum(t.pred_change,2)}</td>
           `;
           tb.appendChild(tr);
-        btRunsVisibleIds.push(it.id);
+        btRunsVisibleIds.push(rid);
         }
       }
 
       if (note) note.textContent = `done: ${((data.trades||[]).length)} trades`;
 
       if (data && data.run_duplicate) {
-        toast('Duplicate backtest run (not saved)', 'info');
+        // Dedupe can skip execution. Offer a forced rerun (updates existing run_id in DB).
+        const ok = confirm('This parameter set already exists (deduped). Force rerun anyway?');
+        if (ok) {
+          payload.force_run = true;
+          const resp2 = await fetch('/api/backtest/debit_spreads/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!resp2.ok) {
+            const t2 = await resp2.text();
+            throw new Error(`backtest http ${resp2.status}: ${t2}`);
+          }
+          const data2 = await resp2.json();
+          if (sum) sum.textContent = JSON.stringify(data2.summary || {}, null, 2);
+          renderBtEquity(data2.equity_curve || []);
+          if (note) note.textContent = `done: ${((data2.trades||[]).length)} trades`;
+          toast('forced rerun completed', 'warn');
+          await btRefreshRuns();
+          return data2;
+        }
+        toast('Duplicate run: showing saved summary (no rerun)', 'info');
       }
+      await btRefreshRuns();
       return data;
     }
 
@@ -2465,7 +2491,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <td>${pred}</td>
         `;
         tb.appendChild(tr);
-        btRunsVisibleIds.push(it.id);
+        btRunsVisibleIds.push(rid);
       }
 
       const sum = document.getElementById('debitHistSummary');
@@ -2509,7 +2535,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <td style="font-family:var(--mono); font-size:11px;">${it.short_symbol || ''}</td>
         `;
         tb.appendChild(tr);
-        btRunsVisibleIds.push(it.id);
+        btRunsVisibleIds.push(rid);
       }
 
       const note = document.getElementById('debitNote');
@@ -2554,7 +2580,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
         tb.appendChild(tr);
-        btRunsVisibleIds.push(it.id);
+        btRunsVisibleIds.push(rid);
       }
 
       // Currently processing

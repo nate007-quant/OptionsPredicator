@@ -44,6 +44,7 @@ class BacktestExecutor:
         preset_id: int | None = None,
         preset_name_at_run: str | None = None,
         strict: bool = True,
+        force_run: bool = False,
     ) -> dict[str, Any]:
         strat = self.registry.get(strategy_id)
         canonical_params = strat.validate_and_normalize(payload or {}, strict=strict)
@@ -52,25 +53,41 @@ class BacktestExecutor:
         params_json = canonical_json(canonical_params)
         ph = params_hash(strategy_key=strategy_key, schema_version=schema_version, params_json_canonical=params_json)
 
-        # global dedupe
+        existing_run_id: int | None = None
+
+        # global dedupe (unless force_run)
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT id
+                SELECT id, params_json, summary_json
                 FROM backtest_runs
                 WHERE strategy_key=? AND schema_version=? AND params_hash=?
+                ORDER BY id ASC
                 LIMIT 1
                 """,
                 (strategy_key, int(schema_version), ph),
             ).fetchone()
-            if row is not None:
+            if row is not None and not force_run:
+                # Return existing stored result (no trades/equity persisted) so UI can still render a summary.
+                try:
+                    cfg = json.loads(row[1] or '{}')
+                except Exception:
+                    cfg = None
+                try:
+                    summ = json.loads(row[2] or '{}')
+                except Exception:
+                    summ = None
                 return {
                     "duplicate_skipped": True,
                     "run_id": int(row[0]),
                     "strategy_key": strategy_key,
                     "schema_version": schema_version,
                     "params_hash": ph,
+                    "config": cfg,
+                    "summary": summ,
                 }
+            if row is not None and force_run:
+                existing_run_id = int(row[0])
 
         # Execute backtest
         result = strat.run(canonical_params)
@@ -81,34 +98,53 @@ class BacktestExecutor:
         now = now_utc_iso()
 
         with self._connect() as con:
-            cur = con.execute(
-                """
-                INSERT INTO backtest_runs(
-                    strategy_key, created_at_utc, preset_id, preset_name_at_run,
-                    params_json, summary_json,
-                    schema_version, params_hash,
-                    refinement_launched, refinement_sampler_id, refinement_launched_at_utc
+            if existing_run_id is not None:
+                # Force rerun: keep the same run_id, but update stored summary and timestamp
+                con.execute(
+                    """
+                    UPDATE backtest_runs
+                    SET created_at_utc=?, preset_id=?, preset_name_at_run=?, summary_json=?
+                    WHERE id=?
+                    """,
+                    (
+                        now,
+                        int(preset_id) if preset_id is not None else None,
+                        preset_name_at_run,
+                        summary_json,
+                        int(existing_run_id),
+                    ),
                 )
-                VALUES(?,?,?,?,?,?,?,?,0,NULL,NULL)
-                """,
-                (
-                    strategy_key,
-                    now,
-                    int(preset_id) if preset_id is not None else None,
-                    preset_name_at_run,
-                    params_json,
-                    summary_json,
-                    int(schema_version),
-                    ph,
-                ),
-            )
-            run_id = int(cur.lastrowid)
+                run_id = int(existing_run_id)
+            else:
+                cur = con.execute(
+                    """
+                    INSERT INTO backtest_runs(
+                        strategy_key, created_at_utc, preset_id, preset_name_at_run,
+                        params_json, summary_json,
+                        schema_version, params_hash,
+                        refinement_launched, refinement_sampler_id, refinement_launched_at_utc
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,0,NULL,NULL)
+                    """,
+                    (
+                        strategy_key,
+                        now,
+                        int(preset_id) if preset_id is not None else None,
+                        preset_name_at_run,
+                        params_json,
+                        summary_json,
+                        int(schema_version),
+                        ph,
+                    ),
+                )
+                run_id = int(cur.lastrowid)
             con.commit()
 
         if isinstance(result, dict):
             result["run_id"] = run_id
             result["preset_id"] = preset_id
-            result["duplicate_skipped"] = False
+            result["duplicate_skipped"] = (existing_run_id is not None)
+            result["forced_rerun"] = bool(existing_run_id is not None)
             result["strategy_key"] = strategy_key
             result["schema_version"] = schema_version
             result["params_hash"] = ph
