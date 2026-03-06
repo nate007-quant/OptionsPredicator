@@ -158,6 +158,7 @@ class BacktestSamplerService:
                     canonical_json(canonical_base),
                     json.dumps(plan, separators=(",", ":"), sort_keys=True),
                     int(seed) if seed is not None else None,
+                    now,
                 ),
             )
             sampler_id = int(cur.lastrowid)
