@@ -1413,6 +1413,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfLegs = [];
     let pfPortfolioId = null;
     let pfPortfolios = [];
+    let pfAutoCreatedDefault = false;
     let pfSessionId = null;
     let pfPoll = null;
     let pfChart = null;
@@ -2483,7 +2484,19 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     async function pfReloadPortfolios() {
       const data = await jget('/api/portfolios');
-      pfPortfolios = (data && data.items) ? data.items : [];
+      pfPortfolios = (data && data.items) ? data.items : []
+
+      // If none exist, create a default portfolio so the screen is usable out-of-the-box.
+      if ((!pfPortfolios || pfPortfolios.length === 0) && !pfAutoCreatedDefault) {
+        pfAutoCreatedDefault = true;
+        try {
+          await jpost('/api/portfolios', { name: 'Default', legs: [] });
+          const data2 = await jget('/api/portfolios');
+          pfPortfolios = (data2 && data2.items) ? data2.items : [];
+        } catch (e) {
+          console.error('pf_default_create_failed', e);
+        }
+      }
 
       const sel = document.getElementById('pfPortfolioSelect');
       if (sel) {
