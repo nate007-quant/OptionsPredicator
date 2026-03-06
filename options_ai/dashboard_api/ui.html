@@ -2674,8 +2674,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           const ix = parseInt(btn.getAttribute('data-ix')||'', 10);
           if (!Number.isFinite(ix)) return;
           pfLegs.splice(ix, 1);
-          pfSaveLegs();
           pfRenderLegs();
+          safe('portfolio_save', async () => { await pfPersistLegs(); });
         });
       });
 
@@ -2693,12 +2693,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!params) return;
       pfLegs = pfLegs || [];
       pfLegs.push({ strategy_id: strategyId || 'debit_spreads', params: params, source: source || 'run' });
-      pfSaveLegs();
       pfRenderLegs();
-      toast('added to portfolio', 'success');
     }
 
-    function pfAddSelectedRunsToPortfolio() {
+    async function pfAddSelectedRunsToPortfolio() {
       const selected = Array.from(btRunsSelected || []);
       if (!selected.length) throw new Error('select one or more runs first');
       const byId = new Map((btRunsRaw || []).map(it => [Number(it.id), it]));
@@ -2709,12 +2707,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const params = it.params || {};
         const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
         pfAddLeg(sid, params, `run:${it.id}`);
-            await pfPersistLegs();
-          // jump user to Portfolio tab so the action is obvious
-          window.location.hash = '#portfolio';
-          routeFromHash();
         added += 1;
       }
+
+      // Persist once
+      await pfPersistLegs();
+
       toast(`added ${added} run(s) to portfolio`, 'success');
       window.location.hash = '#portfolio';
       routeFromHash();
@@ -2788,7 +2786,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         legs: (pfLegs || []).map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
       });
       pfSessionId = resp.session_id;
-      toast('portfolio backtest started', 'ok');
+      toast('portfolio backtest started', 'success');
       if (pfPoll) clearInterval(pfPoll);
       pfPoll = setInterval(() => safe('portfolio', pfPollOnce), 2000);
       await pfPollOnce();
@@ -2802,8 +2800,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     function pfClear() {
       pfLegs = [];
-      pfSaveLegs();
       pfRenderLegs();
+      safe('portfolio_save', async () => { await pfPersistLegs(); });
       const sum = document.getElementById('pfSummary');
       if (sum) sum.textContent = '';
       const legBox = document.getElementById('pfLegSummaries');
