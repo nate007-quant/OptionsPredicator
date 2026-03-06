@@ -2240,12 +2240,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         addBtn.className = 'btn-primary';
         addBtn.style.padding = '4px 8px';
         addBtn.style.marginLeft = '6px';
-        addBtn.addEventListener('click', (ev) => {
+        addBtn.addEventListener('click', async (ev) => {
           ev.stopPropagation();
           try {
             const params = it.params || {};
             const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
             pfAddLeg(sid, params, `run:${it.id}`);
+            await pfPersistLegs();
             // jump user to Portfolio tab so the action is obvious
             window.location.hash = '#portfolio';
             routeFromHash();
@@ -2547,6 +2548,52 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return data;
     }
 
+    async function pfEnsureSelectedPortfolio() {
+      // Make sure we have a selected portfolio id.
+      let pid = pfSelectedPortfolioId();
+      if (pid) return pid;
+
+      // Load portfolios if not already loaded
+      if (!pfPortfolios || pfPortfolios.length === 0) {
+        await pfReloadPortfolios();
+      }
+
+      pid = pfSelectedPortfolioId();
+      if (pid) return pid;
+
+      // If there are portfolios, select the first
+      if (pfPortfolios && pfPortfolios.length) {
+        const first = pfPortfolios[0];
+        const sel = document.getElementById('pfPortfolioSelect');
+        if (sel) sel.value = String(first.id);
+        await pfSelectPortfolio(first.id);
+        pid = pfSelectedPortfolioId();
+        if (pid) return pid;
+      }
+
+      // Still none: create Default and retry
+      await jpost('/api/portfolios', { name: 'Default', legs: [] });
+      await pfReloadPortfolios();
+      if (pfPortfolios && pfPortfolios.length) {
+        const first = pfPortfolios[0];
+        const sel = document.getElementById('pfPortfolioSelect');
+        if (sel) sel.value = String(first.id);
+        await pfSelectPortfolio(first.id);
+      }
+      pid = pfSelectedPortfolioId();
+      if (!pid) throw new Error('no portfolio selected');
+      return pid;
+    }
+
+    async function pfPersistLegs() {
+      const pid = await pfEnsureSelectedPortfolio();
+      await jput(`/api/portfolios/${pid}`, { legs: pfLegs || [] });
+      await pfReloadPortfolios();
+      const sel = document.getElementById('pfPortfolioSelect');
+      if (sel) sel.value = String(pid);
+      return pid;
+    }
+
     async function pfSavePortfolio() {
       const pid = pfSelectedPortfolioId();
       if (!pid) throw new Error('select (or create) a portfolio first');
@@ -2662,6 +2709,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const params = it.params || {};
         const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
         pfAddLeg(sid, params, `run:${it.id}`);
+            await pfPersistLegs();
           // jump user to Portfolio tab so the action is obvious
           window.location.hash = '#portfolio';
           routeFromHash();
