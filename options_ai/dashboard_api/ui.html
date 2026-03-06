@@ -1381,26 +1381,35 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     function setActiveView(view) {
-      document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
+      // Force-hide all views, then show exactly one.
+      const views = Array.from(document.querySelectorAll('main.content > section.view'));
+      views.forEach(el => {
+        el.classList.remove('active');
+        el.style.display = 'none';
+      });
+
       const v = document.getElementById(`view-${view}`);
-      if (v) v.classList.add('active');
+      if (v) {
+        v.classList.add('active');
+        v.style.display = 'block';
+      }
 
       document.querySelectorAll('#nav a').forEach(a => a.classList.remove('active'));
       const link = document.querySelector(`#nav a[data-view="${view}"]`);
       if (link) link.classList.add('active');
 
-      // UX: when switching tabs, scroll the main content pane to top so the new view isn't
-      // rendered at whatever scroll position you had in the previous view.
+      // Always scroll to top when switching tabs.
       const content = document.querySelector('.content');
       if (content) {
-        // Avoid nonstandard scroll behaviors; some browsers ignore invalid values.
         content.scrollTop = 0;
-        // Also schedule a second reset after layout for safety.
         setTimeout(() => { try { content.scrollTop = 0; } catch {} }, 0);
       }
+
+      try { document.title = `Nate's Option Dashboard — ${view}`; } catch {}
     }
 
     function routeFromHash() {
+
       const h = (window.location.hash || '#overview').replace('#','');
       const allowed = new Set(['overview','debit','backtest','portfolio','processing','timeseries','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
@@ -3711,6 +3720,28 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     // routing
     window.addEventListener('hashchange', routeFromHash);
+
+    // Ensure sidebar clicks always switch views (even if hashchange doesn't fire).
+    let navClickWired = false;
+    (function wireNavClicks(){
+      if (navClickWired) return;
+      navClickWired = true;
+      const nav = document.getElementById('nav');
+      if (!nav) return;
+      nav.querySelectorAll('a[data-view]').forEach(a => {
+        a.addEventListener('click', (ev) => {
+          try {
+            ev.preventDefault();
+            const v = a.getAttribute('data-view');
+            if (!v) return;
+            window.location.hash = '#' + v;
+            setActiveView(v);
+          } catch (e) {
+            console.error('nav_click', e);
+          }
+        });
+      });
+    })();
 
     // initial load
     (async () => {
