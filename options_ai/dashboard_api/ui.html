@@ -1276,6 +1276,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return (100.0 * x).toFixed(1) + '%';
     }
 
+    function esc(x) {
+      // Basic HTML escape for table rendering
+      if (x === null || x === undefined) return '';
+      return String(x)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     async function jget(path) {
       const r = await fetch(api + path);
       if (!r.ok) throw new Error(await r.text());
@@ -2216,12 +2227,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         addBtn.style.marginLeft = '6px';
         addBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          const params = it.params || {};
-          const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
-          pfAddLeg(sid, params, `run:${it.id}`);
-          // jump user to Portfolio tab so the action is obvious
-          window.location.hash = '#portfolio';
-          routeFromHash();
+          try {
+            const params = it.params || {};
+            const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
+            pfAddLeg(sid, params, `run:${it.id}`);
+            // jump user to Portfolio tab so the action is obvious
+            window.location.hash = '#portfolio';
+            routeFromHash();
+          } catch (e) {
+            console.error('add_to_portfolio', e);
+            toast('Add to Portfolio failed (see console)', 'error');
+          }
         });
         tdAct.appendChild(addBtn);
 
