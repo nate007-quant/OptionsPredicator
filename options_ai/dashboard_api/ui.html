@@ -2209,6 +2209,18 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         });
         tdAct.appendChild(delBtn);
 
+        const addBtn = document.createElement('button');
+        addBtn.textContent = 'Add to Portfolio';
+        addBtn.style.padding = '4px 8px';
+        addBtn.style.marginLeft = '6px';
+        addBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const params = it.params || {};
+          const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
+          pfAddLeg(sid, params, `run:${it.id}`);
+        });
+
+
         tr.appendChild(tdSel);
         tr.appendChild(tdStrategy);
         tr.appendChild(tdCreated);
