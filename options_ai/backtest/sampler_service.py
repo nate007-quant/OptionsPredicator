@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import random
+import heapq
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -15,6 +17,27 @@ from options_ai.backtest.registry import StrategyRegistry, ParamSpec, canonical_
 
 
 ALLOWED_0DTE_HORIZONS = [15, 30, 45, 60, 90, 120]
+
+
+def _parse_int_list_env(name: str, default: list[int]) -> list[int]:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return list(default)
+    out: list[int] = []
+    for part in raw.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except Exception:
+            continue
+    return out or list(default)
+
+
+# Horizons that actually have ML scores available (used when min_p_bigwin/min_pred_change > 0).
+# Configure via env: SCORED_0DTE_HORIZONS="30" or "15,30,60".
+SCORED_0DTE_HORIZONS = _parse_int_list_env('SCORED_0DTE_HORIZONS', [30])
 
 
 @dataclass
@@ -309,9 +332,28 @@ class BacktestSamplerService:
             seed = plan.get("seed")
             rng = random.Random(int(seed) if seed is not None else None)
 
+            # If ML thresholds are in use, restrict 0DTE horizons to those with scores available
+            base_min_p = float(base_params.get("min_p_bigwin") or 0.0)
+            base_min_pred = float(base_params.get("min_pred_change") or 0.0)
+            effective_0dte_horizons = list(ALLOWED_0DTE_HORIZONS)
+            if base_min_p > 0.0 or base_min_pred > 0.0:
+                effective_0dte_horizons = list(SCORED_0DTE_HORIZONS)
+
             sweep_specs = [s for s in specs if s.sweepable and s.typ in {"int", "float", "bool", "enum", "list_enum"}]
 
-            results: list[dict[str, Any]] = []  # {params, score, run_id}
+            # Keep only top candidates to limit memory use
+            top_heap: list[tuple[float, dict[str, Any]]] = []  # (score, item)
+
+            def push_top(score: float, params: dict[str, Any], run_id: int, k: int) -> None:
+                if k <= 0:
+                    return
+                item = {"params": params, "score": float(score), "run_id": int(run_id)}
+                if len(top_heap) < k:
+                    heapq.heappush(top_heap, (float(score), item))
+                else:
+                    if float(score) > float(top_heap[0][0]):
+                        heapq.heapreplace(top_heap, (float(score), item))
+
 
             def cancelled() -> bool:
                 st = self._session_row(sampler_id)
@@ -339,7 +381,7 @@ class BacktestSamplerService:
                             cand[sp.key] = sorted(set(rng.sample(list(sp.choices), k=k)))
                     elif sp.typ == "int":
                         if sp.key == 'horizon_minutes' and str(cand.get('expiration_mode') or '').lower() == '0dte':
-                            cand[sp.key] = rng.choice(ALLOWED_0DTE_HORIZONS)
+                            cand[sp.key] = rng.choice(effective_0dte_horizons)
                             continue
                         lo = int(sp.min) if sp.min is not None else 0
                         hi = int(sp.max) if sp.max is not None else lo
@@ -365,7 +407,7 @@ class BacktestSamplerService:
             def _snap_horizon_0dte(v: float | int) -> int:
                 # snap to closest allowed horizon
                 x = float(v)
-                best = min(ALLOWED_0DTE_HORIZONS, key=lambda h: abs(float(h) - x))
+                best = min(effective_0dte_horizons, key=lambda h: abs(float(h) - x))
                 return int(best)
 
             def neighborhood(center: dict[str, Any], *, scale: float) -> list[dict[str, Any]]:
@@ -414,20 +456,19 @@ class BacktestSamplerService:
                         self._bump_counter(sampler_id, completed=1, last_run_id=int(r.get("run_id")))
                         sc = score_summary((r or {}).get("summary") or {}, min_trades=min_trades)
                         if sc is not None:
-                            results.append({"params": (r or {}).get("config") or cand, "score": float(sc), "run_id": int(r.get("run_id"))})
+                            push_top(float(sc), (r or {}).get("config") or cand, int(r.get("run_id")), max(1, int(top_k)))
                 except Exception:
                     self._bump_counter(sampler_id, failed=1)
                 n_run += 1
 
             # Refine
-            results.sort(key=lambda x: float(x.get("score") or -1e18), reverse=True)
-            centers = results[: max(1, int(top_k))] if results else []
+            centers = [it for (_sc, it) in sorted(top_heap, key=lambda x: float(x[0]), reverse=True)]
 
             for rd in range(int(rounds)):
                 if n_run >= budget or cancelled():
                     break
                 scale = float(shrink) ** float(rd)
-                new_centers: list[dict[str, Any]] = []
+                new_heap: list[tuple[float, dict[str, Any]]] = []
                 for c in centers[: max(1, int(top_k))]:
                     if n_run >= budget or cancelled():
                         break
@@ -445,14 +486,18 @@ class BacktestSamplerService:
                                 self._bump_counter(sampler_id, completed=1, last_run_id=int(r.get("run_id")))
                                 sc = score_summary((r or {}).get("summary") or {}, min_trades=min_trades)
                                 if sc is not None:
-                                    new_centers.append({"params": (r or {}).get("config") or cand, "score": float(sc), "run_id": int(r.get("run_id"))})
+                                    item = {"params": (r or {}).get("config") or cand, "score": float(sc), "run_id": int(r.get("run_id"))}
+                                    if len(new_heap) < max(1, int(top_k)):
+                                        heapq.heappush(new_heap, (float(sc), item))
+                                    else:
+                                        if float(sc) > float(new_heap[0][0]):
+                                            heapq.heapreplace(new_heap, (float(sc), item))
                         except Exception:
                             self._bump_counter(sampler_id, failed=1)
                         n_run += 1
 
-                if new_centers:
-                    new_centers.sort(key=lambda x: float(x.get("score") or -1e18), reverse=True)
-                    centers = new_centers[: max(1, int(top_k))]
+                if new_heap:
+                    centers = [it for (_sc, it) in sorted(new_heap, key=lambda x: float(x[0]), reverse=True)]
 
             if cancelled():
                 self._set_status(sampler_id, "stopped")

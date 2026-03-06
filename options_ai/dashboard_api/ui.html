@@ -949,6 +949,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <button class="btn-primary" id="runBacktest">Run Backtest</button>
                 <label style="margin-left:10px;"><input id="btForceRerun" type="checkbox" /> Force rerun</label>
                 <button class="btn-primary" id="runBacktestSampler" style="margin-left:8px;">Run Backtest Sampler</button>
+                <label style="margin-left:10px;">Budget <input id="btSamplerBudget" type="number" value="5000" min="1" max="200000" style="width:95px;" /></label>
                 <span class="hint" id="btSamplerCounters" style="margin-left:10px;"></span>
                 <span class="hint" id="btNote" style="margin-left:10px;"></span>
               </div>
@@ -2321,7 +2322,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const resp = await jpost('/api/backtest/sampler/start', {
         strategy_id: 'debit_spreads',
         base_params: payload,
-        budget: 350
+        budget: parseInt(document.getElementById('btSamplerBudget')?.value || '5000', 10)
       });
       btSamplerId = resp.sampler_id;
       toast('sampler started', 'ok');
