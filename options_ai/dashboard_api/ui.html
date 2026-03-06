@@ -2219,6 +2219,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
           pfAddLeg(sid, params, `run:${it.id}`);
         });
+        tdAct.appendChild(addBtn);
 
 
         tr.appendChild(tdSel);
