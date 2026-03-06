@@ -122,6 +122,28 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
         """,
     )
 
+    # Portfolio definitions (named collections of legs)
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_defs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          legs_json TEXT NOT NULL,
+          created_at_utc TEXT NOT NULL,
+          updated_at_utc TEXT NOT NULL
+        );
+        """
+    )
+
+    _ensure_index(
+        con,
+        """
+        CREATE INDEX IF NOT EXISTS idx_portfolio_defs_updated
+        ON portfolio_defs(updated_at_utc DESC)
+        """,
+    )
+
+
 
 def backfill_params_hash(
     con: sqlite3.Connection,

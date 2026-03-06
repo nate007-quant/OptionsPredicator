@@ -1077,10 +1077,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <div class="card-b">
 
               <div class="row">
+                <label>Portfolio
+                  <select id="pfPortfolioSelect" style="min-width:240px;">
+                    <option value="">(loading)</option>
+                  </select>
+                </label>
+                <button id="pfPortfolioNew">New…</button>
+                <button id="pfPortfolioRename">Rename…</button>
+                <button class="btn-danger" id="pfPortfolioDelete">Delete</button>
+                <button id="pfPortfolioSave">Save</button>
+                <span class="hint" id="pfNote"></span>
+              </div>
+
+              <div class="row" style="margin-top:10px;">
                 <button class="btn-primary" id="pfRun">Run Portfolio Backtest</button>
                 <button id="pfStop">Stop</button>
                 <button class="btn-danger" id="pfClear">Clear legs</button>
-                <span class="hint" id="pfNote"></span>
               </div>
 
               <div style="margin-top:12px; overflow:auto;">
@@ -1399,6 +1411,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     // Portfolio Backtest
     let pfLegs = [];
+    let pfPortfolioId = null;
+    let pfPortfolios = [];
     let pfSessionId = null;
     let pfPoll = null;
     let pfChart = null;
@@ -2216,7 +2230,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           btRunsUpdateSelNote();
           toast('run deleted', 'warn');
           await safe('bt_runs', () => btRefreshRuns());
-      pfLoadLegs();
+      await safe('pf_portfolios', () => pfReloadPortfolios());
         });
         tdAct.appendChild(delBtn);
 
@@ -2467,21 +2481,108 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
 
+    async function pfReloadPortfolios() {
+      const data = await jget('/api/portfolios');
+      pfPortfolios = (data && data.items) ? data.items : [];
 
-    function pfLoadLegs() {
-      try {
-        const raw = localStorage.getItem('portfolioBacktestLegs');
-        pfLegs = raw ? (JSON.parse(raw) || []) : [];
-      } catch (e) {
-        pfLegs = [];
+      const sel = document.getElementById('pfPortfolioSelect');
+      if (sel) {
+        const cur = sel.value;
+        sel.innerHTML = '';
+        if (!pfPortfolios.length) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = '(no portfolios)';
+          sel.appendChild(opt);
+        } else {
+          for (const it of pfPortfolios) {
+            const opt = document.createElement('option');
+            opt.value = String(it.id);
+            opt.textContent = it.name;
+            sel.appendChild(opt);
+          }
+        }
+        if (cur && Array.from(sel.options).some(o => o.value === cur)) sel.value = cur;
       }
-      pfRenderLegs();
+
+      if (!pfPortfolioId && pfPortfolios.length) {
+        pfPortfolioId = pfPortfolios[0].id;
+        if (sel) sel.value = String(pfPortfolioId);
+        pfLegs = pfPortfolios[0].legs || [];
+        pfRenderLegs();
+      }
+      return data;
     }
 
-    function pfSaveLegs() {
-      try {
-        localStorage.setItem('portfolioBacktestLegs', JSON.stringify(pfLegs || []));
-      } catch (e) {}
+    function pfSelectedPortfolioId() {
+      const sel = document.getElementById('pfPortfolioSelect');
+      if (!sel) return pfPortfolioId;
+      const v = (sel.value || '').trim();
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    async function pfSelectPortfolio(id) {
+      const pid = Number(id);
+      if (!Number.isFinite(pid)) return;
+      const data = await jget(`/api/portfolios/${pid}`);
+      pfPortfolioId = data.id;
+      pfLegs = data.legs || [];
+      pfRenderLegs();
+      const note = document.getElementById('pfNote');
+      if (note) note.textContent = `portfolio: ${data.name} | legs: ${(pfLegs||[]).length}`;
+      return data;
+    }
+
+    async function pfSavePortfolio() {
+      const pid = pfSelectedPortfolioId();
+      if (!pid) throw new Error('select (or create) a portfolio first');
+      const resp = await jput(`/api/portfolios/${pid}`, { legs: pfLegs || [] });
+      toast('portfolio saved', 'success');
+      await pfReloadPortfolios();
+      const sel = document.getElementById('pfPortfolioSelect');
+      if (sel) sel.value = String(pid);
+      return resp;
+    }
+
+    async function pfNewPortfolio() {
+      const name = prompt('New portfolio name:');
+      if (!name) return;
+      const resp = await jpost('/api/portfolios', { name: name.trim(), legs: [] });
+      await pfReloadPortfolios();
+      const sel = document.getElementById('pfPortfolioSelect');
+      if (sel) sel.value = String(resp.id);
+      pfPortfolioId = resp.id;
+      pfLegs = [];
+      pfRenderLegs();
+      toast('portfolio created', 'success');
+    }
+
+    async function pfRenamePortfolio() {
+      const pid = pfSelectedPortfolioId();
+      if (!pid) throw new Error('select a portfolio first');
+      const cur = pfPortfolios.find(x => String(x.id) === String(pid));
+      const name = prompt('Rename portfolio:', cur ? cur.name : '');
+      if (!name) return;
+      await jput(`/api/portfolios/${pid}`, { name: name.trim() });
+      toast('portfolio renamed', 'success');
+      await pfReloadPortfolios();
+      const sel = document.getElementById('pfPortfolioSelect');
+      if (sel) sel.value = String(pid);
+    }
+
+    async function pfDeletePortfolio() {
+      const pid = pfSelectedPortfolioId();
+      if (!pid) throw new Error('select a portfolio first');
+      const cur = pfPortfolios.find(x => String(x.id) === String(pid));
+      const ok = confirm(`Delete portfolio "${(cur && cur.name) ? cur.name : pid}"?`);
+      if (!ok) return;
+      await jdel(`/api/portfolios/${pid}`);
+      toast('portfolio deleted', 'warn');
+      pfPortfolioId = null;
+      pfLegs = [];
+      pfRenderLegs();
+      await pfReloadPortfolios();
     }
 
     function pfRenderLegs() {
@@ -3278,6 +3379,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('pfStop')?.addEventListener('click', () => safe('portfolio_stop', () => pfStop()));
     document.getElementById('pfClear')?.addEventListener('click', () => safe('portfolio_clear', () => pfClear()));
 
+    document.getElementById('pfPortfolioSelect')?.addEventListener('change', (ev) => safe('pf_select', () => pfSelectPortfolio(ev.target.value)));
+    document.getElementById('pfPortfolioNew')?.addEventListener('click', () => safe('pf_new', () => pfNewPortfolio()));
+    document.getElementById('pfPortfolioRename')?.addEventListener('click', () => safe('pf_rename', () => pfRenamePortfolio()));
+    document.getElementById('pfPortfolioDelete')?.addEventListener('click', () => safe('pf_delete', () => pfDeletePortfolio()));
+    document.getElementById('pfPortfolioSave')?.addEventListener('click', () => safe('pf_save', () => pfSavePortfolio()));
+
     document.getElementById('btRunsDeleteSelected')?.addEventListener('click', () => safe('bt_runs_delete_selected', async () => {
       const ids = Array.from(btRunsSelected.values());
       await btRunsDeleteIds(ids);
@@ -3377,7 +3484,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('sampler', () => samplerPollOnce());
       await safe('bt_presets', () => btReloadPresets());
       await safe('bt_runs', () => btRefreshRuns());
-      pfLoadLegs();
+      await safe('pf_portfolios', () => pfReloadPortfolios());
 
       // intervals
       setInterval(() => safe('health', () => refreshHealth()), 5000);

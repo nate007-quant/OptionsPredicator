@@ -1429,6 +1429,127 @@ def create_app() -> FastAPI:
 
 
 
+
+
+# ---- Portfolios (saved definitions) ----
+
+    @app.get('/api/portfolios')
+    def portfolios_list() -> dict[str, Any]:
+        import json as _json
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """SELECT id,name,legs_json,created_at_utc,updated_at_utc
+                   FROM portfolio_defs
+                   ORDER BY updated_at_utc DESC, id DESC"""
+            ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                legs = _json.loads(r['legs_json'] or '[]')
+            except Exception:
+                legs = []
+            items.append(
+                {
+                    'id': int(r['id']),
+                    'name': str(r['name']),
+                    'legs': legs,
+                    'created_at_utc': str(r['created_at_utc']),
+                    'updated_at_utc': str(r['updated_at_utc']),
+                }
+            )
+        return {'items': items}
+
+    @app.post('/api/portfolios')
+    def portfolios_create(body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        name = str((body or {}).get('name') or '').strip()
+        if not name:
+            raise HTTPException(status_code=400, detail='name required')
+        legs = (body or {}).get('legs')
+        if legs is None:
+            legs = []
+        if not isinstance(legs, list):
+            raise HTTPException(status_code=400, detail='legs must be a list')
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            cur = con.execute(
+                """INSERT INTO portfolio_defs(name, legs_json, created_at_utc, updated_at_utc)
+                   VALUES(?,?,?,?)""",
+                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), now, now),
+            )
+            pid = int(cur.lastrowid)
+            con.commit()
+        return {'id': pid, 'name': name, 'legs': legs}
+
+    @app.get('/api/portfolios/{portfolio_id}')
+    def portfolios_get(portfolio_id: int) -> dict[str, Any]:
+        import json as _json
+        with _connect(db_path) as con:
+            r = con.execute(
+                """SELECT id,name,legs_json,created_at_utc,updated_at_utc
+                   FROM portfolio_defs WHERE id=?""",
+                (int(portfolio_id),),
+            ).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail='portfolio not found')
+        try:
+            legs = _json.loads(r['legs_json'] or '[]')
+        except Exception:
+            legs = []
+        return {
+            'id': int(r['id']),
+            'name': str(r['name']),
+            'legs': legs,
+            'created_at_utc': str(r['created_at_utc']),
+            'updated_at_utc': str(r['updated_at_utc']),
+        }
+
+    @app.put('/api/portfolios/{portfolio_id}')
+    def portfolios_update(portfolio_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        name = (body or {}).get('name')
+        legs = (body or {}).get('legs')
+        if name is not None:
+            name = str(name).strip()
+            if not name:
+                raise HTTPException(status_code=400, detail='name cannot be blank')
+        if legs is not None and not isinstance(legs, list):
+            raise HTTPException(status_code=400, detail='legs must be a list')
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute('SELECT id,name,legs_json FROM portfolio_defs WHERE id=?', (int(portfolio_id),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='portfolio not found')
+            cur_name = str(r['name'])
+            cur_legs_json = str(r['legs_json'] or '[]')
+
+            new_name = cur_name if name is None else str(name)
+            new_legs_json = cur_legs_json if legs is None else _json.dumps(legs, separators=(',', ':'), sort_keys=True)
+
+            con.execute(
+                'UPDATE portfolio_defs SET name=?, legs_json=?, updated_at_utc=? WHERE id=?',
+                (new_name, new_legs_json, now, int(portfolio_id)),
+            )
+            con.commit()
+
+        try:
+            out_legs = _json.loads(new_legs_json or '[]')
+        except Exception:
+            out_legs = []
+        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs}
+
+    @app.delete('/api/portfolios/{portfolio_id}')
+    def portfolios_delete(portfolio_id: int) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            r = con.execute('SELECT id FROM portfolio_defs WHERE id=?', (int(portfolio_id),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='portfolio not found')
+            con.execute('DELETE FROM portfolio_defs WHERE id=?', (int(portfolio_id),))
+            con.commit()
+        return {'ok': True, 'deleted_id': int(portfolio_id)}
+
+
 # ---- Portfolio Backtest (multi-leg) ----
 
     @app.post('/api/portfolio_backtest/start')
