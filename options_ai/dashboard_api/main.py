@@ -33,6 +33,7 @@ from options_ai.backtest.executor import BacktestExecutor
 from options_ai.backtest.registry import StrategyRegistry, params_hash
 from options_ai.backtest.sampler_service import BacktestSamplerService
 from options_ai.backtest.portfolio_backtest_service import PortfolioBacktestService
+from options_ai.backtest.portfolio_group_backtest_service import PortfolioGroupBacktestService
 from options_ai.backtest.sqlite_migrations import migrate_backtest_schema, backfill_params_hash
 
 
@@ -328,6 +329,7 @@ def create_app() -> FastAPI:
     backtest_executor = BacktestExecutor(db_path=db_path, connect_fn=_connect)
     sampler_service = BacktestSamplerService(db_path=db_path, connect_fn=_connect)
     portfolio_service = PortfolioBacktestService(db_path=db_path, connect_fn=_connect)
+    portfolio_group_service = PortfolioGroupBacktestService(db_path=db_path, connect_fn=_connect)
 
     app = FastAPI(title="Nate's Option Dashboard API", version="0.1")
 
@@ -1572,6 +1574,32 @@ def create_app() -> FastAPI:
         if sid in (None, ''):
             raise HTTPException(status_code=400, detail='session_id required')
         return portfolio_service.stop(session_id=int(sid))
+
+
+
+
+# ---- Portfolio Groups (run multiple saved portfolios) ----
+
+    @app.post('/api/portfolio_groups/run')
+    def portfolio_groups_run(body: dict[str, Any]) -> dict[str, Any]:
+        ids = (body or {}).get('portfolio_ids')
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(status_code=400, detail='portfolio_ids must be a non-empty list')
+        return portfolio_group_service.start(portfolio_ids=[int(x) for x in ids])
+
+    @app.get('/api/portfolio_groups/status')
+    def portfolio_groups_status(run_id: int | None = Query(None)) -> dict[str, Any]:
+        st = portfolio_group_service.status(run_id=int(run_id) if run_id is not None else None)
+        if st is None:
+            return {'run_id': run_id, 'status': None}
+        return st
+
+    @app.post('/api/portfolio_groups/stop')
+    def portfolio_groups_stop(body: dict[str, Any]) -> dict[str, Any]:
+        rid = (body or {}).get('run_id')
+        if rid in (None, ''):
+            raise HTTPException(status_code=400, detail='run_id required')
+        return portfolio_group_service.stop(run_id=int(rid))
 
 
 # ---- Backtest Runs (history grid) ----

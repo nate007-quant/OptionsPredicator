@@ -1095,7 +1095,43 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <button class="btn-danger" id="pfClear">Clear legs</button>
               </div>
 
-              <div style="margin-top:12px; overflow:auto;">
+              
+
+              <fieldset class="fs" style="margin-top:12px;">
+                <legend>Run multiple portfolios (group)</legend>
+                <div class="row">
+                  <button class="btn-primary" id="pfRunGroup">Run Selected Portfolios</button>
+                  <button id="pfStopGroup">Stop</button>
+                  <span class="hint" id="pfGroupNote"></span>
+                </div>
+                <div style="margin-top:10px; overflow:auto; max-height:240px;">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th></th>
+                        <th>portfolio</th>
+                        <th>trades</th>
+                        <th>total_pnl</th>
+                        <th>win_rate</th>
+                        <th>profit_factor</th>
+                        <th>max_dd</th>
+                      </tr>
+                    </thead>
+                    <tbody id="pfPortTable"></tbody>
+                  </table>
+                </div>
+                <div class="grid2" style="margin-top:12px;">
+                  <div class="card">
+                    <div class="card-h"><h2>Group Summary</h2><div class="hint">Combined across selected portfolios</div></div>
+                    <div class="card-b"><pre id="pfGroupSummary" class="mono" style="white-space:pre-wrap; max-height:220px; overflow:auto;"></pre></div>
+                  </div>
+                  <div class="card">
+                    <div class="card-h"><h2>Group Equity Curve</h2><div class="hint">event-sum</div></div>
+                    <div class="card-b"><canvas id="pfGroupEq" height="120"></canvas></div>
+                  </div>
+                </div>
+              </fieldset>
+<div style="margin-top:12px; overflow:auto;">
                 <table>
                   <thead>
                     <tr>
@@ -1403,6 +1439,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       }
 
+      pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
       return data;
     }
 
@@ -1417,6 +1454,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfSessionId = null;
     let pfPoll = null;
     let pfChart = null;
+    let pfGroupChart = null;
+    let pfGroupRunId = null;
+    let pfGroupPoll = null;
+    let pfGroupSelected = new Set();
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -2718,6 +2759,150 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       routeFromHash();
     }
 
+
+
+    function pfRenderGroupEquity(eq) {
+      const canvas = document.getElementById('pfGroupEq');
+      if (!canvas) return;
+      const pts = Array.isArray(eq) ? eq : [];
+      const labels = pts.map(p => (p.ts || ''));
+      const data = pts.map(p => Number(p.cum_pnl_dollars || 0));
+
+      if (pfGroupChart) {
+        pfGroupChart.destroy();
+        pfGroupChart = null;
+      }
+
+      pfGroupChart = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'group_cum_pnl_dollars',
+            data,
+            borderColor: 'rgba(34,197,94,0.9)',
+            backgroundColor: 'rgba(34,197,94,0.15)',
+            tension: 0.1,
+            pointRadius: 0,
+            borderWidth: 2,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { x: { display: false }, y: { ticks: { callback: (v) => fmtNum(v, 0) } } }
+        }
+      });
+    }
+
+    function pfRenderPortfoliosTable(portfolios, selectedSet) {
+      const tb = document.getElementById('pfPortTable');
+      if (!tb) return;
+      tb.innerHTML = '';
+      const items = Array.isArray(portfolios) ? portfolios : [];
+
+      for (const it of items) {
+        const pid = Number(it.id);
+        const tr = document.createElement('tr');
+
+        const tdSel = document.createElement('td');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selectedSet ? selectedSet.has(pid) : false;
+        cb.addEventListener('change', () => {
+          if (!pfGroupSelected) pfGroupSelected = new Set();
+          if (cb.checked) pfGroupSelected.add(pid);
+          else pfGroupSelected.delete(pid);
+        });
+        tdSel.appendChild(cb);
+
+        const tdName = document.createElement('td'); tdName.textContent = it.name || '';
+        const tdTrades = document.createElement('td'); tdTrades.textContent = '—';
+        const tdPnl = document.createElement('td'); tdPnl.textContent = '—';
+        const tdWr = document.createElement('td'); tdWr.textContent = '—';
+        const tdPf = document.createElement('td'); tdPf.textContent = '—';
+        const tdDd = document.createElement('td'); tdDd.textContent = '—';
+
+        tr.appendChild(tdSel);
+        tr.appendChild(tdName);
+        tr.appendChild(tdTrades);
+        tr.appendChild(tdPnl);
+        tr.appendChild(tdWr);
+        tr.appendChild(tdPf);
+        tr.appendChild(tdDd);
+        tb.appendChild(tr);
+      }
+    }
+
+    function pfRenderGroupResultsRowSummaries(rows) {
+      // rows: [{portfolio_id, portfolio_name, status, error, combined_summary}]
+      const tb = document.getElementById('pfPortTable');
+      if (!tb) return;
+      // update existing rows in order rendered
+      const trs = Array.from(tb.querySelectorAll('tr'));
+      for (let i = 0; i < trs.length; i++) {
+        const tr = trs[i];
+        const name = tr.children?.[1]?.textContent || '';
+        const row = (rows || []).find(x => String(x.portfolio_name||'') === String(name));
+        if (!row) continue;
+        const s = row.combined_summary || {};
+        const trades = s.trades ?? '—';
+        const pnl = s.cum_pnl_dollars;
+        const wr = s.win_rate;
+        const pf = s.profit_factor;
+        const dd = s.max_drawdown_dollars;
+
+        tr.children[2].textContent = String(trades);
+        tr.children[3].textContent = (pnl==null?'—':fmtNum(pnl,2));
+        tr.children[4].textContent = (wr==null?'—':(100*Number(wr)).toFixed(1)+'%');
+        tr.children[5].textContent = (pf===Infinity?'inf':(pf==null?'—':fmtNum(pf,2)));
+        tr.children[6].textContent = (dd==null?'—':fmtNum(dd,2));
+        if (row.status === 'failed') {
+          tr.style.opacity = '0.6';
+          tr.title = row.error || 'failed';
+        } else {
+          tr.style.opacity = '';
+          tr.title = '';
+        }
+      }
+    }
+
+    async function pfGroupPollOnce() {
+      const st = await jget(`/api/portfolio_groups/status${pfGroupRunId ? ('?run_id=' + pfGroupRunId) : ''}`);
+      if (st && st.run_id) pfGroupRunId = st.run_id;
+      const note = document.getElementById('pfGroupNote');
+      if (note && st && st.status) {
+        note.textContent = `status: ${st.status} portfolios: ${st.portfolios_completed||0}/${st.portfolios_total||0}` + (st.portfolios_failed ? ` fail:${st.portfolios_failed}` : '');
+      }
+      if (st && (st.status === 'stopped' || st.status === 'failed')) {
+        if (pfGroupPoll) { clearInterval(pfGroupPoll); pfGroupPoll = null; }
+        const sum = document.getElementById('pfGroupSummary');
+        if (sum) sum.textContent = JSON.stringify(st.group_summary || {}, null, 2);
+        pfRenderGroupEquity(st.group_equity_curve || []);
+        pfRenderGroupResultsRowSummaries(st.portfolios || []);
+      }
+      return st;
+    }
+
+    async function pfRunGroup() {
+      const ids = Array.from(pfGroupSelected || []);
+      if (!ids.length) throw new Error('select one or more portfolios');
+      const note = document.getElementById('pfGroupNote');
+      if (note) note.textContent = 'starting…';
+      const resp = await jpost('/api/portfolio_groups/run', { portfolio_ids: ids });
+      pfGroupRunId = resp.run_id;
+      toast('portfolio group run started', 'success');
+      if (pfGroupPoll) clearInterval(pfGroupPoll);
+      pfGroupPoll = setInterval(() => safe('pf_group', () => pfGroupPollOnce()), 2000);
+      await pfGroupPollOnce();
+    }
+
+    async function pfStopGroup() {
+      if (!pfGroupRunId) return;
+      await jpost('/api/portfolio_groups/stop', { run_id: pfGroupRunId });
+      toast('group stop requested', 'info');
+    }
     function pfRenderEquity(eq) {
       const canvas = document.getElementById('pfEq');
       if (!canvas) return;
@@ -3443,6 +3628,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('pfPortfolioRename')?.addEventListener('click', () => safe('pf_rename', () => pfRenamePortfolio()));
     document.getElementById('pfPortfolioDelete')?.addEventListener('click', () => safe('pf_delete', () => pfDeletePortfolio()));
     document.getElementById('pfPortfolioSave')?.addEventListener('click', () => safe('pf_save', () => pfSavePortfolio()));
+
+    document.getElementById('pfRunGroup')?.addEventListener('click', () => safe('pf_group_run', () => pfRunGroup()));
+    document.getElementById('pfStopGroup')?.addEventListener('click', () => safe('pf_group_stop', () => pfStopGroup()));
+
 
     document.getElementById('btRunsDeleteSelected')?.addEventListener('click', () => safe('bt_runs_delete_selected', async () => {
       const ids = Array.from(btRunsSelected.values());

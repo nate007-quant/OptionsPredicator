@@ -92,6 +92,60 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
         """,
     )
 
+
+
+    # Portfolio group runs (run multiple saved portfolios)
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_group_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at_utc TEXT NOT NULL,
+          started_at_utc TEXT NULL,
+          stopped_at_utc TEXT NULL,
+          status TEXT NOT NULL,
+          portfolio_ids_json TEXT NOT NULL,
+          portfolios_total INTEGER NOT NULL,
+          portfolios_completed INTEGER NOT NULL DEFAULT 0,
+          portfolios_failed INTEGER NOT NULL DEFAULT 0,
+          cancel_requested INTEGER NOT NULL DEFAULT 0,
+          last_activity_at_utc TEXT NULL,
+          group_summary_json TEXT NULL,
+          group_equity_json TEXT NULL
+        );
+        """
+    )
+
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_group_run_portfolios (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          group_run_id INTEGER NOT NULL,
+          portfolio_id INTEGER NOT NULL,
+          portfolio_name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          error TEXT NULL,
+          combined_summary_json TEXT NULL,
+          combined_equity_json TEXT NULL,
+          legs_summaries_json TEXT NULL
+        );
+        """
+    )
+
+    _ensure_index(
+        con,
+        """
+        CREATE INDEX IF NOT EXISTS idx_portfolio_group_runs_status
+        ON portfolio_group_runs(status, created_at_utc DESC)
+        """,
+    )
+
+    _ensure_index(
+        con,
+        """
+        CREATE INDEX IF NOT EXISTS idx_portfolio_group_run_portfolios
+        ON portfolio_group_run_portfolios(group_run_id, portfolio_id)
+        """,
+    )
     # Portfolio backtest sessions
     con.execute(
         """
