@@ -1392,8 +1392,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       // UX: when switching tabs, scroll the main content pane to top so the new view isn't
       // rendered at whatever scroll position you had in the previous view.
       const content = document.querySelector('.content');
-      if (content && content.scrollTo) content.scrollTo({ top: 0, behavior: 'instant' });
-      else if (content) content.scrollTop = 0;
+      if (content) {
+        // Avoid nonstandard scroll behaviors; some browsers ignore invalid values.
+        content.scrollTop = 0;
+        // Also schedule a second reset after layout for safety.
+        setTimeout(() => { try { content.scrollTop = 0; } catch {} }, 0);
+      }
     }
 
     function routeFromHash() {
