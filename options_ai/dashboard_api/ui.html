@@ -390,6 +390,7 @@
         <a href="#overview" data-view="overview" class="active">Overview</a>
         <a href="#debit" data-view="debit">Debit Spreads</a>
         <a href="#backtest" data-view="backtest">Backtest</a>
+        <a href="#portfolio" data-view="portfolio">Portfolio Backtest</a>
         <a href="#processing" data-view="processing">Processing</a>
         <a href="#timeseries" data-view="timeseries">Time Series</a>
         <a href="#logs" data-view="logs">Logs</a>
@@ -1034,6 +1035,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                   <button id="btRunsResetFilters">Reset filters</button>
                   <button id="btRunsSelectFailing">Select failing</button>
                   <button class="btn-danger" id="btRunsDeleteSelected">Delete selected</button>
+                  <button id="btRunsAddToPortfolio">Add selected to Portfolio</button>
                   <label style="margin-left:10px;"><input id="btRunsSelectAllVisible" type="checkbox" /> Select all visible</label>
                   <button class="btn-danger" id="btRunsDeleteFailing">Delete failing</button>
                   <span class="hint" id="btRunsSelNote"></span>
@@ -1065,6 +1067,66 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               </div>
             </div>
           </div>
+      </section>
+
+      <!-- PORTFOLIO BACKTEST -->
+      <section class="view" id="view-portfolio">
+        <div class="grid1">
+          <div class="card">
+            <div class="card-h"><h2>Portfolio Backtest</h2><div class="hint">Combine multiple backtest parameter sets (equal weight) into one equity curve.</div></div>
+            <div class="card-b">
+
+              <div class="row">
+                <button class="btn-primary" id="pfRun">Run Portfolio Backtest</button>
+                <button id="pfStop">Stop</button>
+                <button class="btn-danger" id="pfClear">Clear legs</button>
+                <span class="hint" id="pfNote"></span>
+              </div>
+
+              <div style="margin-top:12px; overflow:auto;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>#</th>
+                      <th>source</th>
+                      <th>start</th>
+                      <th>end</th>
+                      <th>H</th>
+                      <th>mode</th>
+                      <th>min_p</th>
+                      <th>min_pred</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pfLegs"></tbody>
+                </table>
+              </div>
+
+              <div class="grid2" style="margin-top: var(--space-4);">
+                <div class="card">
+                  <div class="card-h"><h2>Combined Summary</h2><div class="hint">Sum of all leg trades</div></div>
+                  <div class="card-b">
+                    <pre id="pfSummary" class="mono" style="white-space:pre-wrap; max-height:260px; overflow:auto;"></pre>
+                  </div>
+                </div>
+                <div class="card">
+                  <div class="card-h"><h2>Combined Equity Curve</h2><div class="hint">exit_ts event-sum</div></div>
+                  <div class="card-b">
+                    <canvas id="pfEq" height="120"></canvas>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" style="margin-top: var(--space-4);">
+                <div class="card-h"><h2>Leg summaries</h2><div class="hint">Per-leg result summaries</div></div>
+                <div class="card-b">
+                  <pre id="pfLegSummaries" class="mono" style="white-space:pre-wrap; max-height:260px; overflow:auto;"></pre>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
       </section>
 
 <!-- LOGS -->
@@ -1271,7 +1333,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     function routeFromHash() {
       const h = (window.location.hash || '#overview').replace('#','');
-      const allowed = new Set(['overview','debit','backtest','processing','timeseries','logs','controls']);
+      const allowed = new Set(['overview','debit','backtest','portfolio','processing','timeseries','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
@@ -1323,6 +1385,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     // Backtest
     let btSelectedRunId = null;
+
+    // Portfolio Backtest
+    let pfLegs = [];
+    let pfSessionId = null;
+    let pfPoll = null;
+    let pfChart = null;
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -2137,6 +2205,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           btRunsUpdateSelNote();
           toast('run deleted', 'warn');
           await safe('bt_runs', () => btRefreshRuns());
+      pfLoadLegs();
         });
         tdAct.appendChild(delBtn);
 
@@ -2362,6 +2431,184 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           }
         }
       }
+    }
+
+
+
+    function pfLoadLegs() {
+      try {
+        const raw = localStorage.getItem('portfolioBacktestLegs');
+        pfLegs = raw ? (JSON.parse(raw) || []) : [];
+      } catch (e) {
+        pfLegs = [];
+      }
+      pfRenderLegs();
+    }
+
+    function pfSaveLegs() {
+      try {
+        localStorage.setItem('portfolioBacktestLegs', JSON.stringify(pfLegs || []));
+      } catch (e) {}
+    }
+
+    function pfRenderLegs() {
+      const tb = document.getElementById('pfLegs');
+      if (!tb) return;
+      tb.innerHTML = '';
+      const legs = pfLegs || [];
+
+      legs.forEach((leg, idx) => {
+        const p = leg.params || {};
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><button class="btn-danger" data-ix="${idx}" style="padding:2px 8px;">x</button></td>
+          <td>${idx+1}</td>
+          <td style="font-family:var(--mono); font-size:11px;">${esc(leg.source||'manual')}</td>
+          <td>${esc(p.start_day||'')}</td>
+          <td>${esc(p.end_day||'')}</td>
+          <td>${esc(p.horizon_minutes==null?'':String(p.horizon_minutes))}</td>
+          <td>${esc(p.expiration_mode||'')}</td>
+          <td>${esc(p.min_p_bigwin==null?'':String(p.min_p_bigwin))}</td>
+          <td>${esc(p.min_pred_change==null?'':String(p.min_pred_change))}</td>
+        `;
+        tb.appendChild(tr);
+      });
+
+      // delete leg
+      tb.querySelectorAll('button[data-ix]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const ix = parseInt(btn.getAttribute('data-ix')||'', 10);
+          if (!Number.isFinite(ix)) return;
+          pfLegs.splice(ix, 1);
+          pfSaveLegs();
+          pfRenderLegs();
+        });
+      });
+
+      const note = document.getElementById('pfNote');
+      if (note) note.textContent = legs.length ? `legs: ${legs.length}` : 'no legs yet (select runs and click Add selected to Portfolio)';
+    }
+
+    function pfStrategyIdFromStrategyKey(sk) {
+      const s = String(sk||'');
+      if (s.startsWith('debit_spreads:') || s.startsWith('credit_spreads:')) return 'debit_spreads';
+      return 'debit_spreads';
+    }
+
+    function pfAddLeg(strategyId, params, source) {
+      if (!params) return;
+      pfLegs = pfLegs || [];
+      pfLegs.push({ strategy_id: strategyId || 'debit_spreads', params: params, source: source || 'run' });
+      pfSaveLegs();
+      pfRenderLegs();
+      toast('added to portfolio', 'ok');
+    }
+
+    function pfAddSelectedRunsToPortfolio() {
+      const selected = Array.from(btRunsSelected || []);
+      if (!selected.length) throw new Error('select one or more runs first');
+      const byId = new Map((btRunsRaw || []).map(it => [Number(it.id), it]));
+      let added = 0;
+      for (const rid of selected) {
+        const it = byId.get(Number(rid));
+        if (!it) continue;
+        const params = it.params || {};
+        const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
+        pfAddLeg(sid, params, `run:${it.id}`);
+        added += 1;
+      }
+      toast(`added ${added} run(s) to portfolio`, 'ok');
+    }
+
+    function pfRenderEquity(eq) {
+      const canvas = document.getElementById('pfEq');
+      if (!canvas) return;
+
+      const pts = Array.isArray(eq) ? eq : [];
+      const labels = pts.map(p => (p.ts || ''));
+      const data = pts.map(p => Number(p.cum_pnl_dollars || 0));
+
+      if (pfChart) {
+        pfChart.destroy();
+        pfChart = null;
+      }
+
+      pfChart = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'cum_pnl_dollars',
+            data,
+            borderColor: 'rgba(63,161,255,0.9)',
+            backgroundColor: 'rgba(63,161,255,0.15)',
+            tension: 0.1,
+            pointRadius: 0,
+            borderWidth: 2,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { display: false },
+            y: { ticks: { callback: (v) => fmtNum(v, 0) } }
+          }
+        }
+      });
+    }
+
+    async function pfPollOnce() {
+      const st = await jget(`/api/portfolio_backtest/status${pfSessionId ? ('?session_id=' + pfSessionId) : ''}`);
+      if (st && st.session_id) pfSessionId = st.session_id;
+
+      const note = document.getElementById('pfNote');
+      if (note && st && st.status) {
+        note.textContent = `status: ${st.status} legs: ${st.legs_completed||0}/${st.legs_total||0}` + (st.legs_failed ? ` fail:${st.legs_failed}` : '');
+      }
+
+      if (st && (st.status === 'stopped' || st.status === 'failed')) {
+        if (pfPoll) { clearInterval(pfPoll); pfPoll = null; }
+        const sum = document.getElementById('pfSummary');
+        if (sum) sum.textContent = JSON.stringify(st.combined_summary || {}, null, 2);
+        const legBox = document.getElementById('pfLegSummaries');
+        if (legBox) legBox.textContent = JSON.stringify(st.legs_summaries || [], null, 2);
+        pfRenderEquity(st.combined_equity_curve || []);
+      }
+
+      return st;
+    }
+
+    async function pfRun() {
+      if (!pfLegs || pfLegs.length === 0) throw new Error('add legs first');
+      const note = document.getElementById('pfNote');
+      if (note) note.textContent = 'starting…';
+      const resp = await jpost('/api/portfolio_backtest/start', {
+        legs: (pfLegs || []).map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
+      });
+      pfSessionId = resp.session_id;
+      toast('portfolio backtest started', 'ok');
+      if (pfPoll) clearInterval(pfPoll);
+      pfPoll = setInterval(() => safe('portfolio', pfPollOnce), 2000);
+      await pfPollOnce();
+    }
+
+    async function pfStop() {
+      if (!pfSessionId) return;
+      await jpost('/api/portfolio_backtest/stop', { session_id: pfSessionId });
+      toast('portfolio stop requested', 'info');
+    }
+
+    function pfClear() {
+      pfLegs = [];
+      pfSaveLegs();
+      pfRenderLegs();
+      const sum = document.getElementById('pfSummary');
+      if (sum) sum.textContent = '';
+      const legBox = document.getElementById('pfLegSummaries');
+      if (legBox) legBox.textContent = '';
+      pfRenderEquity([]);
     }
 
     async function runBacktestDebitSpreads() {
@@ -2987,6 +3234,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       btRunsRenderTable(btRunsRaw);
     }));
 
+    document.getElementById('btRunsAddToPortfolio')?.addEventListener('click', () => safe('portfolio_add', () => pfAddSelectedRunsToPortfolio()));
+
+    document.getElementById('pfRun')?.addEventListener('click', () => safe('portfolio_run', () => pfRun()));
+    document.getElementById('pfStop')?.addEventListener('click', () => safe('portfolio_stop', () => pfStop()));
+    document.getElementById('pfClear')?.addEventListener('click', () => safe('portfolio_clear', () => pfClear()));
+
     document.getElementById('btRunsDeleteSelected')?.addEventListener('click', () => safe('bt_runs_delete_selected', async () => {
       const ids = Array.from(btRunsSelected.values());
       await btRunsDeleteIds(ids);
@@ -3086,6 +3339,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('sampler', () => samplerPollOnce());
       await safe('bt_presets', () => btReloadPresets());
       await safe('bt_runs', () => btRefreshRuns());
+      pfLoadLegs();
 
       // intervals
       setInterval(() => safe('health', () => refreshHealth()), 5000);

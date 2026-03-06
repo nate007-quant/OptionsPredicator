@@ -32,6 +32,7 @@ from options_ai.backtest.debit_spreads import DebitBacktestConfig, run_backtest_
 from options_ai.backtest.executor import BacktestExecutor
 from options_ai.backtest.registry import StrategyRegistry, params_hash
 from options_ai.backtest.sampler_service import BacktestSamplerService
+from options_ai.backtest.portfolio_backtest_service import PortfolioBacktestService
 from options_ai.backtest.sqlite_migrations import migrate_backtest_schema, backfill_params_hash
 
 
@@ -326,6 +327,7 @@ def create_app() -> FastAPI:
     strategy_registry = StrategyRegistry()
     backtest_executor = BacktestExecutor(db_path=db_path, connect_fn=_connect)
     sampler_service = BacktestSamplerService(db_path=db_path, connect_fn=_connect)
+    portfolio_service = PortfolioBacktestService(db_path=db_path, connect_fn=_connect)
 
     app = FastAPI(title="Nate's Option Dashboard API", version="0.1")
 
@@ -1423,6 +1425,32 @@ def create_app() -> FastAPI:
         rounds = int((body or {}).get('rounds') or 3)
         shrink = float((body or {}).get('shrink') or 0.5)
         return sampler_service.refine_from_run(parent_run_id=int(rid), budget=budget, rounds=rounds, shrink=shrink)
+
+
+
+
+# ---- Portfolio Backtest (multi-leg) ----
+
+    @app.post('/api/portfolio_backtest/start')
+    def portfolio_backtest_start(body: dict[str, Any]) -> dict[str, Any]:
+        legs = (body or {}).get('legs')
+        if not isinstance(legs, list) or not legs:
+            raise HTTPException(status_code=400, detail='legs must be a non-empty list')
+        return portfolio_service.start(legs=legs)
+
+    @app.get('/api/portfolio_backtest/status')
+    def portfolio_backtest_status(session_id: int | None = Query(None)) -> dict[str, Any]:
+        st = portfolio_service.status(session_id=int(session_id) if session_id is not None else None)
+        if st is None:
+            return {'session_id': session_id, 'status': None}
+        return st
+
+    @app.post('/api/portfolio_backtest/stop')
+    def portfolio_backtest_stop(body: dict[str, Any]) -> dict[str, Any]:
+        sid = (body or {}).get('session_id')
+        if sid in (None, ''):
+            raise HTTPException(status_code=400, detail='session_id required')
+        return portfolio_service.stop(session_id=int(sid))
 
 
 # ---- Backtest Runs (history grid) ----

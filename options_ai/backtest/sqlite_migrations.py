@@ -75,21 +75,50 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
         """
     )
 
-    
     # Add new sampler session columns (idempotent)
     sampler_alters: list[str] = []
-    if not _has_column(con, 'backtest_sampler_sessions', 'precheck_rejected'):
+    if not _has_column(con, "backtest_sampler_sessions", "precheck_rejected"):
         sampler_alters.append("ALTER TABLE backtest_sampler_sessions ADD COLUMN precheck_rejected INTEGER NOT NULL DEFAULT 0")
-    if not _has_column(con, 'backtest_sampler_sessions', 'last_activity_at_utc'):
+    if not _has_column(con, "backtest_sampler_sessions", "last_activity_at_utc"):
         sampler_alters.append("ALTER TABLE backtest_sampler_sessions ADD COLUMN last_activity_at_utc TEXT NULL")
-
     for sql in sampler_alters:
         con.execute(sql)
-_ensure_index(
+
+    _ensure_index(
         con,
         """
         CREATE INDEX IF NOT EXISTS idx_sampler_sessions_status
         ON backtest_sampler_sessions(status, created_at_utc DESC)
+        """,
+    )
+
+    # Portfolio backtest sessions
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_backtest_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at_utc TEXT NOT NULL,
+          started_at_utc TEXT NULL,
+          stopped_at_utc TEXT NULL,
+          status TEXT NOT NULL,
+          legs_json TEXT NOT NULL,
+          legs_total INTEGER NOT NULL,
+          legs_completed INTEGER NOT NULL DEFAULT 0,
+          legs_failed INTEGER NOT NULL DEFAULT 0,
+          cancel_requested INTEGER NOT NULL DEFAULT 0,
+          last_activity_at_utc TEXT NULL,
+          combined_summary_json TEXT NULL,
+          combined_equity_json TEXT NULL,
+          legs_summaries_json TEXT NULL
+        );
+        """
+    )
+
+    _ensure_index(
+        con,
+        """
+        CREATE INDEX IF NOT EXISTS idx_portfolio_sessions_status
+        ON portfolio_backtest_sessions(status, created_at_utc DESC)
         """,
     )
 
