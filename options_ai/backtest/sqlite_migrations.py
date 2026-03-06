@@ -75,7 +75,17 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
         """
     )
 
-    _ensure_index(
+    
+    # Add new sampler session columns (idempotent)
+    sampler_alters: list[str] = []
+    if not _has_column(con, 'backtest_sampler_sessions', 'precheck_rejected'):
+        sampler_alters.append("ALTER TABLE backtest_sampler_sessions ADD COLUMN precheck_rejected INTEGER NOT NULL DEFAULT 0")
+    if not _has_column(con, 'backtest_sampler_sessions', 'last_activity_at_utc'):
+        sampler_alters.append("ALTER TABLE backtest_sampler_sessions ADD COLUMN last_activity_at_utc TEXT NULL")
+
+    for sql in sampler_alters:
+        con.execute(sql)
+_ensure_index(
         con,
         """
         CREATE INDEX IF NOT EXISTS idx_sampler_sessions_status

@@ -1402,6 +1402,8 @@ def create_app() -> FastAPI:
             'runs_completed': st.runs_completed,
             'duplicates_skipped': st.duplicates_skipped,
             'runs_failed': st.runs_failed,
+            'precheck_rejected': getattr(st, 'precheck_rejected', 0),
+            'last_activity_at_utc': getattr(st, 'last_activity_at_utc', None),
             'last_run_id': st.last_run_id,
         }
 

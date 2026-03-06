@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from options_ai.backtest.executor import BacktestExecutor, now_utc_iso, score_summary
+from options_ai.backtest.precheck import precheck_candidates_0dte
 from options_ai.backtest.registry import StrategyRegistry, ParamSpec, canonical_json
 
 
@@ -47,6 +48,8 @@ class SamplerStatus:
     runs_completed: int
     duplicates_skipped: int
     runs_failed: int
+    precheck_rejected: int
+    last_activity_at_utc: str | None
     last_run_id: int | None
 
 
@@ -143,9 +146,9 @@ class BacktestSamplerService:
                 INSERT INTO backtest_sampler_sessions(
                   strategy_key, schema_version, created_at_utc, started_at_utc, stopped_at_utc,
                   status, base_params_json, search_plan_json, seed,
-                  runs_completed, duplicates_skipped, runs_failed, cancel_requested, last_run_id
+                  runs_completed, duplicates_skipped, runs_failed, precheck_rejected, cancel_requested, last_activity_at_utc, last_run_id
                 )
-                VALUES(?,?,?,?,NULL,'running',?,?,?,0,0,0,0,NULL)
+                VALUES(?,?,?,?,NULL,'running',?,?,?,0,0,0,0,0,?,NULL)
                 """,
                 (
                     strategy_key,
@@ -191,13 +194,13 @@ class BacktestSamplerService:
         with self._connect() as con:
             if sampler_id is None:
                 r = con.execute(
-                    """SELECT id,status,runs_completed,duplicates_skipped,runs_failed,last_run_id
+                    """SELECT id,status,runs_completed,duplicates_skipped,runs_failed,COALESCE(precheck_rejected,0) AS precheck_rejected,last_activity_at_utc,last_run_id
                         FROM backtest_sampler_sessions
                         ORDER BY id DESC LIMIT 1"""
                 ).fetchone()
             else:
                 r = con.execute(
-                    """SELECT id,status,runs_completed,duplicates_skipped,runs_failed,last_run_id
+                    """SELECT id,status,runs_completed,duplicates_skipped,runs_failed,COALESCE(precheck_rejected,0) AS precheck_rejected,last_activity_at_utc,last_run_id
                         FROM backtest_sampler_sessions WHERE id=?""",
                     (int(sampler_id),),
                 ).fetchone()
@@ -209,7 +212,9 @@ class BacktestSamplerService:
                 runs_completed=int(r[2] or 0),
                 duplicates_skipped=int(r[3] or 0),
                 runs_failed=int(r[4] or 0),
-                last_run_id=(int(r[5]) if r[5] is not None else None),
+                precheck_rejected=int(r[5] or 0),
+                last_activity_at_utc=(str(r[6]) if r[6] is not None else None),
+                last_run_id=(int(r[7]) if r[7] is not None else None),
             )
 
     def refine_from_run(self, *, parent_run_id: int, budget: int = 200, rounds: int = 3, shrink: float = 0.5) -> dict[str, Any]:
@@ -283,7 +288,7 @@ class BacktestSamplerService:
                 raise RuntimeError("sampler session disappeared")
             return {"id": int(r[0]), "status": str(r[1]), "base_params_json": str(r[2]), "search_plan_json": str(r[3]), "cancel_requested": int(r[4] or 0)}
 
-    def _bump_counter(self, sampler_id: int, *, completed: int = 0, dup: int = 0, failed: int = 0, last_run_id: int | None = None) -> None:
+    def _bump_counter(self, sampler_id: int, *, completed: int = 0, dup: int = 0, failed: int = 0, precheck: int = 0, last_run_id: int | None = None) -> None:
         sets = []
         params: list[Any] = []
         if completed:
@@ -295,11 +300,16 @@ class BacktestSamplerService:
         if failed:
             sets.append("runs_failed = runs_failed + ?")
             params.append(int(failed))
+        if precheck:
+            sets.append("precheck_rejected = precheck_rejected + ?")
+            params.append(int(precheck))
         if last_run_id is not None:
             sets.append("last_run_id = ?")
             params.append(int(last_run_id))
         if not sets:
             return
+        sets.append("last_activity_at_utc = ?")
+        params.append(now_utc_iso())
         params.append(int(sampler_id))
         with self._connect() as con:
             con.execute(f"UPDATE backtest_sampler_sessions SET {', '.join(sets)} WHERE id=?", tuple(params))
@@ -316,6 +326,17 @@ class BacktestSamplerService:
     def _worker_main(self, sampler_id: int, strategy_id: str) -> None:
         try:
             strat = self._registry.get(strategy_id)
+
+            # Optional Timescale connection for constraint-driven precheck gating
+            ts_conn = None
+            try:
+                import psycopg  # type: ignore
+                dsn = os.getenv("SPX_CHAIN_DATABASE_URL", "").strip()
+                if dsn:
+                    ts_conn = psycopg.connect(dsn)
+            except Exception:
+                ts_conn = None
+
             specs = strat.param_specs()
 
             sess = self._session_row(sampler_id)
@@ -328,6 +349,8 @@ class BacktestSamplerService:
             rounds = _read_int(plan.get("rounds"), 3)
             shrink = _read_float(plan.get("shrink"), 0.5)
             min_trades = _read_int(plan.get("min_trades"), 5)
+            max_runtime_seconds = _read_int(plan.get("max_runtime_seconds"), 6 * 3600)
+            started_wall = time.time()
 
             seed = plan.get("seed")
             rng = random.Random(int(seed) if seed is not None else None)
@@ -358,6 +381,19 @@ class BacktestSamplerService:
             def cancelled() -> bool:
                 st = self._session_row(sampler_id)
                 return int(st.get("cancel_requested") or 0) == 1
+
+            def _precheck_ok(cand_params: dict[str, Any]) -> bool:
+                if ts_conn is None:
+                    return True
+                try:
+                    canonical = strat.validate_and_normalize(cand_params, strict=False)
+                    if canonical.get("expiration_mode") != "0dte":
+                        return True
+                    cfg = strat._build_cfg(canonical)  # type: ignore[attr-defined]
+                    pr = precheck_candidates_0dte(ts_conn, cfg=cfg, sample_days=5, snapshots_per_day=3, min_est_candidates=1)
+                    return bool(pr.ok)
+                except Exception:
+                    return True
 
             def random_candidate() -> dict[str, Any]:
                 cand = dict(base_params)
@@ -448,6 +484,12 @@ class BacktestSamplerService:
                 if n_run >= budget or cancelled():
                     break
                 cand = random_candidate()
+                if (time.time() - started_wall) > float(max_runtime_seconds):
+                    break
+                if not _precheck_ok(cand):
+                    self._bump_counter(sampler_id, precheck=1)
+                    n_run += 1
+                    continue
                 try:
                     r = self._executor.execute_and_persist(strategy_id=strategy_id, payload=cand, strict=False)
                     if r.get("duplicate_skipped"):
@@ -478,6 +520,12 @@ class BacktestSamplerService:
                     for cand in neighborhood(center_params, scale=scale):
                         if n_run >= budget or cancelled():
                             break
+                        if (time.time() - started_wall) > float(max_runtime_seconds):
+                            break
+                        if not _precheck_ok(cand):
+                            self._bump_counter(sampler_id, precheck=1)
+                            n_run += 1
+                            continue
                         try:
                             r = self._executor.execute_and_persist(strategy_id=strategy_id, payload=cand, strict=False)
                             if r.get("duplicate_skipped"):
@@ -506,3 +554,9 @@ class BacktestSamplerService:
 
         except Exception:
             self._set_status(sampler_id, "failed")
+        finally:
+            try:
+                if ts_conn is not None:
+                    ts_conn.close()
+            except Exception:
+                pass

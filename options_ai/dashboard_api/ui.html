@@ -2291,7 +2291,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const runs = st.runs_completed ?? 0;
         const dup = st.duplicates_skipped ?? 0;
         const fail = st.runs_failed ?? 0;
-        counters.textContent = `runs: ${runs}  dup: ${dup}` + (fail ? `  fail: ${fail}` : '');
+        const rej = st.precheck_rejected ?? 0;
+        counters.textContent = `runs: ${runs}  dup: ${dup}` + (rej ? `  rej: ${rej}` : '') + (fail ? `  fail: ${fail}` : '');
       }
       if (runBtn) runBtn.disabled = running;
     }
