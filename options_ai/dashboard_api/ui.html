@@ -2211,6 +2211,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
         const addBtn = document.createElement('button');
         addBtn.textContent = 'Add to Portfolio';
+        addBtn.className = 'btn-primary';
         addBtn.style.padding = '4px 8px';
         addBtn.style.marginLeft = '6px';
         addBtn.addEventListener('click', (ev) => {
@@ -2218,6 +2219,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           const params = it.params || {};
           const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
           pfAddLeg(sid, params, `run:${it.id}`);
+          // jump user to Portfolio tab so the action is obvious
+          window.location.hash = '#portfolio';
+          routeFromHash();
         });
         tdAct.appendChild(addBtn);
 
@@ -2514,7 +2518,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       pfLegs.push({ strategy_id: strategyId || 'debit_spreads', params: params, source: source || 'run' });
       pfSaveLegs();
       pfRenderLegs();
-      toast('added to portfolio', 'ok');
+      toast('added to portfolio', 'success');
     }
 
     function pfAddSelectedRunsToPortfolio() {
@@ -2528,9 +2532,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const params = it.params || {};
         const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
         pfAddLeg(sid, params, `run:${it.id}`);
+          // jump user to Portfolio tab so the action is obvious
+          window.location.hash = '#portfolio';
+          routeFromHash();
         added += 1;
       }
-      toast(`added ${added} run(s) to portfolio`, 'ok');
+      toast(`added ${added} run(s) to portfolio`, 'success');
+      window.location.hash = '#portfolio';
+      routeFromHash();
     }
 
     function pfRenderEquity(eq) {
