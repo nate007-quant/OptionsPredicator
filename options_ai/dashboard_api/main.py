@@ -553,7 +553,7 @@ def create_app() -> FastAPI:
                             "file": obj.get("file"),
                             "started_at": started_at,
                             "elapsed_seconds": elapsed,
-                            "stage": obj.get("stage") or "unknown",
+                            "stage": obj.get("stage") or "unreachable",
                             "snapshot_hash": obj.get("snapshot_hash"),
                             "model_used": obj.get("model_used"),
                             "pid": obj.get("pid"),

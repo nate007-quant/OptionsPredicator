@@ -3755,7 +3755,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
 
       const summary = latest.summary || {};
-      const runId = latest.run_id || 'unknown';
+      const runId = latest.run_id || 'unreachable';
       if (meta) meta.textContent = `run_id: ${runId} | snapshot: ${summary.data_snapshot_id || '—'} | code: ${summary.code_version || '—'}`;
 
       // state counts
