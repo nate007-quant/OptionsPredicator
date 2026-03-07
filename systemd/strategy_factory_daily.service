@@ -1,0 +1,27 @@
+# Autonomous Options Strategy Factory daily run
+#
+# Install:
+#   sudo cp systemd/strategy_factory_daily.service /etc/systemd/system/
+#   sudo cp systemd/strategy_factory_daily.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now strategy_factory_daily.timer
+#
+# Logs:
+#   journalctl -u strategy_factory_daily.service -n 200 --no-pager
+
+[Unit]
+Description=Strategy Factory Daily Pipeline Run
+After=network-online.target options_ai_dashboard_api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/OptionsPredicator/.venv/bin/python strategy-factory/src/orchestrator/run_daily.py --repo-root /opt/OptionsPredicator
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true

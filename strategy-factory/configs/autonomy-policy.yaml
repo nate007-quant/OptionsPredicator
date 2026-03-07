@@ -1,0 +1,37 @@
+tiers:
+  Tier0:
+    mode: auto
+    actions:
+      - data_checks
+      - feature_build
+      - idea_generation
+      - spec_compilation
+      - backtests
+      - refinement
+      - reporting
+  Tier1:
+    mode: auto_alert
+    actions:
+      - paper_deploy
+      - paper_rebalance
+  Tier2:
+    mode: approval_required
+    actions:
+      - live_deploy
+      - capital_change
+      - risk_limit_change
+      - new_strategy_family_live
+
+permissions:
+  paper_to_live_requires_explicit_approval: true
+  live_default_enabled: false
+
+kill_switches:
+  max_portfolio_drawdown_pct: 15.0
+  max_daily_loss_usd: 300.0
+  max_single_underlying_concentration_pct: 35.0
+  max_margin_utilization_pct: 60.0
+
+rollback:
+  live_drift_threshold_score_delta: 0.25
+  action_on_breach: revert_to_paper
