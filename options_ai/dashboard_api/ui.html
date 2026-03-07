@@ -3419,6 +3419,66 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
 
     // Execution UI
+    function exApplyTooltips() {
+      const tips = {
+        exRiskRealized: 'Realized P&L for current session day in configured session timezone.',
+        exRiskUnrealized: 'Unrealized P&L across currently open/opening/closing trades.',
+        exRiskMaxLoss: 'Configured daily max loss threshold (negative value shown).',
+        exRiskBlocked: 'When YES, new entries are blocked by risk/session controls.',
+        exForceCountdown: 'Time remaining until force-close trigger (session close minus configured minutes).',
+        exRiskNote: 'Latest risk gate reason (e.g., daily_loss_breach, strict quarantine reason).',
+
+        exKillOn: 'Operator control: block new entries immediately (kill switch).',
+        exKillOff: 'Operator control: clear kill-switch block for new entries.',
+        exQuarantineClear: 'Operator control: clear strict quarantine gate after investigation.',
+
+        exRpUnderlying: 'Underlying symbol profile for reprice policy (default SPX).',
+        exRpAttempts: 'Maximum submission/reprice attempts per entry intent.',
+        exRpStep: 'Price concession step per reprice attempt.',
+        exRpInterval: 'Seconds between reprice attempts.',
+        exRpCap: 'Maximum total concession from initial entry limit.',
+        exRpEnabled: 'Enable/disable reprice policy row for this underlying.',
+        exRpLoad: 'Load current reprice policy from API for selected underlying.',
+        exRpSave: 'Save edited reprice policy to API (validated server-side).',
+        exRpNote: 'Last policy update timestamp/info message.',
+
+        exKpiDays: 'Rolling KPI window length in days.',
+        exRefreshKpis: 'Refresh sandbox rollout KPIs.',
+        exKpiAsOf: 'KPI cutoff timestamp used by the query window.',
+        exKpiFillRate: 'Filled intents / terminal intents in selected window.',
+        exKpiReprice: 'Average absolute concession observed across repriced intents.',
+        exKpiProtection: 'Open trades with armed protection / open trades.',
+        exKpiForceSess: 'Count of force-close session events in selected window.',
+        exKpiForceTrades: 'Count of trades closed by FORCE_CLOSE_SESSION_END.',
+
+        exRefreshTrades: 'Refresh currently open/opening/closing trades table.',
+        exTradesTable: 'Open trades view including protection status and P&L fields.',
+
+        exIntentStatus: 'Optional filter for execution intent status.',
+        exRefreshIntents: 'Refresh execution intents list.',
+        exIntentsTable: 'Recent execution intents and their current state.',
+
+        exRefreshIncidents: 'Refresh incident/circuit-breaker events.',
+        exIncidentsTable: 'Recent incidents (stream-down, mismatch, breakers, etc.).',
+
+        exRefreshRecon: 'Refresh latest broker-vs-DB reconciliation snapshot.',
+        exCancelAll: 'Operator action: request cancel for all working/opening entries.',
+        exFlattenAll: 'Operator action: request flatten/close all open positions.',
+        exReconResolved: 'Whether latest reconciliation snapshot is resolved.',
+        exReconOrders: 'Open broker orders count in latest reconciliation snapshot.',
+        exReconPositions: 'Open broker positions count in latest reconciliation snapshot.',
+        exReconDiff: 'Serialized reconciliation diff payload for latest snapshot.',
+        exActionsTable: 'Audit trail of operator execution control actions.',
+      };
+
+      for (const [id, tip] of Object.entries(tips)) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        if (!el.getAttribute('title')) el.setAttribute('title', tip);
+        if (!el.getAttribute('aria-label')) el.setAttribute('aria-label', tip);
+      }
+    }
+
     function exFmtMoney(x) {
       if (x === null || x === undefined) return '—';
       const n = Number(x);
@@ -3916,6 +3976,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       await safe('health', () => refreshHealth());
       await safe('config', () => refreshConfig());
+      exApplyTooltips();
       await safe('ex_risk', () => exRefreshRiskSession());
       await safe('ex_kpis', () => exRefreshKpis());
       await safe('ex_reprice', () => exLoadRepricePolicy());
