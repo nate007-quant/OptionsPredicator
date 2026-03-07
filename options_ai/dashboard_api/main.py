@@ -254,6 +254,12 @@ def _central_day_key(iso_ts: str | None) -> str | None:
 def create_app() -> FastAPI:
     cfg = load_config()
 
+    repo_root = Path(__file__).resolve().parents[2]
+    strategy_factory_runs_dir = repo_root / 'strategy-factory' / 'artifacts' / 'runs'
+
+    def _strategy_factory_runs_dir() -> Path:
+        return strategy_factory_runs_dir
+
     if cfg.trading_enabled:
         logging.getLogger("options_ai.dashboard_api").warning(
             "TRADING_ENABLED=true at startup (broker=%s env=%s). Verify risk controls before proceeding.",
@@ -2433,6 +2439,118 @@ def create_app() -> FastAPI:
             'protection_rate_open': protection_rate_open,
             'force_close_sessions': force_close_sessions,
             'force_close_trades': force_close_trades,
+        }
+
+
+# ---- Strategy Factory Reports ----
+
+    @app.get('/api/strategy_factory/runs')
+    def strategy_factory_runs_list(limit: int = Query(20, ge=1, le=200)) -> dict[str, Any]:
+        runs_dir = _strategy_factory_runs_dir()
+        items: list[dict[str, Any]] = []
+        if runs_dir.exists():
+            dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()], key=lambda d: d.name, reverse=True)
+            for d in dirs[: int(limit)]:
+                summary_path = d / 'daily_summary.json'
+                audit_path = d / 'audit.ndjson'
+                state_counts: dict[str, int] = {}
+                strategies = 0
+                if summary_path.exists():
+                    try:
+                        obj = _json.loads(summary_path.read_text(encoding='utf-8'))
+                        for st in (obj.get('strategies') or []):
+                            strategies += 1
+                            stt = str(st.get('state') or 'UNKNOWN')
+                            state_counts[stt] = state_counts.get(stt, 0) + 1
+                    except Exception:
+                        pass
+                items.append({
+                    'run_id': d.name,
+                    'summary_exists': summary_path.exists(),
+                    'audit_exists': audit_path.exists(),
+                    'strategies_count': strategies,
+                    'state_counts': state_counts,
+                    'summary_path': str(summary_path),
+                    'audit_path': str(audit_path),
+                })
+        return {'items': items}
+
+    @app.get('/api/strategy_factory/latest')
+    def strategy_factory_latest() -> dict[str, Any]:
+        runs_dir = _strategy_factory_runs_dir()
+        if not runs_dir.exists():
+            return {'latest': None}
+        dirs = sorted([d for d in runs_dir.iterdir() if d.is_dir()], key=lambda d: d.name, reverse=True)
+        if not dirs:
+            return {'latest': None}
+        d = dirs[0]
+        summary_path = d / 'daily_summary.json'
+        audit_path = d / 'audit.ndjson'
+        summary: dict[str, Any] | None = None
+        if summary_path.exists():
+            try:
+                summary = _json.loads(summary_path.read_text(encoding='utf-8'))
+            except Exception:
+                summary = None
+
+        # tail audit
+        audit_tail: list[str] = []
+        if audit_path.exists():
+            try:
+                lines = audit_path.read_text(encoding='utf-8').splitlines()
+                audit_tail = lines[-50:]
+            except Exception:
+                audit_tail = []
+
+        return {
+            'latest': {
+                'run_id': d.name,
+                'summary': summary,
+                'audit_tail': audit_tail,
+                'summary_path': str(summary_path),
+                'audit_path': str(audit_path),
+            }
+        }
+
+    @app.get('/api/strategy_factory/weekly_digest')
+    def strategy_factory_weekly_digest() -> dict[str, Any]:
+        p = _strategy_factory_runs_dir() / 'weekly_digest.json'
+        if not p.exists():
+            return {'weekly_digest': None}
+        try:
+            obj = _json.loads(p.read_text(encoding='utf-8'))
+        except Exception:
+            obj = None
+        return {'weekly_digest': obj, 'path': str(p)}
+
+    @app.get('/api/strategy_factory/run/{run_id}')
+    def strategy_factory_run_get(run_id: str) -> dict[str, Any]:
+        d = _strategy_factory_runs_dir() / str(run_id)
+        if not d.exists() or not d.is_dir():
+            raise HTTPException(status_code=404, detail='run not found')
+        summary_path = d / 'daily_summary.json'
+        audit_path = d / 'audit.ndjson'
+
+        summary = None
+        if summary_path.exists():
+            try:
+                summary = _json.loads(summary_path.read_text(encoding='utf-8'))
+            except Exception:
+                summary = None
+
+        audit_lines: list[str] = []
+        if audit_path.exists():
+            try:
+                audit_lines = audit_path.read_text(encoding='utf-8').splitlines()
+            except Exception:
+                audit_lines = []
+
+        return {
+            'run_id': str(run_id),
+            'summary': summary,
+            'audit_lines': audit_lines,
+            'summary_path': str(summary_path),
+            'audit_path': str(audit_path),
         }
 
 
