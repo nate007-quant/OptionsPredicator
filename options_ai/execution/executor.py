@@ -114,6 +114,7 @@ class ExecutionExecutor:
         max_allowed_entry_slippage_abs: float = 0.15,
         startup_reconcile_required: bool = True,
         strict_quarantine_requires_operator_clear: bool = True,
+        live_armed: bool = False,
     ) -> None:
         self.db_path = str(db_path)
         self.environment = str(environment or "sandbox")
@@ -132,6 +133,7 @@ class ExecutionExecutor:
         self.max_allowed_entry_slippage_abs = max(0.0, float(max_allowed_entry_slippage_abs))
         self.startup_reconcile_required = bool(startup_reconcile_required)
         self.strict_quarantine_requires_operator_clear = bool(strict_quarantine_requires_operator_clear)
+        self.live_armed = bool(live_armed)
 
     def _connect(self):
         if self._connect_fn is not None:
@@ -553,6 +555,14 @@ class ExecutionExecutor:
                         self._mark_intent(con, intent_id=iid, status="QUARANTINED", error="close_only_mode", quarantine_reason="close_only_mode")
                         out["quarantined"] += 1
                         out["processed"] += 1
+                        continue
+
+                    # live safety interlock
+                    if self.environment == 'live' and self.trading_enabled and (not self.live_armed):
+                        self._mark_intent(con, intent_id=iid, status='QUARANTINED', error='live_not_armed', quarantine_reason='live_not_armed')
+                        self._record_incident(con, severity='critical', incident_type='live_interlock_block', trade_run_id=None, execution_intent_id=iid, details={'environment': self.environment, 'trading_enabled': self.trading_enabled, 'live_armed': self.live_armed})
+                        out['quarantined'] += 1
+                        out['processed'] += 1
                         continue
 
                     # strict quarantine gate (requires operator clear)

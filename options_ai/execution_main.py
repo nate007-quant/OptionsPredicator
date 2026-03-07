@@ -44,6 +44,17 @@ def main() -> None:
             message_detail="TRADING_ENABLED=true. Executor will submit orders to broker unless dry-run is forced.",
         )
 
+    if cfg.trading_enabled and str(cfg.broker_env).lower() == 'live' and not cfg.live_armed:
+        log_daemon_event(
+            paths.logs_daemon_dir,
+            "warn",
+            "live_interlock_warning",
+            trading_enabled=cfg.trading_enabled,
+            broker_env=cfg.broker_env,
+            live_armed=cfg.live_armed,
+            message_detail="LIVE_ARMED=false. Executor will quarantine live intents until explicitly armed.",
+        )
+
     ex = ExecutionExecutor(
         db_path=db_path,
         environment=cfg.broker_env,
@@ -65,6 +76,7 @@ def main() -> None:
         max_allowed_entry_slippage_abs=cfg.max_allowed_entry_slippage_abs,
         startup_reconcile_required=cfg.startup_reconcile_required,
         strict_quarantine_requires_operator_clear=cfg.strict_quarantine_requires_operator_clear,
+        live_armed=cfg.live_armed,
     )
 
     try:
