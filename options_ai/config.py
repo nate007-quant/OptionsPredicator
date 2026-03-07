@@ -51,6 +51,16 @@ class Config:
     strict_quarantine_requires_operator_clear: bool = True
     live_armed: bool = False
 
+    # Dual-target execution mode
+    dual_env_execution_enabled: bool = True
+    live_execution_enabled: bool = False
+    tasty_sandbox_base_url: str = "https://api.cert.tastyworks.com"
+    tasty_live_base_url: str = "https://api.tastyworks.com"
+    tasty_sandbox_streamer_url: str = ""
+    tasty_live_streamer_url: str = ""
+    tasty_sandbox_account_number: str = ""
+    tasty_live_account_number: str = ""
+
     # OAuth (v2.0)
     oauth_client_id: str = ""
     oauth_client_secret: str = ""
@@ -222,6 +232,14 @@ def load_config() -> Config:
         startup_reconcile_required=_get_bool("STARTUP_RECONCILE_REQUIRED", True),
         strict_quarantine_requires_operator_clear=_get_bool("STRICT_QUARANTINE_REQUIRES_OPERATOR_CLEAR", True),
         live_armed=_get_bool("LIVE_ARMED", False),
+        dual_env_execution_enabled=_get_bool("DUAL_ENV_EXECUTION_ENABLED", True),
+        live_execution_enabled=_get_bool("LIVE_EXECUTION_ENABLED", False),
+        tasty_sandbox_base_url=os.getenv("TASTY_SANDBOX_BASE_URL", "https://api.cert.tastyworks.com").strip(),
+        tasty_live_base_url=os.getenv("TASTY_LIVE_BASE_URL", "https://api.tastyworks.com").strip(),
+        tasty_sandbox_streamer_url=os.getenv("TASTY_SANDBOX_STREAMER_URL", "").strip(),
+        tasty_live_streamer_url=os.getenv("TASTY_LIVE_STREAMER_URL", "").strip(),
+        tasty_sandbox_account_number=os.getenv("TASTY_SANDBOX_ACCOUNT_NUMBER", "").strip(),
+        tasty_live_account_number=os.getenv("TASTY_LIVE_ACCOUNT_NUMBER", "").strip(),
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         oauth_token_url=oauth_token_url,

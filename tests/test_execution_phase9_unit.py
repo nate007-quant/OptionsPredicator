@@ -12,12 +12,14 @@ def test_idempotency_key_deterministic() -> None:
         source_id=42,
         strategy_key="debit_spreads:anchor_based:exp0dte",
         params=params_a,
+        environment="sandbox",
     )
     k2 = ExecutionIntentBuilder._idempotency_key(
         source_type="backtest_run",
         source_id=42,
         strategy_key="debit_spreads:anchor_based:exp0dte",
         params=params_b,
+        environment="sandbox",
     )
     assert k1 == k2
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from options_ai.config import load_config
 from options_ai.db import db_path_from_url, init_db
+from options_ai.brokers.tastytrade.client import TastytradeClient
 from options_ai.execution.executor import ExecutionExecutor, RepricePolicy
 from options_ai.utils.logger import get_logger, init_logger, log_daemon_event
 from options_ai.utils.paths import build_paths, ensure_runtime_dirs
@@ -54,10 +55,18 @@ def main() -> None:
             live_armed=cfg.live_armed,
             message_detail="LIVE_ARMED=false. Executor will quarantine live intents until explicitly armed.",
         )
-
-    ex = ExecutionExecutor(
+    # Sandbox executor (always processed)
+    sandbox_client = TastytradeClient(
+        base_url=(cfg.tasty_sandbox_base_url or cfg.tasty_base_url),
+        streamer_url=(cfg.tasty_sandbox_streamer_url or cfg.tasty_streamer_url),
+        environment='sandbox',
+        account_number=(cfg.tasty_sandbox_account_number or None),
+        dry_run=(not cfg.trading_enabled),
+        target_api_version=cfg.target_api_version,
+    )
+    ex_sandbox = ExecutionExecutor(
         db_path=db_path,
-        environment=cfg.broker_env,
+        environment='sandbox',
         broker_name=cfg.broker_name,
         session_tz=cfg.session_tz,
         trading_enabled=cfg.trading_enabled,
@@ -77,18 +86,64 @@ def main() -> None:
         startup_reconcile_required=cfg.startup_reconcile_required,
         strict_quarantine_requires_operator_clear=cfg.strict_quarantine_requires_operator_clear,
         live_armed=cfg.live_armed,
+        client=sandbox_client,
+    )
+
+    # Live executor (optional; still requires LIVE_ARMED interlock)
+    live_client = TastytradeClient(
+        base_url=(cfg.tasty_live_base_url or cfg.tasty_base_url),
+        streamer_url=(cfg.tasty_live_streamer_url or cfg.tasty_streamer_url),
+        environment='live',
+        account_number=(cfg.tasty_live_account_number or None),
+        dry_run=(not (cfg.trading_enabled and cfg.live_execution_enabled and cfg.live_armed)),
+        target_api_version=cfg.target_api_version,
+    )
+    ex_live = ExecutionExecutor(
+        db_path=db_path,
+        environment='live',
+        broker_name=cfg.broker_name,
+        session_tz=cfg.session_tz,
+        trading_enabled=(cfg.trading_enabled and cfg.live_execution_enabled and cfg.live_armed),
+        max_daily_loss_usd=cfg.max_daily_loss_usd,
+        reprice_defaults=RepricePolicy(
+            max_attempts=cfg.reprice_max_attempts,
+            step=cfg.reprice_step,
+            interval_seconds=cfg.reprice_interval_seconds,
+            max_total_concession=cfg.reprice_max_total_concession,
+        ),
+        close_only_mode=cfg.close_only_mode,
+        pretrade_required_checks=cfg.pretrade_required_checks,
+        require_complex_exit_orders=cfg.require_complex_exit_orders,
+        require_broker_external_identifier=cfg.require_broker_external_identifier,
+        max_reject_streak=cfg.max_reject_streak,
+        max_allowed_entry_slippage_abs=cfg.max_allowed_entry_slippage_abs,
+        startup_reconcile_required=cfg.startup_reconcile_required,
+        strict_quarantine_requires_operator_clear=cfg.strict_quarantine_requires_operator_clear,
+        live_armed=cfg.live_armed,
+        client=live_client,
     )
 
     try:
         while True:
-            ok_startup, meta = ex.startup_reconcile_ready()
-            if not ok_startup:
-                log_daemon_event(paths.logs_daemon_dir, "warn", "execution_startup_reconcile_block", **meta)
-                time.sleep(poll_s)
-                continue
-            st = ex.process_once(limit=25)
-            if int(st.get("processed") or 0) > 0:
-                log_daemon_event(paths.logs_daemon_dir, "info", "execution_executor_poll", **st)
+            # sandbox path
+            ok_sbx, meta_sbx = ex_sandbox.startup_reconcile_ready()
+            if not ok_sbx:
+                log_daemon_event(paths.logs_daemon_dir, "warn", "execution_startup_reconcile_block", env='sandbox', **meta_sbx)
+            else:
+                st_sbx = ex_sandbox.process_once(limit=25)
+                if int(st_sbx.get("processed") or 0) > 0:
+                    log_daemon_event(paths.logs_daemon_dir, "info", "execution_executor_poll", env='sandbox', **st_sbx)
+
+            # live path (optional)
+            if cfg.live_execution_enabled:
+                ok_live, meta_live = ex_live.startup_reconcile_ready()
+                if not ok_live:
+                    log_daemon_event(paths.logs_daemon_dir, "warn", "execution_startup_reconcile_block", env='live', **meta_live)
+                else:
+                    st_live = ex_live.process_once(limit=25)
+                    if int(st_live.get("processed") or 0) > 0:
+                        log_daemon_event(paths.logs_daemon_dir, "info", "execution_executor_poll", env='live', **st_live)
+
             time.sleep(poll_s)
     except KeyboardInterrupt:
         log_daemon_event(paths.logs_daemon_dir, "info", "execution_executor_stop_keyboard")
