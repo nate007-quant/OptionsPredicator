@@ -214,3 +214,47 @@ Recommended acceptance targets (tune over time):
 - Force-close events produce expected close counts
 
 Only after stable sandbox results should live be considered.
+
+
+## 8) Production enablement (when ready)
+
+Keep these protections ON in live-prep mode:
+
+```bash
+PRETRADE_REQUIRED_CHECKS=true
+REQUIRE_COMPLEX_EXIT_ORDERS=true
+REQUIRE_BROKER_EXTERNAL_IDENTIFIER=true
+STARTUP_RECONCILE_REQUIRED=true
+STRICT_QUARANTINE_REQUIRES_OPERATOR_CLEAR=true
+```
+
+Two-step arm for live:
+
+1) Configure live env but keep interlock engaged:
+
+```bash
+BROKER_ENV=live
+TRADING_ENABLED=true
+LIVE_ARMED=false
+```
+
+2) Run preflight (must pass):
+
+```bash
+python -m options_ai.execution_preflight_main
+```
+
+3) Only then arm live submission:
+
+```bash
+LIVE_ARMED=true
+sudo systemctl restart options_ai_execution
+```
+
+If anything drifts, set:
+
+```bash
+LIVE_ARMED=false
+```
+
+and restart executor to immediately stop new live entries.
