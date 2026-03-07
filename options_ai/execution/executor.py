@@ -111,6 +111,7 @@ class ExecutionExecutor:
         require_complex_exit_orders: bool = True,
         require_broker_external_identifier: bool = True,
         max_reject_streak: int = 5,
+        max_allowed_entry_slippage_abs: float = 0.15,
     ) -> None:
         self.db_path = str(db_path)
         self.environment = str(environment or "sandbox")
@@ -126,6 +127,7 @@ class ExecutionExecutor:
         self.require_complex_exit_orders = bool(require_complex_exit_orders)
         self.require_broker_external_identifier = bool(require_broker_external_identifier)
         self.max_reject_streak = max(1, int(max_reject_streak))
+        self.max_allowed_entry_slippage_abs = max(0.0, float(max_allowed_entry_slippage_abs))
 
     def _connect(self):
         if self._connect_fn is not None:
@@ -333,6 +335,40 @@ class ExecutionExecutor:
                 break
         return streak
 
+    def _slippage_breaker_triggered(self, con: sqlite3.Connection) -> tuple[bool, dict[str, Any]]:
+        rows = con.execute(
+            """
+            SELECT execution_intent_id, raw_payload_json
+            FROM order_events
+            WHERE environment=? AND broker_name=? AND event_type='submit_attempt'
+            ORDER BY id DESC LIMIT 200
+            """,
+            (self.environment, self.broker_name),
+        ).fetchall()
+        by_i: dict[int, list[float]] = {}
+        for r in rows:
+            iid = int(r[0] or 0)
+            if iid <= 0:
+                continue
+            try:
+                obj = json.loads(r[1] or '{}')
+                px = float(obj.get('limit_price') or 0.0)
+                if px > 0:
+                    by_i.setdefault(iid, []).append(px)
+            except Exception:
+                pass
+        max_conc = 0.0
+        offenders = 0
+        for arr in by_i.values():
+            if len(arr) < 2:
+                continue
+            conc = abs(float(arr[0]) - float(arr[-1]))
+            max_conc = max(max_conc, conc)
+            if conc > self.max_allowed_entry_slippage_abs:
+                offenders += 1
+        trig = offenders >= 1
+        return trig, {'offenders': offenders, 'max_concession': max_conc, 'threshold': self.max_allowed_entry_slippage_abs}
+
     def _run_prechecks(self, con: sqlite3.Connection, *, intent_id: int, dto: OrderDTO, long_sym: str, short_sym: str) -> tuple[bool, dict[str, Any], str | None]:
         checks: dict[str, Any] = {}
 
@@ -382,6 +418,10 @@ class ExecutionExecutor:
         # reject streak circuit breaker
         streak = self._current_reject_streak(con)
         checks['reject_streak_breaker'] = {'ok': streak < self.max_reject_streak, 'streak': streak, 'max_reject_streak': self.max_reject_streak}
+
+        # slippage breach circuit breaker (based on recent execution concessions)
+        sb, sb_meta = self._slippage_breaker_triggered(con)
+        checks['slippage_breach_breaker'] = {'ok': (not sb), **sb_meta}
 
         failed = [k for k, v in checks.items() if not bool((v or {}).get('ok', False))]
         if self.pretrade_required_checks and failed:

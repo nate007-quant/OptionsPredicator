@@ -2112,6 +2112,37 @@ def create_app() -> FastAPI:
             'updated_at_utc': str(r['updated_at_utc']),
         }
 
+    @app.get('/api/execution/operator-actions')
+    def execution_operator_actions(limit: int = Query(200, ge=1, le=2000)) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, created_at_utc, actor, action, entity_type, entity_id, details_json
+                FROM audit_log
+                WHERE environment=?
+                  AND action IN ('kill_switch_updated','close_only_updated','cancel_all_requested','flatten_all_requested','reprice_policy_updated')
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (str(cfg.broker_env), int(limit)),
+            ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                details = _json.loads(r['details_json'] or '{}')
+            except Exception:
+                details = {}
+            items.append({
+                'id': int(r['id']),
+                'created_at_utc': str(r['created_at_utc']),
+                'actor': str(r['actor']),
+                'action': str(r['action']),
+                'entity_type': (str(r['entity_type']) if r['entity_type'] is not None else None),
+                'entity_id': (str(r['entity_id']) if r['entity_id'] is not None else None),
+                'details': details,
+            })
+        return {'items': items}
+
     @app.get('/api/execution/incidents')
     def execution_incidents(limit: int = Query(200, ge=1, le=2000)) -> dict[str, Any]:
         with _connect(db_path) as con:

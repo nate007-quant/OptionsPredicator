@@ -62,6 +62,7 @@ def main() -> None:
         require_complex_exit_orders=cfg.require_complex_exit_orders,
         require_broker_external_identifier=cfg.require_broker_external_identifier,
         max_reject_streak=cfg.max_reject_streak,
+        max_allowed_entry_slippage_abs=cfg.max_allowed_entry_slippage_abs,
     )
 
     try:

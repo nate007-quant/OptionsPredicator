@@ -55,6 +55,7 @@ class ExecutionMonitor:
         connect_fn: Any | None = None,
         rearm_missing_protection: bool = False,
         max_position_mismatch_count: int = 3,
+        max_streamer_downtime_seconds: int = 120,
     ) -> None:
         self.db_path = str(db_path)
         self.environment = str(environment or "sandbox")
@@ -64,6 +65,7 @@ class ExecutionMonitor:
         self._connect_fn = connect_fn
         self.rearm_missing_protection = bool(rearm_missing_protection)
         self.max_position_mismatch_count = max(1, int(max_position_mismatch_count))
+        self.max_streamer_downtime_seconds = max(5, int(max_streamer_downtime_seconds))
 
     def _connect(self):
         if self._connect_fn is not None:
@@ -238,6 +240,43 @@ class ExecutionMonitor:
                     return [x for x in v if isinstance(x, dict)]
         return []
 
+    def _streamer_down_breaker(self, con: sqlite3.Connection) -> tuple[bool, dict[str, Any]]:
+        row = con.execute(
+            """
+            SELECT created_at_utc FROM order_events
+            WHERE environment=? AND broker_name=? AND event_type LIKE 'stream:%'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (self.environment, self.broker_name),
+        ).fetchone()
+        if not row:
+            return False, {'last_stream_event_utc': None, 'downtime_seconds': None, 'threshold_seconds': self.max_streamer_downtime_seconds}
+        try:
+            ts = datetime.fromisoformat(str(row[0]).replace('Z', '+00:00'))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            dt = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+        except Exception:
+            dt = 0.0
+        return (dt > float(self.max_streamer_downtime_seconds)), {
+            'last_stream_event_utc': str(row[0]),
+            'downtime_seconds': float(dt),
+            'threshold_seconds': self.max_streamer_downtime_seconds,
+        }
+
+    def _recent_unresolved_mismatch_count(self, con: sqlite3.Connection) -> int:
+        row = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM broker_reconciliation_log
+            WHERE environment=? AND broker_name=? AND resolved_bool=0
+            ORDER BY id DESC
+            LIMIT 200
+            """,
+            (self.environment, self.broker_name),
+        ).fetchone()
+        return int((row[0] if row else 0) or 0)
+
     def process_once(self, *, limit: int = 200) -> dict[str, Any]:
         st = MonitorStats()
 
@@ -294,6 +333,40 @@ class ExecutionMonitor:
                 ),
             )
 
+            # stream-down breaker
+            stream_down, stream_meta = self._streamer_down_breaker(con)
+            if stream_down:
+                self._incident(
+                    con,
+                    severity='error',
+                    incident_type='stream_down_breaker',
+                    trade_run_id=None,
+                    execution_intent_id=None,
+                    details=stream_meta,
+                )
+                try:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo('America/Chicago')
+                    day_local = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+                    now = _now_utc_iso()
+                    con.execute(
+                        """
+                        INSERT INTO risk_session_state(
+                          created_at_utc, updated_at_utc, environment, broker_name,
+                          session_day_local, session_tz,
+                          realized_pnl_usd, unrealized_pnl_usd,
+                          max_daily_loss_usd, block_new_entries, reason
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
+                          updated_at_utc=excluded.updated_at_utc,
+                          block_new_entries=1,
+                          reason='stream_down_breaker'
+                        """,
+                        (now, now, self.environment, self.broker_name, day_local, 'America/Chicago', 0.0, 0.0, 300.0, 1, 'stream_down_breaker'),
+                    )
+                except Exception:
+                    pass
+
             if mismatch:
                 self._incident(
                     con,
@@ -326,6 +399,18 @@ class ExecutionMonitor:
                     )
                 except Exception:
                     pass
+
+            # mismatch breaker threshold
+            mm_count = self._recent_unresolved_mismatch_count(con)
+            if mm_count >= self.max_position_mismatch_count:
+                self._incident(
+                    con,
+                    severity='error',
+                    incident_type='position_mismatch_breaker',
+                    trade_run_id=None,
+                    execution_intent_id=None,
+                    details={'unresolved_mismatch_count': mm_count, 'threshold': self.max_position_mismatch_count},
+                )
 
             for tr in rows:
                 st.scanned += 1

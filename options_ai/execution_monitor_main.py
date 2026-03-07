@@ -49,6 +49,7 @@ def main() -> None:
         account_number=(client.account_number or ""),
         client=client,
         max_position_mismatch_count=cfg.max_position_mismatch_count,
+        max_streamer_downtime_seconds=cfg.max_streamer_downtime_seconds,
     )
 
     try:
