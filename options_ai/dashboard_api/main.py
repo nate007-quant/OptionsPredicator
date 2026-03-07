@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json as _json
+import logging
 import sqlite3
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
@@ -251,6 +253,13 @@ def _central_day_key(iso_ts: str | None) -> str | None:
 def create_app() -> FastAPI:
     cfg = load_config()
 
+    if cfg.trading_enabled:
+        logging.getLogger("options_ai.dashboard_api").warning(
+            "TRADING_ENABLED=true at startup (broker=%s env=%s). Verify risk controls before proceeding.",
+            cfg.broker_name,
+            cfg.broker_env,
+        )
+
     data_root = Path(os.getenv("DATA_ROOT", cfg.data_root or "/mnt/options_ai"))
     logs_root = data_root / "logs"
     overrides_path = data_root / "state" / "runtime_overrides.json"
@@ -312,6 +321,131 @@ def create_app() -> FastAPI:
             migrate_backtest_schema(con)
             # Backfill params_hash for old rows (params_json already canonical in this app)
             backfill_params_hash(con, hash_fn=lambda strategy_key, schema_version, params_json: params_hash(strategy_key=strategy_key, schema_version=int(schema_version), params_json_canonical=str(params_json)))
+            con.commit()
+
+    def _ensure_execution_tables() -> None:
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_intents (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  created_at_utc TEXT NOT NULL,
+                  updated_at_utc TEXT NOT NULL,
+                  environment TEXT NOT NULL,
+                  broker_name TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  strategy_key TEXT,
+                  symbol TEXT,
+                  candidate_ref TEXT,
+                  idempotency_key TEXT NOT NULL,
+                  intent_payload_json TEXT NOT NULL,
+                  error TEXT
+                )
+                """
+            )
+            con.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_execution_intents_idempotency_key ON execution_intents(idempotency_key)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_execution_intents_status ON execution_intents(status, created_at_utc DESC)")
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_runs (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  created_at_utc TEXT NOT NULL,
+                  updated_at_utc TEXT NOT NULL,
+                  environment TEXT NOT NULL,
+                  broker_name TEXT NOT NULL,
+                  execution_intent_id INTEGER,
+                  status TEXT NOT NULL,
+                  underlying TEXT,
+                  side TEXT,
+                  qty INTEGER,
+                  entry_order_id TEXT,
+                  exit_order_id TEXT,
+                  opened_at_utc TEXT,
+                  closed_at_utc TEXT,
+                  open_reason TEXT,
+                  close_reason TEXT,
+                  pnl_realized_usd REAL,
+                  pnl_unrealized_usd REAL,
+                  run_payload_json TEXT
+                )
+                """
+            )
+            con.execute("CREATE INDEX IF NOT EXISTS idx_trade_runs_status ON trade_runs(status, created_at_utc DESC)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_trade_runs_open ON trade_runs(environment, status)")
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS risk_session_state (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  created_at_utc TEXT NOT NULL,
+                  updated_at_utc TEXT NOT NULL,
+                  environment TEXT NOT NULL,
+                  broker_name TEXT NOT NULL,
+                  session_day_local TEXT NOT NULL,
+                  session_tz TEXT NOT NULL,
+                  realized_pnl_usd REAL NOT NULL DEFAULT 0,
+                  unrealized_pnl_usd REAL NOT NULL DEFAULT 0,
+                  max_daily_loss_usd REAL NOT NULL DEFAULT 300,
+                  block_new_entries INTEGER NOT NULL DEFAULT 0,
+                  reason TEXT,
+                  UNIQUE(environment, broker_name, session_day_local)
+                )
+                """
+            )
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reprice_policy (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  created_at_utc TEXT NOT NULL,
+                  updated_at_utc TEXT NOT NULL,
+                  environment TEXT NOT NULL,
+                  underlying TEXT NOT NULL DEFAULT 'SPX',
+                  max_attempts INTEGER NOT NULL DEFAULT 3,
+                  step REAL NOT NULL DEFAULT 0.05,
+                  interval_seconds INTEGER NOT NULL DEFAULT 25,
+                  max_total_concession REAL NOT NULL DEFAULT 0.15,
+                  enabled INTEGER NOT NULL DEFAULT 1,
+                  UNIQUE(environment, underlying)
+                )
+                """
+            )
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_log (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  created_at_utc TEXT NOT NULL,
+                  environment TEXT NOT NULL,
+                  actor TEXT NOT NULL,
+                  action TEXT NOT NULL,
+                  entity_type TEXT,
+                  entity_id TEXT,
+                  details_json TEXT
+                )
+                """
+            )
+            con.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at_utc DESC)")
+            con.commit()
+
+    def _audit_execution(*, actor: str, action: str, entity_type: str | None, entity_id: str | None, details: dict[str, Any] | None = None) -> None:
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                INSERT INTO audit_log(created_at_utc, environment, actor, action, entity_type, entity_id, details_json)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                    str(cfg.broker_env),
+                    str(actor),
+                    str(action),
+                    (str(entity_type) if entity_type is not None else None),
+                    (str(entity_id) if entity_id is not None else None),
+                    (_json.dumps(details or {}, separators=(',', ':'), sort_keys=True)),
+                ),
+            )
             con.commit()
 
     def _validate_preset_name(name: str) -> str:
@@ -1600,6 +1734,461 @@ def create_app() -> FastAPI:
         if rid in (None, ''):
             raise HTTPException(status_code=400, detail='run_id required')
         return portfolio_group_service.stop(run_id=int(rid))
+
+
+# ---- Execution API ----
+
+    @app.get('/api/execution/intents')
+    def execution_intents_list(
+        status: str | None = Query(None),
+        limit: int = Query(200, ge=1, le=2000),
+    ) -> dict[str, Any]:
+        import json as _json
+        sql = """
+          SELECT id, created_at_utc, updated_at_utc, environment, broker_name, status,
+                 strategy_key, symbol, candidate_ref, idempotency_key, intent_payload_json, error
+          FROM execution_intents
+          WHERE environment = ?
+        """
+        params: list[Any] = [str(cfg.broker_env)]
+        if status:
+            sql += " AND status = ?"
+            params.append(str(status))
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+
+        with _connect(db_path) as con:
+            rows = con.execute(sql, tuple(params)).fetchall()
+
+        items = []
+        for r in rows:
+            try:
+                payload = _json.loads(r['intent_payload_json'] or '{}')
+            except Exception:
+                payload = {}
+            items.append({
+                'id': int(r['id']),
+                'created_at_utc': str(r['created_at_utc']),
+                'updated_at_utc': str(r['updated_at_utc']),
+                'environment': str(r['environment']),
+                'broker_name': str(r['broker_name']),
+                'status': str(r['status']),
+                'strategy_key': (str(r['strategy_key']) if r['strategy_key'] is not None else None),
+                'symbol': (str(r['symbol']) if r['symbol'] is not None else None),
+                'candidate_ref': (str(r['candidate_ref']) if r['candidate_ref'] is not None else None),
+                'idempotency_key': str(r['idempotency_key']),
+                'intent_payload': payload,
+                'error': (str(r['error']) if r['error'] is not None else None),
+            })
+        return {'items': items}
+
+    @app.get('/api/execution/trades/open')
+    def execution_trades_open(limit: int = Query(500, ge=1, le=5000)) -> dict[str, Any]:
+        import json as _json
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, created_at_utc, updated_at_utc, execution_intent_id, status, underlying, side,
+                       qty, entry_order_id, exit_order_id, opened_at_utc, close_reason, pnl_realized_usd,
+                       pnl_unrealized_usd, run_payload_json
+                FROM trade_runs
+                WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), int(limit)),
+            ).fetchall()
+
+        items = []
+        for r in rows:
+            try:
+                payload = _json.loads(r['run_payload_json'] or '{}')
+            except Exception:
+                payload = {}
+            # protection status from events
+            with _connect(db_path) as con:
+                rr = con.execute(
+                    "SELECT id FROM order_events WHERE trade_run_id=? AND event_type IN ('oco_armed','protective_exit_armed') ORDER BY id DESC LIMIT 1",
+                    (int(r['id']),),
+                ).fetchone()
+            items.append({
+                'id': int(r['id']),
+                'created_at_utc': str(r['created_at_utc']),
+                'updated_at_utc': str(r['updated_at_utc']),
+                'execution_intent_id': (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
+                'status': str(r['status']),
+                'underlying': (str(r['underlying']) if r['underlying'] is not None else None),
+                'side': (str(r['side']) if r['side'] is not None else None),
+                'qty': (int(r['qty']) if r['qty'] is not None else None),
+                'entry_order_id': (str(r['entry_order_id']) if r['entry_order_id'] is not None else None),
+                'exit_order_id': (str(r['exit_order_id']) if r['exit_order_id'] is not None else None),
+                'opened_at_utc': (str(r['opened_at_utc']) if r['opened_at_utc'] is not None else None),
+                'close_reason': (str(r['close_reason']) if r['close_reason'] is not None else None),
+                'pnl_realized_usd': (float(r['pnl_realized_usd']) if r['pnl_realized_usd'] is not None else None),
+                'pnl_unrealized_usd': (float(r['pnl_unrealized_usd']) if r['pnl_unrealized_usd'] is not None else None),
+                'run_payload': payload,
+                'protection_status': ('armed' if rr is not None else 'missing'),
+            })
+        return {'items': items}
+
+    @app.get('/api/execution/trades/{trade_id}')
+    def execution_trade_get(trade_id: int) -> dict[str, Any]:
+        import json as _json
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id, created_at_utc, updated_at_utc, execution_intent_id, status, underlying, side,
+                       qty, entry_order_id, exit_order_id, opened_at_utc, closed_at_utc, open_reason, close_reason,
+                       pnl_realized_usd, pnl_unrealized_usd, run_payload_json
+                FROM trade_runs
+                WHERE id=?
+                """,
+                (int(trade_id),),
+            ).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='trade not found')
+            ev = con.execute(
+                """
+                SELECT id, created_at_utc, order_id, event_type, status, raw_payload_json
+                FROM order_events WHERE trade_run_id=? ORDER BY id ASC
+                """,
+                (int(trade_id),),
+            ).fetchall()
+
+        try:
+            payload = _json.loads(r['run_payload_json'] or '{}')
+        except Exception:
+            payload = {}
+
+        events = []
+        for e in ev:
+            try:
+                raw = _json.loads(e['raw_payload_json'] or '{}')
+            except Exception:
+                raw = {}
+            events.append({
+                'id': int(e['id']),
+                'created_at_utc': str(e['created_at_utc']),
+                'order_id': (str(e['order_id']) if e['order_id'] is not None else None),
+                'event_type': str(e['event_type']),
+                'status': (str(e['status']) if e['status'] is not None else None),
+                'payload': raw,
+            })
+
+        return {
+            'id': int(r['id']),
+            'status': str(r['status']),
+            'execution_intent_id': (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
+            'underlying': (str(r['underlying']) if r['underlying'] is not None else None),
+            'side': (str(r['side']) if r['side'] is not None else None),
+            'qty': (int(r['qty']) if r['qty'] is not None else None),
+            'entry_order_id': (str(r['entry_order_id']) if r['entry_order_id'] is not None else None),
+            'exit_order_id': (str(r['exit_order_id']) if r['exit_order_id'] is not None else None),
+            'opened_at_utc': (str(r['opened_at_utc']) if r['opened_at_utc'] is not None else None),
+            'closed_at_utc': (str(r['closed_at_utc']) if r['closed_at_utc'] is not None else None),
+            'open_reason': (str(r['open_reason']) if r['open_reason'] is not None else None),
+            'close_reason': (str(r['close_reason']) if r['close_reason'] is not None else None),
+            'pnl_realized_usd': (float(r['pnl_realized_usd']) if r['pnl_realized_usd'] is not None else None),
+            'pnl_unrealized_usd': (float(r['pnl_unrealized_usd']) if r['pnl_unrealized_usd'] is not None else None),
+            'run_payload': payload,
+            'order_events': events,
+        }
+
+    @app.get('/api/execution/reprice-policy')
+    def execution_reprice_policy_get(underlying: str = Query('SPX')) -> dict[str, Any]:
+        u = str(underlying or 'SPX').strip().upper() or 'SPX'
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id, environment, underlying, max_attempts, step, interval_seconds, max_total_concession, enabled, updated_at_utc
+                FROM reprice_policy
+                WHERE environment=? AND underlying=?
+                """,
+                (str(cfg.broker_env), u),
+            ).fetchone()
+            if r is None:
+                # auto-seed default row from config
+                now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+                con.execute(
+                    """
+                    INSERT INTO reprice_policy(created_at_utc, updated_at_utc, environment, underlying, max_attempts, step, interval_seconds, max_total_concession, enabled)
+                    VALUES(?,?,?,?,?,?,?,?,1)
+                    """,
+                    (now, now, str(cfg.broker_env), u, int(cfg.reprice_max_attempts), float(cfg.reprice_step), int(cfg.reprice_interval_seconds), float(cfg.reprice_max_total_concession)),
+                )
+                con.commit()
+                r = con.execute(
+                    """
+                    SELECT id, environment, underlying, max_attempts, step, interval_seconds, max_total_concession, enabled, updated_at_utc
+                    FROM reprice_policy
+                    WHERE environment=? AND underlying=?
+                    """,
+                    (str(cfg.broker_env), u),
+                ).fetchone()
+
+        return {
+            'id': int(r['id']),
+            'environment': str(r['environment']),
+            'underlying': str(r['underlying']),
+            'max_attempts': int(r['max_attempts']),
+            'step': float(r['step']),
+            'interval_seconds': int(r['interval_seconds']),
+            'max_total_concession': float(r['max_total_concession']),
+            'enabled': bool(int(r['enabled'] or 0)),
+            'updated_at_utc': str(r['updated_at_utc']),
+        }
+
+    @app.put('/api/execution/reprice-policy')
+    def execution_reprice_policy_put(body: dict[str, Any]) -> dict[str, Any]:
+        b = body or {}
+        u = str(b.get('underlying') or 'SPX').strip().upper() or 'SPX'
+        max_attempts = int(b.get('max_attempts') if b.get('max_attempts') is not None else cfg.reprice_max_attempts)
+        step = float(b.get('step') if b.get('step') is not None else cfg.reprice_step)
+        interval_seconds = int(b.get('interval_seconds') if b.get('interval_seconds') is not None else cfg.reprice_interval_seconds)
+        max_total_concession = float(b.get('max_total_concession') if b.get('max_total_concession') is not None else cfg.reprice_max_total_concession)
+        enabled = bool(b.get('enabled') if b.get('enabled') is not None else True)
+
+        if max_attempts < 1 or max_attempts > 20:
+            raise HTTPException(status_code=400, detail='max_attempts must be in [1,20]')
+        if step < 0 or step > 5:
+            raise HTTPException(status_code=400, detail='step must be in [0,5]')
+        if interval_seconds < 1 or interval_seconds > 3600:
+            raise HTTPException(status_code=400, detail='interval_seconds must be in [1,3600]')
+        if max_total_concession < 0 or max_total_concession > 20:
+            raise HTTPException(status_code=400, detail='max_total_concession must be in [0,20]')
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                INSERT INTO reprice_policy(created_at_utc, updated_at_utc, environment, underlying, max_attempts, step, interval_seconds, max_total_concession, enabled)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(environment, underlying) DO UPDATE SET
+                  updated_at_utc=excluded.updated_at_utc,
+                  max_attempts=excluded.max_attempts,
+                  step=excluded.step,
+                  interval_seconds=excluded.interval_seconds,
+                  max_total_concession=excluded.max_total_concession,
+                  enabled=excluded.enabled
+                """,
+                (now, now, str(cfg.broker_env), u, max_attempts, step, interval_seconds, max_total_concession, 1 if enabled else 0),
+            )
+            con.commit()
+
+        _audit_execution(
+            actor='dashboard_api',
+            action='reprice_policy_updated',
+            entity_type='reprice_policy',
+            entity_id=f"{cfg.broker_env}:{u}",
+            details={
+                'underlying': u,
+                'max_attempts': max_attempts,
+                'step': step,
+                'interval_seconds': interval_seconds,
+                'max_total_concession': max_total_concession,
+                'enabled': enabled,
+            },
+        )
+
+        return execution_reprice_policy_get(underlying=u)
+
+    @app.get('/api/execution/risk-session')
+    def execution_risk_session_get() -> dict[str, Any]:
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id, created_at_utc, updated_at_utc, session_day_local, session_tz,
+                       realized_pnl_usd, unrealized_pnl_usd, max_daily_loss_usd,
+                       block_new_entries, reason
+                FROM risk_session_state
+                WHERE environment=? AND broker_name=?
+                ORDER BY session_day_local DESC, id DESC
+                LIMIT 1
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name)),
+            ).fetchone()
+        if not r:
+            return {
+                'id': None,
+                'session_day_local': None,
+                'session_tz': cfg.session_tz,
+                'realized_pnl_usd': 0.0,
+                'unrealized_pnl_usd': 0.0,
+                'max_daily_loss_usd': float(cfg.max_daily_loss_usd),
+                'block_new_entries': False,
+                'reason': None,
+            }
+        return {
+            'id': int(r['id']),
+            'created_at_utc': str(r['created_at_utc']),
+            'updated_at_utc': str(r['updated_at_utc']),
+            'session_day_local': str(r['session_day_local']),
+            'session_tz': str(r['session_tz']),
+            'realized_pnl_usd': float(r['realized_pnl_usd'] or 0.0),
+            'unrealized_pnl_usd': float(r['unrealized_pnl_usd'] or 0.0),
+            'max_daily_loss_usd': float(r['max_daily_loss_usd'] or cfg.max_daily_loss_usd),
+            'block_new_entries': bool(int(r['block_new_entries'] or 0)),
+            'reason': (str(r['reason']) if r['reason'] is not None else None),
+        }
+
+    @app.post('/api/execution/kill-switch')
+    def execution_kill_switch(body: dict[str, Any]) -> dict[str, Any]:
+        b = body or {}
+        block = bool(b.get('block_new_entries') if b.get('block_new_entries') is not None else True)
+        reason = str(b.get('reason') or 'manual_kill_switch').strip() or 'manual_kill_switch'
+
+        now = datetime.now(timezone.utc)
+        day_local = now.astimezone(CENTRAL_TZ).date().isoformat()
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                INSERT INTO risk_session_state(
+                  created_at_utc, updated_at_utc, environment, broker_name,
+                  session_day_local, session_tz,
+                  realized_pnl_usd, unrealized_pnl_usd,
+                  max_daily_loss_usd, block_new_entries, reason
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
+                  updated_at_utc=excluded.updated_at_utc,
+                  block_new_entries=excluded.block_new_entries,
+                  reason=excluded.reason,
+                  max_daily_loss_usd=excluded.max_daily_loss_usd
+                """,
+                (
+                    now.replace(microsecond=0).isoformat(),
+                    now.replace(microsecond=0).isoformat(),
+                    str(cfg.broker_env),
+                    str(cfg.broker_name),
+                    day_local,
+                    str(cfg.session_tz),
+                    0.0,
+                    0.0,
+                    float(cfg.max_daily_loss_usd),
+                    1 if block else 0,
+                    reason,
+                ),
+            )
+            con.commit()
+
+        _audit_execution(
+            actor='dashboard_api',
+            action='kill_switch_updated',
+            entity_type='risk_session_state',
+            entity_id=f"{cfg.broker_env}:{day_local}",
+            details={'block_new_entries': block, 'reason': reason},
+        )
+
+        return execution_risk_session_get()
+
+    @app.get('/api/execution/kpis')
+    def execution_kpis(days: int = Query(7, ge=1, le=60)) -> dict[str, Any]:
+        # Rollout KPI helpers (sandbox first)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT
+                  SUM(CASE WHEN status='filled' THEN 1 ELSE 0 END) AS filled,
+                  SUM(CASE WHEN status IN ('filled','working','rejected','expired','blocked','error') THEN 1 ELSE 0 END) AS terminalish,
+                  COUNT(*) AS total
+                FROM execution_intents
+                WHERE environment=? AND broker_name=? AND created_at_utc>=?
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), cutoff),
+            ).fetchone()
+            filled = int((r['filled'] if r and r['filled'] is not None else 0) or 0)
+            terminalish = int((r['terminalish'] if r and r['terminalish'] is not None else 0) or 0)
+            total = int((r['total'] if r and r['total'] is not None else 0) or 0)
+
+            # Avg repricing concession proxy from submit attempts in order_events
+            ev = con.execute(
+                """
+                SELECT execution_intent_id, raw_payload_json
+                FROM order_events
+                WHERE environment=? AND broker_name=? AND event_type='submit_attempt' AND created_at_utc>=?
+                ORDER BY execution_intent_id ASC, id ASC
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), cutoff),
+            ).fetchall()
+            by_intent: dict[int, list[float]] = {}
+            for e in ev:
+                iid = int(e['execution_intent_id'] or 0)
+                if iid <= 0:
+                    continue
+                try:
+                    obj = _json.loads(e['raw_payload_json'] or '{}')
+                    px = float((obj.get('limit_price') if isinstance(obj, dict) else None) or 0.0)
+                    if px > 0:
+                        by_intent.setdefault(iid, []).append(px)
+                except Exception:
+                    pass
+            concessions = []
+            for _, arr in by_intent.items():
+                if len(arr) >= 2:
+                    concessions.append(max(0.0, float(arr[-1]) - float(arr[0])))
+                elif len(arr) == 1:
+                    concessions.append(0.0)
+            avg_concession = (sum(concessions) / len(concessions)) if concessions else 0.0
+
+            # TP/SL protection correctness proxy: open trades with armed protection event
+            t = con.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM trade_runs
+                WHERE environment=? AND broker_name=? AND status IN ('open','opening','closing')
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name)),
+            ).fetchone()
+            open_trades = int((t['n'] if t and t['n'] is not None else 0) or 0)
+            a = con.execute(
+                """
+                SELECT COUNT(DISTINCT trade_run_id) AS n
+                FROM order_events
+                WHERE environment=? AND broker_name=? AND event_type IN ('oco_armed','protective_exit_armed') AND created_at_utc>=?
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), cutoff),
+            ).fetchone()
+            armed = int((a['n'] if a and a['n'] is not None else 0) or 0)
+
+            # Force-close reliability: count force-close audits + trades closed by reason.
+            fc_a = con.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM audit_log
+                WHERE environment=? AND actor='risk_guard' AND action='force_close_session_end' AND created_at_utc>=?
+                """,
+                (str(cfg.broker_env), cutoff),
+            ).fetchone()
+            force_close_sessions = int((fc_a['n'] if fc_a and fc_a['n'] is not None else 0) or 0)
+
+            fc_t = con.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM trade_runs
+                WHERE environment=? AND broker_name=? AND close_reason='FORCE_CLOSE_SESSION_END' AND COALESCE(closed_at_utc,updated_at_utc)>=?
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), cutoff),
+            ).fetchone()
+            force_close_trades = int((fc_t['n'] if fc_t and fc_t['n'] is not None else 0) or 0)
+
+        fill_rate = (float(filled) / float(terminalish)) if terminalish > 0 else None
+        protection_rate_open = (float(armed) / float(open_trades)) if open_trades > 0 else None
+
+        return {
+            'days': int(days),
+            'cutoff_utc': cutoff,
+            'intents_total': total,
+            'intents_filled': filled,
+            'intents_terminalish': terminalish,
+            'fill_rate': fill_rate,
+            'avg_reprice_concession': float(avg_concession),
+            'open_trades': open_trades,
+            'open_trades_with_protection': armed,
+            'protection_rate_open': protection_rate_open,
+            'force_close_sessions': force_close_sessions,
+            'force_close_trades': force_close_trades,
+        }
 
 
 # ---- Backtest Runs (history grid) ----

@@ -36,6 +36,18 @@ def main() -> None:
         replay_mode=cfg.replay_mode,
     )
 
+    if cfg.trading_enabled:
+        # Explicit safety warning on startup when live execution is enabled.
+        log_daemon_event(
+            paths.logs_daemon_dir,
+            "warn",
+            "trading_enabled_startup_warning",
+            trading_enabled=cfg.trading_enabled,
+            broker_name=cfg.broker_name,
+            broker_env=cfg.broker_env,
+            message_detail="TRADING_ENABLED=true. Verify broker environment, credentials, and risk controls before proceeding.",
+        )
+
     try:
         run_daemon(cfg, paths, db_path)
     except KeyboardInterrupt:

@@ -8,6 +8,7 @@ This repo contains **multiple pipelines**:
 4) Multi-anchor debit spread builder + labels
 5) Debit spread ML scorer
 6) Dashboard UI (FastAPI)
+7) Execution v1 workers (intent builder / executor / monitor / risk guard)
 
 This document lists the services and how they are expected to be run on a server.
 
@@ -64,6 +65,14 @@ Restart behavior:
 - `systemd/options_ai_dashboard_api.service`
   - runs: `uvicorn options_ai.dashboard_api.main:app --port 8088`
 
+### Execution v1 workers
+- `systemd/options_ai_execution.service`
+  - runs: `python -m options_ai.execution_main`
+- `systemd/options_ai_execution_monitor.service`
+  - runs: `python -m options_ai.execution_monitor_main`
+- `systemd/options_ai_risk_guard.service` (optional but recommended)
+  - runs: `python -m options_ai.execution_risk_guard_main`
+
 ---
 
 ## Recommended enable/start
@@ -76,6 +85,12 @@ sudo systemctl enable --now spx_chain_phase2
 sudo systemctl enable --now spx_debit_spreads
 sudo systemctl enable --now spx_debit_ml
 sudo systemctl enable --now options_ai_dashboard_api
+
+# execution v1
+sudo systemctl enable --now options_ai_execution
+sudo systemctl enable --now options_ai_execution_monitor
+# optional (session risk / force-close automation)
+sudo systemctl enable --now options_ai_risk_guard
 ```
 
 ---
@@ -101,6 +116,20 @@ All services load `/opt/OptionsPredicator/.env` via `EnvironmentFile=`.
 ### Big-win definition for probability
 - `DEBIT_BIGWIN_MULT_ATM=2.0`
 - `DEBIT_BIGWIN_MULT_WALL=4.0`  (applies to CALL_WALL/PUT_WALL/MAGNET)
+
+### Execution v1 (new)
+- `TRADING_ENABLED=false` (safe default)
+- `BROKER_NAME=tastytrade`
+- `BROKER_ENV=sandbox`
+- `TASTY_BASE_URL=https://api.cert.tastyworks.com`
+- `TASTY_ACCOUNT_NUMBER=...`
+- `MAX_DAILY_LOSS_USD=300`
+- `SESSION_TZ=America/Chicago`
+- `FORCE_CLOSE_MINUTES_BEFORE_END=15`
+- `REPRICE_MAX_ATTEMPTS=3`
+- `REPRICE_STEP=0.05`
+- `REPRICE_INTERVAL_SECONDS=25`
+- `REPRICE_MAX_TOTAL_CONCESSION=0.15`
 
 ---
 
