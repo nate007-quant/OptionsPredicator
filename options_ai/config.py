@@ -32,6 +32,7 @@ class Config:
     reprice_max_total_concession: float = 0.15
 
     execution_intent_poll_seconds: int = 30
+    execution_poll_seconds: int = 5
 
     # OAuth (v2.0)
     oauth_client_id: str = ""
@@ -188,6 +189,7 @@ def load_config() -> Config:
         reprice_interval_seconds=int(os.getenv("REPRICE_INTERVAL_SECONDS", "25")),
         reprice_max_total_concession=float(os.getenv("REPRICE_MAX_TOTAL_CONCESSION", "0.15")),
         execution_intent_poll_seconds=int(os.getenv("EXECUTION_INTENT_POLL_SECONDS", "30")),
+        execution_poll_seconds=int(os.getenv("EXECUTION_POLL_SECONDS", "5")),
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         oauth_token_url=oauth_token_url,
