@@ -72,6 +72,7 @@ def run_pipeline(*, repo_root: Path, opts: PipelineOptions | None = None) -> dic
     gates_cfg = load_yaml_like(ctx.configs_dir / "validation-gates.yaml")
     scoring_cfg = load_yaml_like(ctx.configs_dir / "scoring.yaml")
     autonomy_cfg = load_yaml_like(ctx.configs_dir / "autonomy-policy.yaml")
+    generator_cfg = load_yaml_like(ctx.configs_dir / "generator.yaml")
 
     _audit(ctx, "pipeline_start", code_version=ctx.code_version)
 
@@ -85,7 +86,8 @@ def run_pipeline(*, repo_root: Path, opts: PipelineOptions | None = None) -> dic
     _audit(ctx, "regime_update", **regime)
 
     # 3) idea generation + spec compilation
-    ideas = generate_ideas(run_id=ctx.run_id, max_ideas=opts.max_ideas)
+    ideas = generate_ideas(run_id=ctx.run_id, max_ideas=opts.max_ideas, generator_cfg=generator_cfg)
+    _audit(ctx, "idea_generation_mode", ai_enabled=bool((generator_cfg.get("ai") or {}).get("enabled") or str(os.getenv("STRATEGY_FACTORY_AI_ENABLED", "")).lower() in {"1","true","yes","on"}), max_ideas=opts.max_ideas)
     adapter = CurrentBacktestAdapter()
 
     strategies: list[dict[str, Any]] = []

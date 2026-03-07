@@ -155,3 +155,27 @@ FORCE_DEGRADED_SNAPSHOT=true python strategy-factory/src/orchestrator/run_daily.
 - Current engine best supports spread-like structures; unsupported structures are proxied and tagged via `capability_gaps`.
 - Stress scenarios are deterministic degradations in MVP and can be replaced by engine-native stress support later.
 - YAML parsing uses PyYAML when available; fallback parser supports current config subset.
+
+
+## AI idea generation (optional)
+
+By default, idea generation is deterministic. To enable AI-assisted ideation:
+
+1. Set API key:
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+2. Enable one of:
+
+- `configs/generator.yaml` -> `ai.enabled: true`, or
+- env flag: `STRATEGY_FACTORY_AI_ENABLED=true`
+
+Optional model override:
+
+```bash
+export STRATEGY_FACTORY_AI_MODEL=gpt-5.2
+```
+
+Safety rails remain unchanged: AI ideas must compile to valid `StrategySpec` and pass hard gates before any promotion.
