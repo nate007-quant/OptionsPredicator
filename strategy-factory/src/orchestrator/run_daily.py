@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# Ensure strategy-factory/src is importable when run as script.
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from orchestrator.scheduler import run_once_with_retry
 
