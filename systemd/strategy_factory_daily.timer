@@ -1,0 +1,12 @@
+# Runs Strategy Factory daily at 00:05 UTC
+
+[Unit]
+Description=Run Strategy Factory Daily (00:05 UTC)
+
+[Timer]
+OnCalendar=*-*-* 00:05:00 UTC
+Persistent=true
+Unit=strategy_factory_daily.service
+
+[Install]
+WantedBy=timers.target

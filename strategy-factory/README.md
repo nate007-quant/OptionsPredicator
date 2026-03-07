@@ -64,6 +64,10 @@ Scheduler features:
 - bounded retries
 - max runtime cutoff
 
+Systemd timer files are included:
+- `systemd/strategy_factory_daily.service`
+- `systemd/strategy_factory_daily.timer`
+
 ---
 
 ## Backtest adapter contract
