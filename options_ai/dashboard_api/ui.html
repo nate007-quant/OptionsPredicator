@@ -501,6 +501,24 @@
 
       <!-- EXECUTION -->
       <section class="view" id="view-execution">
+        <div class="card" style="margin-bottom: var(--space-4);">
+          <div class="card-h"><h2>Execution KPIs (Sandbox rollout)</h2><div class="hint">Week-1 validation metrics</div></div>
+          <div class="card-b">
+            <div class="row">
+              <label>Window days <input id="exKpiDays" type="number" min="1" max="60" value="7" style="width:90px;" /></label>
+              <button class="btn-primary" id="exRefreshKpis">Refresh</button>
+              <span class="hint" id="exKpiAsOf"></span>
+            </div>
+            <div class="row" style="margin-top:10px;">
+              <div>Fill rate: <span id="exKpiFillRate" class="pill">—</span></div>
+              <div>Avg reprice concession: <span id="exKpiReprice" class="pill">—</span></div>
+              <div>Protection(open): <span id="exKpiProtection" class="pill">—</span></div>
+              <div>Force-close sessions: <span id="exKpiForceSess" class="pill">—</span></div>
+              <div>Force-close trades: <span id="exKpiForceTrades" class="pill">—</span></div>
+            </div>
+          </div>
+        </div>
+
         <div class="grid2">
           <div class="card">
             <div class="card-h"><h2>Risk Session</h2><div class="hint">Daily loss guard + kill switch</div></div>
@@ -3387,6 +3405,19 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       el.textContent = `${hh}h ${mm}m`;
     }
 
+    async function exRefreshKpis() {
+      const days = Number(document.getElementById('exKpiDays')?.value || 7);
+      const d = await jget(`/api/execution/kpis?days=${encodeURIComponent(days)}`);
+      document.getElementById('exKpiAsOf').textContent = `cutoff: ${d.cutoff_utc || '—'}`;
+      document.getElementById('exKpiFillRate').textContent = (d.fill_rate == null) ? '—' : (100 * Number(d.fill_rate)).toFixed(1) + '%';
+      document.getElementById('exKpiReprice').textContent = exFmtMoney(d.avg_reprice_concession);
+      document.getElementById('exKpiProtection').textContent = (d.protection_rate_open == null) ? '—' : (100 * Number(d.protection_rate_open)).toFixed(1) + '%';
+      document.getElementById('exKpiForceSess').textContent = String(d.force_close_sessions ?? 0);
+      document.getElementById('exKpiForceTrades').textContent = String(d.force_close_trades ?? 0);
+      return d;
+    }
+
+
     async function exRefreshRiskSession() {
       const d = await jget('/api/execution/risk-session');
       document.getElementById('exRiskRealized').textContent = exFmtMoney(d.realized_pnl_usd);
@@ -3584,6 +3615,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
 
     document.getElementById('exRefreshTrades')?.addEventListener('click', () => safe('ex_trades', () => exRefreshOpenTrades()));
+    document.getElementById('exRefreshKpis')?.addEventListener('click', () => safe('ex_kpis', () => exRefreshKpis()));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
     document.getElementById('exRpLoad')?.addEventListener('click', () => safe('ex_rp_load', () => exLoadRepricePolicy()));
     document.getElementById('exRpSave')?.addEventListener('click', () => safe('ex_rp_save', () => exSaveRepricePolicy()));
@@ -3775,6 +3807,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('health', () => refreshHealth());
       await safe('config', () => refreshConfig());
       await safe('ex_risk', () => exRefreshRiskSession());
+      await safe('ex_kpis', () => exRefreshKpis());
       await safe('ex_reprice', () => exLoadRepricePolicy());
       await safe('ex_trades', () => exRefreshOpenTrades());
       await safe('ex_intents', () => exRefreshIntents());
@@ -3804,6 +3837,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('health', () => refreshHealth()), 5000);
       setInterval(() => safe('config', () => refreshConfig()), 5000);
       setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
+      setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
       setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), 7000);
       setInterval(() => safe('processing', () => refreshProcessing()), 2000);
       setInterval(() => safe('pipes', () => refreshPipelines()), 10000);

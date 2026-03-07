@@ -180,3 +180,37 @@ TRADING_ENABLED=true
 ```
 
 Restart workers and monitor closely.
+
+
+## 7) Week-1 sandbox rollout plan
+
+Run with:
+
+```bash
+BROKER_ENV=sandbox
+TRADING_ENABLED=true
+```
+
+Use **small quantity only** and keep full logs.
+
+Daily checks:
+
+1. Fill rate
+2. Reprice concession drift
+3. TP/SL protection arm rate for open trades
+4. Force-close reliability at session T-15m
+
+Dashboard API helper for KPIs:
+
+```bash
+curl -s "http://127.0.0.1:8088/api/execution/kpis?days=7"
+```
+
+Recommended acceptance targets (tune over time):
+
+- Fill rate stable and not collapsing vs baseline
+- Avg reprice concession within expected range
+- Protection rate for open trades near 100%
+- Force-close events produce expected close counts
+
+Only after stable sandbox results should live be considered.

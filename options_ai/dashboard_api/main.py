@@ -2081,6 +2081,115 @@ def create_app() -> FastAPI:
 
         return execution_risk_session_get()
 
+    @app.get('/api/execution/kpis')
+    def execution_kpis(days: int = Query(7, ge=1, le=60)) -> dict[str, Any]:
+        # Rollout KPI helpers (sandbox first)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT
+                  SUM(CASE WHEN status='filled' THEN 1 ELSE 0 END) AS filled,
+                  SUM(CASE WHEN status IN ('filled','working','rejected','expired','blocked','error') THEN 1 ELSE 0 END) AS terminalish,
+                  COUNT(*) AS total
+                FROM execution_intents
+                WHERE environment=? AND broker_name=? AND created_at_utc>=?
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), cutoff),
+            ).fetchone()
+            filled = int((r['filled'] if r and r['filled'] is not None else 0) or 0)
+            terminalish = int((r['terminalish'] if r and r['terminalish'] is not None else 0) or 0)
+            total = int((r['total'] if r and r['total'] is not None else 0) or 0)
+
+            # Avg repricing concession proxy from submit attempts in order_events
+            ev = con.execute(
+                """
+                SELECT execution_intent_id, raw_payload_json
+                FROM order_events
+                WHERE environment=? AND broker_name=? AND event_type='submit_attempt' AND created_at_utc>=?
+                ORDER BY execution_intent_id ASC, id ASC
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), cutoff),
+            ).fetchall()
+            by_intent: dict[int, list[float]] = {}
+            for e in ev:
+                iid = int(e['execution_intent_id'] or 0)
+                if iid <= 0:
+                    continue
+                try:
+                    obj = _json.loads(e['raw_payload_json'] or '{}')
+                    px = float((obj.get('limit_price') if isinstance(obj, dict) else None) or 0.0)
+                    if px > 0:
+                        by_intent.setdefault(iid, []).append(px)
+                except Exception:
+                    pass
+            concessions = []
+            for _, arr in by_intent.items():
+                if len(arr) >= 2:
+                    concessions.append(max(0.0, float(arr[-1]) - float(arr[0])))
+                elif len(arr) == 1:
+                    concessions.append(0.0)
+            avg_concession = (sum(concessions) / len(concessions)) if concessions else 0.0
+
+            # TP/SL protection correctness proxy: open trades with armed protection event
+            t = con.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM trade_runs
+                WHERE environment=? AND broker_name=? AND status IN ('open','opening','closing')
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name)),
+            ).fetchone()
+            open_trades = int((t['n'] if t and t['n'] is not None else 0) or 0)
+            a = con.execute(
+                """
+                SELECT COUNT(DISTINCT trade_run_id) AS n
+                FROM order_events
+                WHERE environment=? AND broker_name=? AND event_type IN ('oco_armed','protective_exit_armed') AND created_at_utc>=?
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), cutoff),
+            ).fetchone()
+            armed = int((a['n'] if a and a['n'] is not None else 0) or 0)
+
+            # Force-close reliability: count force-close audits + trades closed by reason.
+            fc_a = con.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM audit_log
+                WHERE environment=? AND actor='risk_guard' AND action='force_close_session_end' AND created_at_utc>=?
+                """,
+                (str(cfg.broker_env), cutoff),
+            ).fetchone()
+            force_close_sessions = int((fc_a['n'] if fc_a and fc_a['n'] is not None else 0) or 0)
+
+            fc_t = con.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM trade_runs
+                WHERE environment=? AND broker_name=? AND close_reason='FORCE_CLOSE_SESSION_END' AND COALESCE(closed_at_utc,updated_at_utc)>=?
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), cutoff),
+            ).fetchone()
+            force_close_trades = int((fc_t['n'] if fc_t and fc_t['n'] is not None else 0) or 0)
+
+        fill_rate = (float(filled) / float(terminalish)) if terminalish > 0 else None
+        protection_rate_open = (float(armed) / float(open_trades)) if open_trades > 0 else None
+
+        return {
+            'days': int(days),
+            'cutoff_utc': cutoff,
+            'intents_total': total,
+            'intents_filled': filled,
+            'intents_terminalish': terminalish,
+            'fill_rate': fill_rate,
+            'avg_reprice_concession': float(avg_concession),
+            'open_trades': open_trades,
+            'open_trades_with_protection': armed,
+            'protection_rate_open': protection_rate_open,
+            'force_close_sessions': force_close_sessions,
+            'force_close_trades': force_close_trades,
+        }
+
 
 # ---- Backtest Runs (history grid) ----
 

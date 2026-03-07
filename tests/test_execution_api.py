@@ -46,3 +46,8 @@ def test_execution_endpoints_smoke(tmp_path: Path, monkeypatch):
 
     r6 = client.get("/api/execution/risk-session")
     assert r6.status_code == 200
+
+    r7 = client.get("/api/execution/kpis?days=7")
+    assert r7.status_code == 200
+    kb = r7.json()
+    assert kb["days"] == 7
