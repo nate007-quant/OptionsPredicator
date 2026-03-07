@@ -392,8 +392,7 @@
         <a href="#backtest" data-view="backtest">Backtest</a>
         <a href="#portfolio" data-view="portfolio">Portfolio Backtest</a>
         <a href="#processing" data-view="processing">Processing</a>
-        <a href="#timeseries" data-view="timeseries">Time Series</a>
-        <a href="#logs" data-view="logs">Logs</a>
+                <a href="#logs" data-view="logs">Logs</a>
         <a href="#controls" data-view="controls">Controls & Admin</a>
       </nav>
     </aside>
@@ -554,102 +553,6 @@
           </div>
         </div>
       </section>
-
-      <!-- TIME SERIES -->
-      <section class="view" id="view-timeseries">
-        <div class="grid1">
-          <div class="card">
-            <div class="card-h"><h2>LLM Metrics</h2><div class="hint">15m buckets + daily (event time)</div></div>
-            <div class="card-b">
-          <div class="card">
-            <div class="card-h"><h2>LLM Metrics</h2><div class="hint">Bucketed by observed_ts_utc (event time)</div></div>
-            <div class="card-b">
-              <div class="row">
-                <label>Window days <input id="llmWinDays" type="number" min="1" max="60" value="15" style="width:80px;" /></label>
-                <label>Bucket
-                  <select id="llmBucketMin">
-                    <option value="5">5</option>
-                    <option value="10">10</option>
-                    <option value="15" selected>15</option>
-                    <option value="30">30</option>
-                    <option value="60">60</option>
-                  </select>
-                </label>
-                <label>Min samples <input id="llmMinSamples" type="number" min="1" max="200" value="5" style="width:80px;" /></label>
-                <button class="btn-primary" id="refreshLlmBuckets">Refresh 15m</button>
-              </div>
-              <div style="margin-top:12px;">
-                <canvas id="llmBucketChart" height="120"></canvas>
-              </div>
-
-              <div style="margin-top:16px;">
-                <canvas id="dailyChart" height="120"></canvas>
-              </div>
-            </div>
-          </div>
-        
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-h"><h2>ML Metrics</h2><div class="hint">15m buckets + daily + EOD (Central)</div></div>
-            <div class="card-b">
-          <div class="card">
-            <div class="card-h"><h2>ML (15m)</h2><div class="hint">Bucketed by observed_ts_utc</div></div>
-            <div class="card-b">
-              <div class="row">
-                <label>Window days <input id="mlWinDays" type="number" min="1" max="60" value="15" style="width:80px;" /></label>
-                <label>Bucket
-                  <select id="mlBucketMin">
-                    <option value="5">5</option>
-                    <option value="10">10</option>
-                    <option value="15" selected>15</option>
-                    <option value="30">30</option>
-                    <option value="60">60</option>
-                  </select>
-                </label>
-                <label>Min samples <input id="mlMinSamples" type="number" min="1" max="200" value="5" style="width:80px;" /></label>
-                <button class="btn-primary" id="refreshMlBuckets">Refresh 15m</button>
-              </div>
-              <div style="margin-top:12px;">
-                <canvas id="mlBucketChart" height="120"></canvas>
-              </div>
-              <div style="margin-top:16px;">
-                <canvas id="mlDailyChart" height="120"></canvas>
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-h"><h2>ML EOD (Early 60m)</h2><div class="hint">trade_day bucket (Central)</div></div>
-            <div class="card-b">
-              <div class="row">
-                <label>Variant
-                  <select id="eodVariant">
-                    <option value="lvl0" selected>lvl0</option>
-                    <option value="lvl1">lvl1</option>
-                  </select>
-                </label>
-                <label>Days <input id="eodDays" type="number" min="5" max="120" value="30" style="width:80px;" /></label>
-                <button class="btn-primary" id="refreshEod">Refresh</button>
-              </div>
-              <div class="row" style="margin-top:10px;">
-                <div>Action rate: <span id="eodActionRate" class="pill">—</span></div>
-                <div>Acc (actionable): <span id="eodAccAction" class="pill">—</span></div>
-                <div>Overall acc: <span id="eodOverall" class="pill">—</span></div>
-              </div>
-              <div style="margin-top:14px;">
-                <canvas id="eodDailyChart" height="120"></canvas>
-              </div>
-            </div>
-          </div>
-        
-            </div>
-          </div>
-        </div>
-      </section>
-
-      
 
       <!-- DEBIT SPREADS -->
       <section class="view" id="view-debit">
@@ -1411,7 +1314,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function routeFromHash() {
 
       const h = (window.location.hash || '#overview').replace('#','');
-      const allowed = new Set(['overview','debit','backtest','portfolio','processing','timeseries','logs','controls']);
+      const allowed = new Set(['overview','debit','backtest','portfolio','processing','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
@@ -3284,6 +3187,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const excl = daily.series.map(x => x.accuracy_excluding_inconclusive).reverse();
 
       const ctx = document.getElementById('dailyChart');
+      if (!ctx) return {roll, daily};
       if (!dailyChart) {
         dailyChart = new Chart(ctx, {
           type: 'line',
@@ -3306,41 +3210,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return {roll, daily};
     }
 
-    // LLM bucket series
-    let llmBucketChart;
-    async function refreshLlmBuckets() {
-      if (!chartsAvailable()) {
-        showError('charts', 'Chart.js not available (CDN blocked/offline).');
-        return;
-      }
-      const wd = parseInt(document.getElementById('llmWinDays')?.value || '15', 10);
-      const bm = parseInt(document.getElementById('llmBucketMin')?.value || '15', 10);
-      const ms = parseInt(document.getElementById('llmMinSamples')?.value || '5', 10);
-      const data = await jget(`/api/metrics/series_buckets?window_days=${wd}&bucket_minutes=${bm}&min_samples=${ms}`);
-      const labels = (data.series || []).map(x => x.bucket_start);
-      const overall = (data.series || []).map(x => x.overall_accuracy);
-      const excl = (data.series || []).map(x => x.accuracy_excluding_inconclusive);
-
-      const ctx = document.getElementById('llmBucketChart');
-      if (!llmBucketChart) {
-        llmBucketChart = new Chart(ctx, {
-          type: 'line',
-          data: { labels, datasets: [
-            { label: 'overall_accuracy', data: overall, borderColor: '#38bdf8', tension: 0.15 },
-            { label: 'accuracy_excl_inconclusive', data: excl, borderColor: '#22c55e', tension: 0.15 },
-          ]},
-          options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
-        });
-      } else {
-        llmBucketChart.data.labels = labels;
-        llmBucketChart.data.datasets[0].data = overall;
-        llmBucketChart.data.datasets[1].data = excl;
-        llmBucketChart.update();
-      }
-
-      return data;
-    }
-
     // ML charts
     let mlDailyChart;
     async function refreshML() {
@@ -3361,6 +3230,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const acc = daily.series.map(x => x.accuracy_actionable).reverse();
 
       const ctx = document.getElementById('mlDailyChart');
+      if (!ctx) return {roll, daily};
       if (!mlDailyChart) {
         mlDailyChart = new Chart(ctx, {
           type: 'line',
@@ -3381,78 +3251,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
 
       return {roll, daily};
-    }
-
-    let mlBucketChart;
-    async function refreshMlBuckets() {
-      if (!chartsAvailable()) {
-        showError('charts', 'Chart.js not available (CDN blocked/offline).');
-        return;
-      }
-      const wd = parseInt(document.getElementById('mlWinDays')?.value || '15', 10);
-      const bm = parseInt(document.getElementById('mlBucketMin')?.value || '15', 10);
-      const ms = parseInt(document.getElementById('mlMinSamples')?.value || '5', 10);
-      const data = await jget(`/api/ml/metrics/series_buckets?window_days=${wd}&bucket_minutes=${bm}&min_samples=${ms}`);
-      const labels = (data.series || []).map(x => x.bucket_start);
-      const ar = (data.series || []).map(x => x.action_rate);
-      const aa = (data.series || []).map(x => x.accuracy_actionable);
-
-      const ctx = document.getElementById('mlBucketChart');
-      if (!mlBucketChart) {
-        mlBucketChart = new Chart(ctx, {
-          type: 'line',
-          data: { labels, datasets: [
-            { label: 'action_rate', data: ar, borderColor: '#f59e0b', tension: 0.15 },
-            { label: 'accuracy_actionable', data: aa, borderColor: '#a855f7', tension: 0.15 },
-          ]},
-          options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
-        });
-      } else {
-        mlBucketChart.data.labels = labels;
-        mlBucketChart.data.datasets[0].data = ar;
-        mlBucketChart.data.datasets[1].data = aa;
-        mlBucketChart.update();
-      }
-      return data;
-    }
-
-    // EOD
-    let eodDailyChart;
-    async function refreshEod() {
-      if (!chartsAvailable()) {
-        showError('charts', 'Chart.js not available (CDN blocked/offline).');
-        return;
-      }
-      const variant = document.getElementById('eodVariant')?.value || 'lvl0';
-      const days = parseInt(document.getElementById('eodDays')?.value || '30', 10);
-      const data = await jget(`/api/ml_eod/metrics/daily?days=${days}&variant=${variant}`);
-      const series = (data.series || []).slice().reverse();
-      const labels = series.map(x => x.day);
-      const ar = series.map(x => x.action_rate);
-      const aa = series.map(x => x.accuracy_actionable);
-
-      const last = (data.series || [])[0] || {};
-      document.getElementById('eodActionRate').textContent = fmtPct(last.action_rate);
-      document.getElementById('eodAccAction').textContent = fmtPct(last.accuracy_actionable);
-      document.getElementById('eodOverall').textContent = fmtPct(last.overall_accuracy);
-
-      const ctx = document.getElementById('eodDailyChart');
-      if (!eodDailyChart) {
-        eodDailyChart = new Chart(ctx, {
-          type: 'line',
-          data: { labels, datasets: [
-            { label: 'action_rate', data: ar, borderColor: '#f97316', tension: 0.2 },
-            { label: 'accuracy_actionable', data: aa, borderColor: '#06b6d4', tension: 0.2 },
-          ]},
-          options: { responsive: true, scales: { y: { min: 0, max: 1 } } }
-        });
-      } else {
-        eodDailyChart.data.labels = labels;
-        eodDailyChart.data.datasets[0].data = ar;
-        eodDailyChart.data.datasets[1].data = aa;
-        eodDailyChart.update();
-      }
-      return data;
     }
 
     // Logs
@@ -3561,9 +3359,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     });
 
     document.getElementById('refreshMetrics')?.addEventListener('click', () => safe('refreshMetrics', () => refreshMetrics()));
-    document.getElementById('refreshLlmBuckets')?.addEventListener('click', () => safe('refreshLlmBuckets', () => refreshLlmBuckets()));
-    document.getElementById('refreshMlBuckets')?.addEventListener('click', () => safe('refreshMlBuckets', () => refreshMlBuckets()));
-    document.getElementById('refreshEod')?.addEventListener('click', () => safe('refreshEod', () => refreshEod()));
     document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
@@ -3756,11 +3551,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('debit', () => refreshDebitSpreads());
       await safe('daily_pick', () => refreshDailyPick());
       await safe('debit_history', () => refreshDebitHistory());
-      await safe('llmBuckets', () => refreshLlmBuckets());
       await safe('llmMetrics', () => refreshMetrics());
       await safe('ml', () => refreshML());
-      await safe('mlBuckets', () => refreshMlBuckets());
-      await safe('eod', () => refreshEod());
       await safe('logs', () => refreshLogs());
 
             // Backtest Runs: init filters from localStorage
