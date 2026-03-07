@@ -57,6 +57,11 @@ def main() -> None:
             interval_seconds=cfg.reprice_interval_seconds,
             max_total_concession=cfg.reprice_max_total_concession,
         ),
+        close_only_mode=cfg.close_only_mode,
+        pretrade_required_checks=cfg.pretrade_required_checks,
+        require_complex_exit_orders=cfg.require_complex_exit_orders,
+        require_broker_external_identifier=cfg.require_broker_external_identifier,
+        max_reject_streak=cfg.max_reject_streak,
     )
 
     try:

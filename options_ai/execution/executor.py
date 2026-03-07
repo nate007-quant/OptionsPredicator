@@ -106,6 +106,11 @@ class ExecutionExecutor:
         reprice_defaults: RepricePolicy,
         connect_fn: Any | None = None,
         client: TastytradeClient | None = None,
+        close_only_mode: bool = False,
+        pretrade_required_checks: bool = True,
+        require_complex_exit_orders: bool = True,
+        require_broker_external_identifier: bool = True,
+        max_reject_streak: int = 5,
     ) -> None:
         self.db_path = str(db_path)
         self.environment = str(environment or "sandbox")
@@ -116,6 +121,11 @@ class ExecutionExecutor:
         self.reprice_defaults = reprice_defaults
         self._connect_fn = connect_fn
         self.client = client or TastytradeClient(environment=self.environment, dry_run=(not self.trading_enabled))
+        self.close_only_mode = bool(close_only_mode)
+        self.pretrade_required_checks = bool(pretrade_required_checks)
+        self.require_complex_exit_orders = bool(require_complex_exit_orders)
+        self.require_broker_external_identifier = bool(require_broker_external_identifier)
+        self.max_reject_streak = max(1, int(max_reject_streak))
 
     def _connect(self):
         if self._connect_fn is not None:
@@ -243,10 +253,41 @@ class ExecutionExecutor:
             ),
         )
 
-    def _mark_intent(self, con: sqlite3.Connection, *, intent_id: int, status: str, error: str | None = None) -> None:
+    def _mark_intent(
+        self,
+        con: sqlite3.Connection,
+        *,
+        intent_id: int,
+        status: str,
+        error: str | None = None,
+        broker_external_id: str | None = None,
+        precheck_status: str | None = None,
+        precheck_payload: dict[str, Any] | None = None,
+        risk_gate_status: str | None = None,
+        quarantine_reason: str | None = None,
+    ) -> None:
         con.execute(
-            "UPDATE execution_intents SET status=?, error=?, updated_at_utc=? WHERE id=?",
-            (str(status), (str(error) if error is not None else None), _now_utc_iso(), int(intent_id)),
+            """
+            UPDATE execution_intents
+            SET status=?, error=?, updated_at_utc=?,
+                broker_external_id=COALESCE(?, broker_external_id),
+                precheck_status=COALESCE(?, precheck_status),
+                precheck_payload_json=COALESCE(?, precheck_payload_json),
+                risk_gate_status=COALESCE(?, risk_gate_status),
+                quarantine_reason=COALESCE(?, quarantine_reason)
+            WHERE id=?
+            """,
+            (
+                str(status),
+                (str(error) if error is not None else None),
+                _now_utc_iso(),
+                (str(broker_external_id) if broker_external_id is not None else None),
+                (str(precheck_status) if precheck_status is not None else None),
+                (json.dumps(precheck_payload, separators=(",", ":"), sort_keys=True) if precheck_payload is not None else None),
+                (str(risk_gate_status) if risk_gate_status is not None else None),
+                (str(quarantine_reason) if quarantine_reason is not None else None),
+                int(intent_id),
+            ),
         )
 
     def _create_trade_run(self, con: sqlite3.Connection, *, intent_id: int, payload: dict[str, Any]) -> int:
@@ -274,6 +315,79 @@ class ExecutionExecutor:
         )
         return int(cur.lastrowid)
 
+    def _current_reject_streak(self, con: sqlite3.Connection) -> int:
+        rows = con.execute(
+            """
+            SELECT status FROM execution_intents
+            WHERE environment=? AND broker_name=?
+            ORDER BY id DESC LIMIT ?
+            """,
+            (self.environment, self.broker_name, int(self.max_reject_streak)),
+        ).fetchall()
+        streak = 0
+        for r in rows:
+            st = str(r[0] or '').lower()
+            if st in {'rejected', 'error', 'precheck_failed'}:
+                streak += 1
+            else:
+                break
+        return streak
+
+    def _run_prechecks(self, con: sqlite3.Connection, *, intent_id: int, dto: OrderDTO, long_sym: str, short_sym: str) -> tuple[bool, dict[str, Any], str | None]:
+        checks: dict[str, Any] = {}
+
+        # contract/symbology validation
+        checks['contract_validation'] = {
+            'ok': bool(long_sym and short_sym and long_sym != short_sym),
+            'long_symbol': long_sym,
+            'short_symbol': short_sym,
+        }
+
+        # order dry-run
+        try:
+            r = self.client.place_order(dto, dry_run=True)
+            checks['order_dry_run'] = {'ok': True, 'response': r}
+        except Exception as e:
+            checks['order_dry_run'] = {'ok': False, 'error': str(e)}
+
+        # margin dry-run
+        if hasattr(self.client, 'margin_check'):
+            try:
+                mr = self.client.margin_check(dto=dto, dry_run=True)
+                checks['margin_dry_run'] = {'ok': True, 'response': mr}
+            except Exception as e:
+                checks['margin_dry_run'] = {'ok': False, 'error': str(e)}
+        else:
+            checks['margin_dry_run'] = {'ok': True, 'skipped': 'unavailable'}
+
+        # trading status
+        if hasattr(self.client, 'get_trading_status'):
+            try:
+                ts = self.client.get_trading_status()
+                ok = bool((ts or {}).get('ok', True))
+                checks['trading_status_check'] = {'ok': ok, 'response': ts}
+            except Exception as e:
+                checks['trading_status_check'] = {'ok': False, 'error': str(e)}
+        else:
+            checks['trading_status_check'] = {'ok': True, 'skipped': 'unavailable'}
+
+        # position limit check (simple open trade cap)
+        row = con.execute(
+            "SELECT COUNT(*) FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
+            (self.environment, self.broker_name),
+        ).fetchone()
+        open_n = int((row[0] if row else 0) or 0)
+        checks['position_limit_check'] = {'ok': open_n < 50, 'open_count': open_n, 'limit': 50}
+
+        # reject streak circuit breaker
+        streak = self._current_reject_streak(con)
+        checks['reject_streak_breaker'] = {'ok': streak < self.max_reject_streak, 'streak': streak, 'max_reject_streak': self.max_reject_streak}
+
+        failed = [k for k, v in checks.items() if not bool((v or {}).get('ok', False))]
+        if self.pretrade_required_checks and failed:
+            return False, checks, ','.join(failed)
+        return True, checks, None
+
     def process_once(self, *, limit: int = 25) -> dict[str, Any]:
         out = {
             "scanned": 0,
@@ -283,6 +397,8 @@ class ExecutionExecutor:
             "blocked": 0,
             "expired": 0,
             "rejected": 0,
+            "precheck_failed": 0,
+            "quarantined": 0,
             "errors": 0,
         }
 
@@ -307,6 +423,13 @@ class ExecutionExecutor:
                     params = (payload.get("params") or {}) if isinstance(payload, dict) else {}
                     ew = (payload.get("entry_window_ct") or {}) if isinstance(payload, dict) else {}
 
+                    # close-only control plane gate
+                    if self.close_only_mode:
+                        self._mark_intent(con, intent_id=iid, status="QUARANTINED", error="close_only_mode", quarantine_reason="close_only_mode")
+                        out["quarantined"] += 1
+                        out["processed"] += 1
+                        continue
+
                     # entry window gate
                     now_hhmm = _hhmm_now(self.session_tz)
                     if not is_entry_window_open(
@@ -327,12 +450,12 @@ class ExecutionExecutor:
 
                     # daily loss/risk gate
                     if self._risk_blocked(con):
-                        self._mark_intent(con, intent_id=iid, status="blocked", error="risk gate blocked new entries")
+                        self._mark_intent(con, intent_id=iid, status="blocked", error="risk gate blocked new entries", risk_gate_status="blocked")
                         out["blocked"] += 1
                         out["processed"] += 1
                         continue
 
-                    self._mark_intent(con, intent_id=iid, status="submitting", error=None)
+                    self._mark_intent(con, intent_id=iid, status="PRECHECK_PENDING", error=None, precheck_status="running")
                     trade_run_id = self._create_trade_run(con, intent_id=iid, payload=payload)
 
                     long_sym, short_sym = self._extract_leg_symbols(params)
@@ -357,6 +480,61 @@ class ExecutionExecutor:
 
                     effect = self._price_effect_from_params(params)
                     base_limit = self._base_limit_from_params(params, effect=effect)
+
+                    broker_external_id = f"ei-{iid}-{int(time.time())}"
+                    if self.require_broker_external_identifier and (not broker_external_id):
+                        self._mark_intent(con, intent_id=iid, status="PRECHECK_FAILED", error="missing broker_external_id", precheck_status="failed")
+                        out["precheck_failed"] += 1
+                        out["processed"] += 1
+                        continue
+
+                    pre_dto = OrderDTO(
+                        account_number=(self.client.account_number or ""),
+                        underlying=str(it["symbol"] or "SPX"),
+                        quantity=1,
+                        price_effect=("CREDIT" if effect == "CREDIT" else "DEBIT"),
+                        limit_price=base_limit,
+                        legs=[
+                            OptionLeg(symbol=long_sym, quantity=1, side="BUY", effect="OPEN"),
+                            OptionLeg(symbol=short_sym, quantity=1, side="SELL", effect="OPEN"),
+                        ],
+                        client_order_id=broker_external_id,
+                    )
+                    ok_pre, pre_payload, pre_fail = self._run_prechecks(con, intent_id=iid, dto=pre_dto, long_sym=long_sym, short_sym=short_sym)
+                    if not ok_pre:
+                        self._mark_intent(
+                            con,
+                            intent_id=iid,
+                            status="PRECHECK_FAILED",
+                            error=(pre_fail or "precheck failed"),
+                            broker_external_id=broker_external_id,
+                            precheck_status="failed",
+                            precheck_payload=pre_payload,
+                            quarantine_reason=(pre_fail or "precheck_failed"),
+                        )
+                        self._record_order_event(
+                            con,
+                            trade_run_id=trade_run_id,
+                            execution_intent_id=iid,
+                            order_id=None,
+                            event_type="precheck_failed",
+                            status="rejected",
+                            payload={"checks": pre_payload, "reason": pre_fail},
+                        )
+                        out["precheck_failed"] += 1
+                        out["processed"] += 1
+                        continue
+
+                    self._mark_intent(
+                        con,
+                        intent_id=iid,
+                        status="submitting",
+                        error=None,
+                        broker_external_id=broker_external_id,
+                        precheck_status="passed",
+                        precheck_payload=pre_payload,
+                        risk_gate_status="passed",
+                    )
                     policy = self._load_reprice_policy(con, str(it["symbol"] or "SPX"))
 
                     order_id: str | None = None
@@ -381,7 +559,7 @@ class ExecutionExecutor:
                                 OptionLeg(symbol=long_sym, quantity=1, side="BUY", effect="OPEN"),
                                 OptionLeg(symbol=short_sym, quantity=1, side="SELL", effect="OPEN"),
                             ],
-                            client_order_id=f"intent-{iid}-a{attempt}",
+                            client_order_id=f"{broker_external_id}-a{attempt}",
                         )
 
                         if attempt == 1:
@@ -461,30 +639,63 @@ class ExecutionExecutor:
                                 dry_run=(not self.trading_enabled),
                             )
 
+                        armed_ok = not bool((oco_resp or {}).get("skipped", False))
                         self._record_order_event(
                             con,
                             trade_run_id=trade_run_id,
                             execution_intent_id=iid,
                             order_id=order_id,
-                            event_type="oco_armed",
-                            status="accepted",
+                            event_type=("oco_armed" if armed_ok else "PROTECTION_ARMING_FAILED"),
+                            status=("accepted" if armed_ok else "failed"),
                             payload={"response": oco_resp},
                         )
+
+                        if (not armed_ok) and self.require_complex_exit_orders:
+                            # hardening policy: immediate auto-close attempt
+                            try:
+                                cl = self.client.close_position(
+                                    account_number=(self.client.account_number or ""),
+                                    symbol=str(it["symbol"] or "SPX"),
+                                    quantity=1,
+                                    dry_run=(not self.trading_enabled),
+                                )
+                                self._record_order_event(
+                                    con,
+                                    trade_run_id=trade_run_id,
+                                    execution_intent_id=iid,
+                                    order_id=None,
+                                    event_type="auto_close_on_protection_fail",
+                                    status="accepted",
+                                    payload={"response": cl},
+                                )
+                                con.execute(
+                                    "UPDATE trade_runs SET status='closed', close_reason='PROTECTION_ARMING_FAILED', protection_state='failed', close_mode='force_close', updated_at_utc=?, closed_at_utc=? WHERE id=?",
+                                    (_now_utc_iso(), _now_utc_iso(), int(trade_run_id)),
+                                )
+                                self._mark_intent(con, intent_id=iid, status="PROTECTION_ARMING_FAILED", error="protection arming failed")
+                                out["errors"] += 1
+                                out["processed"] += 1
+                                continue
+                            except Exception as e:
+                                self._mark_intent(con, intent_id=iid, status="PROTECTION_ARMING_FAILED", error=str(e))
+                                out["errors"] += 1
+                                out["processed"] += 1
+                                continue
 
                         self._mark_intent(con, intent_id=iid, status="filled", error=None)
                         con.execute(
                             """
                             UPDATE trade_runs
-                            SET status='open', entry_order_id=?, opened_at_utc=?, updated_at_utc=?
+                            SET status='open', entry_order_id=?, complex_exit_order_id=?, protection_state=?, opened_at_utc=?, updated_at_utc=?
                             WHERE id=?
                             """,
-                            (order_id, _now_utc_iso(), _now_utc_iso(), int(trade_run_id)),
+                            (order_id, None, ('armed' if armed_ok else 'missing'), _now_utc_iso(), _now_utc_iso(), int(trade_run_id)),
                         )
                         out["filled"] += 1
                     else:
                         self._mark_intent(con, intent_id=iid, status="working", error=None)
                         con.execute(
-                            "UPDATE trade_runs SET status='open', entry_order_id=?, opened_at_utc=?, updated_at_utc=? WHERE id=?",
+                            "UPDATE trade_runs SET status='open', entry_order_id=?, protection_state='missing', opened_at_utc=?, updated_at_utc=? WHERE id=?",
                             (order_id, _now_utc_iso(), _now_utc_iso(), int(trade_run_id)),
                         )
                         out["working"] += 1

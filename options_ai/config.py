@@ -36,6 +36,18 @@ class Config:
     execution_monitor_poll_seconds: int = 10
     execution_risk_guard_poll_seconds: int = 15
 
+    # Execution hardening v1.1
+    target_api_version: str = "20260307"
+    close_only_mode: bool = False
+    max_reject_streak: int = 5
+    max_streamer_downtime_seconds: int = 120
+    max_allowed_entry_slippage_abs: float = 0.15
+    max_position_mismatch_count: int = 3
+    reconcile_interval_seconds: int = 10
+    pretrade_required_checks: bool = True
+    require_complex_exit_orders: bool = True
+    require_broker_external_identifier: bool = True
+
     # OAuth (v2.0)
     oauth_client_id: str = ""
     oauth_client_secret: str = ""
@@ -194,6 +206,16 @@ def load_config() -> Config:
         execution_poll_seconds=int(os.getenv("EXECUTION_POLL_SECONDS", "5")),
         execution_monitor_poll_seconds=int(os.getenv("EXECUTION_MONITOR_POLL_SECONDS", "10")),
         execution_risk_guard_poll_seconds=int(os.getenv("EXECUTION_RISK_GUARD_POLL_SECONDS", "15")),
+        target_api_version=os.getenv("TARGET_API_VERSION", "20260307").strip(),
+        close_only_mode=_get_bool("CLOSE_ONLY_MODE", False),
+        max_reject_streak=int(os.getenv("MAX_REJECT_STREAK", "5")),
+        max_streamer_downtime_seconds=int(os.getenv("MAX_STREAMER_DOWNTIME_SECONDS", "120")),
+        max_allowed_entry_slippage_abs=float(os.getenv("MAX_ALLOWED_ENTRY_SLIPPAGE_ABS", "0.15")),
+        max_position_mismatch_count=int(os.getenv("MAX_POSITION_MISMATCH_COUNT", "3")),
+        reconcile_interval_seconds=int(os.getenv("RECONCILE_INTERVAL_SECONDS", "10")),
+        pretrade_required_checks=_get_bool("PRETRADE_REQUIRED_CHECKS", True),
+        require_complex_exit_orders=_get_bool("REQUIRE_COMPLEX_EXIT_ORDERS", True),
+        require_broker_external_identifier=_get_bool("REQUIRE_BROKER_EXTERNAL_IDENTIFIER", True),
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         oauth_token_url=oauth_token_url,

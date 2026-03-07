@@ -42,6 +42,7 @@ def main() -> None:
         streamer_url=cfg.tasty_streamer_url,
         environment=cfg.broker_env,
         dry_run=(not cfg.trading_enabled),
+        target_api_version=cfg.target_api_version,
     )
 
     rg = RiskGuard(

@@ -158,6 +158,7 @@ class TastytradeClient:
         account_number: str | None = None,
         timeout_seconds: int = 20,
         dry_run: bool = True,
+        target_api_version: str | None = None,
     ) -> None:
         self.environment = str(environment or "sandbox").lower()
         self.base_url = (base_url or os.getenv("TASTY_BASE_URL") or "https://api.cert.tastyworks.com").rstrip("/")
@@ -168,6 +169,7 @@ class TastytradeClient:
         self.account_number = (account_number or os.getenv("TASTY_ACCOUNT_NUMBER") or "").strip() or None
         self.timeout_seconds = int(timeout_seconds)
         self.dry_run = bool(dry_run)
+        self.target_api_version = (target_api_version or os.getenv("TARGET_API_VERSION") or "").strip() or None
 
     def _headers(self) -> dict[str, str]:
         h = {
@@ -176,6 +178,8 @@ class TastytradeClient:
         }
         if self.session_token:
             h["Authorization"] = f"Bearer {self.session_token}"
+        if self.target_api_version:
+            h["Accept-Version"] = str(self.target_api_version)
         return h
 
     def _request(self, method: str, path: str, *, json_body: Any | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
