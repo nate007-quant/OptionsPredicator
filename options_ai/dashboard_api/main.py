@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import sqlite3
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
@@ -250,6 +251,13 @@ def _central_day_key(iso_ts: str | None) -> str | None:
 
 def create_app() -> FastAPI:
     cfg = load_config()
+
+    if cfg.trading_enabled:
+        logging.getLogger("options_ai.dashboard_api").warning(
+            "TRADING_ENABLED=true at startup (broker=%s env=%s). Verify risk controls before proceeding.",
+            cfg.broker_name,
+            cfg.broker_env,
+        )
 
     data_root = Path(os.getenv("DATA_ROOT", cfg.data_root or "/mnt/options_ai"))
     logs_root = data_root / "logs"

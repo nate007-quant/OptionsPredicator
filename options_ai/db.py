@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import hashlib
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -228,6 +229,45 @@ def _ensure_event_time_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_predictions_outcome_ts_utc ON predictions(outcome_ts_utc)")
 
 
+def _apply_sql_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> None:
+    migrations_dir = Path(migrations_dir)
+    if not migrations_dir.exists() or not migrations_dir.is_dir():
+        return
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          filename TEXT NOT NULL UNIQUE,
+          checksum_sha256 TEXT NOT NULL,
+          applied_at_utc TEXT NOT NULL
+        );
+        """
+    )
+
+    for path in sorted(migrations_dir.glob('*.sql')):
+        fname = path.name
+        sql_text = path.read_text(encoding='utf-8')
+        checksum = hashlib.sha256(sql_text.encode('utf-8')).hexdigest()
+
+        row = conn.execute(
+            "SELECT filename, checksum_sha256 FROM schema_migrations WHERE filename=?",
+            (fname,),
+        ).fetchone()
+        if row is not None:
+            # Already applied; fail closed if checksum changed.
+            if str(row[1]) != checksum:
+                raise RuntimeError(f"migration checksum mismatch for {fname}")
+            continue
+
+        conn.executescript(sql_text)
+        conn.execute(
+            "INSERT INTO schema_migrations(filename, checksum_sha256, applied_at_utc) VALUES(?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            (fname, checksum),
+        )
+
+
+
 def init_db(db_path: str, schema_sql_path: str) -> None:
     schema_sql = Path(schema_sql_path).read_text(encoding="utf-8")
     with connect(db_path) as conn:
@@ -314,6 +354,13 @@ def init_db(db_path: str, schema_sql_path: str) -> None:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_eod_predictions_trade_day ON eod_predictions(trade_day)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_eod_predictions_model_version ON eod_predictions(model_version)")
+        except Exception:
+            pass
+
+        # SQL migrations (execution + future additive migrations)
+        try:
+            migrations_dir = Path(__file__).parent / "db" / "migrations"
+            _apply_sql_migrations(conn, migrations_dir)
         except Exception:
             pass
 

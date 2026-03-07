@@ -13,6 +13,24 @@ class Config:
     ticker: str
     data_root: str
 
+    # Execution (v1)
+    trading_enabled: bool = False
+    broker_name: str = "tastytrade"
+    broker_env: str = "sandbox"  # sandbox|live
+    tasty_base_url: str = "https://api.cert.tastyworks.com"
+    tasty_streamer_url: str = ""
+
+    # Risk/session (v1)
+    max_daily_loss_usd: float = 300.0
+    session_tz: str = "America/Chicago"
+    force_close_minutes_before_end: int = 15
+
+    # Reprice defaults (v1)
+    reprice_max_attempts: int = 3
+    reprice_step: float = 0.05
+    reprice_interval_seconds: int = 25
+    reprice_max_total_concession: float = 0.15
+
     # OAuth (v2.0)
     oauth_client_id: str = ""
     oauth_client_secret: str = ""
@@ -126,6 +144,15 @@ def load_config() -> Config:
     ticker = os.getenv("TICKER", "SPX").strip().upper()
     data_root = os.getenv("DATA_ROOT", "/mnt/options_ai").strip()
 
+    # Execution (v1)
+    trading_enabled = _get_bool("TRADING_ENABLED", False)
+    broker_name = os.getenv("BROKER_NAME", "tastytrade").strip().lower() or "tastytrade"
+    broker_env = os.getenv("BROKER_ENV", "sandbox").strip().lower() or "sandbox"
+    if broker_env not in {"sandbox", "live"}:
+        broker_env = "sandbox"
+    tasty_base_url = os.getenv("TASTY_BASE_URL", "https://api.cert.tastyworks.com").strip()
+    tasty_streamer_url = os.getenv("TASTY_STREAMER_URL", "").strip()
+
     # OAuth (v2.0)
     oauth_client_id = os.getenv("OAUTH_CLIENT_ID", "").strip()
     oauth_client_secret = os.getenv("OAUTH_CLIENT_SECRET", "").strip()
@@ -146,6 +173,18 @@ def load_config() -> Config:
         database_url=database_url,
         ticker=ticker,
         data_root=data_root,
+        trading_enabled=trading_enabled,
+        broker_name=broker_name,
+        broker_env=broker_env,
+        tasty_base_url=tasty_base_url,
+        tasty_streamer_url=tasty_streamer_url,
+        max_daily_loss_usd=float(os.getenv("MAX_DAILY_LOSS_USD", "300")),
+        session_tz=os.getenv("SESSION_TZ", "America/Chicago").strip(),
+        force_close_minutes_before_end=int(os.getenv("FORCE_CLOSE_MINUTES_BEFORE_END", "15")),
+        reprice_max_attempts=int(os.getenv("REPRICE_MAX_ATTEMPTS", "3")),
+        reprice_step=float(os.getenv("REPRICE_STEP", "0.05")),
+        reprice_interval_seconds=int(os.getenv("REPRICE_INTERVAL_SECONDS", "25")),
+        reprice_max_total_concession=float(os.getenv("REPRICE_MAX_TOTAL_CONCESSION", "0.15")),
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         oauth_token_url=oauth_token_url,
