@@ -391,6 +391,7 @@
         <a href="#debit" data-view="debit">Debit Spreads</a>
         <a href="#backtest" data-view="backtest">Backtest</a>
         <a href="#portfolio" data-view="portfolio">Portfolio Backtest</a>
+        <a href="#execution" data-view="execution">Execution</a>
         <a href="#processing" data-view="processing">Processing</a>
                 <a href="#logs" data-view="logs">Logs</a>
         <a href="#controls" data-view="controls">Controls & Admin</a>
@@ -494,6 +495,111 @@
             </div>
           </div>
 
+        </div>
+      </section>
+
+
+      <!-- EXECUTION -->
+      <section class="view" id="view-execution">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-h"><h2>Risk Session</h2><div class="hint">Daily loss guard + kill switch</div></div>
+            <div class="card-b">
+              <div class="row">
+                <div>Realized: <span id="exRiskRealized" class="pill">—</span></div>
+                <div>Unrealized: <span id="exRiskUnrealized" class="pill">—</span></div>
+                <div>Max loss: <span id="exRiskMaxLoss" class="pill">—</span></div>
+                <div>Blocked: <span id="exRiskBlocked" class="pill">—</span></div>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <div>Force-close countdown: <span id="exForceCountdown" class="pill">—</span></div>
+                <button class="btn-danger" id="exKillOn">Kill switch ON</button>
+                <button id="exKillOff">Kill switch OFF</button>
+              </div>
+              <div class="hint" id="exRiskNote" style="margin-top:8px;"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>Reprice Policy</h2><div class="hint">SPX default</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Underlying <input id="exRpUnderlying" value="SPX" style="width:90px;" /></label>
+                <label>Attempts <input id="exRpAttempts" type="number" min="1" max="20" value="3" style="width:90px;" /></label>
+                <label>Step <input id="exRpStep" type="number" step="0.01" min="0" value="0.05" style="width:90px;" /></label>
+                <label>Interval(s) <input id="exRpInterval" type="number" min="1" max="3600" value="25" style="width:90px;" /></label>
+                <label>Max concession <input id="exRpCap" type="number" step="0.01" min="0" value="0.15" style="width:90px;" /></label>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <label><input id="exRpEnabled" type="checkbox" checked /> enabled</label>
+                <button class="btn-primary" id="exRpLoad">Load</button>
+                <button id="exRpSave">Save</button>
+                <span class="hint" id="exRpNote"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid2" style="margin-top: var(--space-4);">
+          <div class="card">
+            <div class="card-h"><h2>Open Trades</h2><div class="hint">Protection status + PnL</div></div>
+            <div class="card-b">
+              <div class="row"><button class="btn-primary" id="exRefreshTrades">Refresh</button></div>
+              <div style="margin-top:10px; overflow:auto; max-height:340px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>id</th>
+                      <th>status</th>
+                      <th>underlying</th>
+                      <th>qty</th>
+                      <th>protection</th>
+                      <th>realized</th>
+                      <th>unrealized</th>
+                    </tr>
+                  </thead>
+                  <tbody id="exTradesTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>Intents</h2><div class="hint">Recent execution intents</div></div>
+            <div class="card-b">
+              <div class="row">
+                <label>Status
+                  <select id="exIntentStatus">
+                    <option value="">(all)</option>
+                    <option value="pending">pending</option>
+                    <option value="submitting">submitting</option>
+                    <option value="working">working</option>
+                    <option value="filled">filled</option>
+                    <option value="rejected">rejected</option>
+                    <option value="expired">expired</option>
+                    <option value="blocked">blocked</option>
+                    <option value="error">error</option>
+                  </select>
+                </label>
+                <button class="btn-primary" id="exRefreshIntents">Refresh</button>
+              </div>
+              <div style="margin-top:10px; overflow:auto; max-height:340px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>id</th>
+                      <th>status</th>
+                      <th>strategy</th>
+                      <th>symbol</th>
+                      <th>candidate_ref</th>
+                      <th>updated</th>
+                    </tr>
+                  </thead>
+                  <tbody id="exIntentsTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1314,7 +1420,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function routeFromHash() {
 
       const h = (window.location.hash || '#overview').replace('#','');
-      const allowed = new Set(['overview','debit','backtest','portfolio','processing','logs','controls']);
+      const allowed = new Set(['overview','debit','backtest','portfolio','execution','processing','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
@@ -3253,6 +3359,122 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return {roll, daily};
     }
 
+
+    // Execution UI
+    function exFmtMoney(x) {
+      if (x === null || x === undefined) return '—';
+      const n = Number(x);
+      if (!Number.isFinite(n)) return '—';
+      return (n < 0 ? '-' : '') + '$' + Math.abs(n).toFixed(2);
+    }
+
+    function exRenderCountdown() {
+      const el = document.getElementById('exForceCountdown');
+      if (!el) return;
+      const now = new Date();
+      const local = new Date(now.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+      const close = new Date(local);
+      close.setHours(15, 0, 0, 0); // approx regular close in CT
+      const trigger = new Date(close.getTime() - 15 * 60 * 1000);
+      const ms = trigger - local;
+      if (ms <= 0) {
+        el.textContent = 'active/elapsed';
+        return;
+      }
+      const m = Math.floor(ms / 60000);
+      const hh = Math.floor(m / 60);
+      const mm = m % 60;
+      el.textContent = `${hh}h ${mm}m`;
+    }
+
+    async function exRefreshRiskSession() {
+      const d = await jget('/api/execution/risk-session');
+      document.getElementById('exRiskRealized').textContent = exFmtMoney(d.realized_pnl_usd);
+      document.getElementById('exRiskUnrealized').textContent = exFmtMoney(d.unrealized_pnl_usd);
+      document.getElementById('exRiskMaxLoss').textContent = exFmtMoney(-Math.abs(Number(d.max_daily_loss_usd || 0)));
+      document.getElementById('exRiskBlocked').textContent = d.block_new_entries ? 'YES' : 'NO';
+      document.getElementById('exRiskNote').textContent = d.reason ? `reason: ${d.reason}` : '';
+      exRenderCountdown();
+      return d;
+    }
+
+    async function exSetKillSwitch(on) {
+      const d = await jpost('/api/execution/kill-switch', { block_new_entries: !!on, reason: (on ? 'manual_kill_switch' : 'manual_unblock') });
+      toast(on ? 'kill switch enabled' : 'kill switch disabled', on ? 'warn' : 'success');
+      return d;
+    }
+
+    async function exLoadRepricePolicy() {
+      const u = (document.getElementById('exRpUnderlying')?.value || 'SPX').trim().toUpperCase() || 'SPX';
+      const d = await jget(`/api/execution/reprice-policy?underlying=${encodeURIComponent(u)}`);
+      document.getElementById('exRpUnderlying').value = d.underlying || u;
+      document.getElementById('exRpAttempts').value = String(d.max_attempts ?? 3);
+      document.getElementById('exRpStep').value = String(d.step ?? 0.05);
+      document.getElementById('exRpInterval').value = String(d.interval_seconds ?? 25);
+      document.getElementById('exRpCap').value = String(d.max_total_concession ?? 0.15);
+      document.getElementById('exRpEnabled').checked = !!d.enabled;
+      document.getElementById('exRpNote').textContent = `updated: ${d.updated_at_utc || '—'}`;
+      return d;
+    }
+
+    async function exSaveRepricePolicy() {
+      const body = {
+        underlying: (document.getElementById('exRpUnderlying')?.value || 'SPX').trim().toUpperCase() || 'SPX',
+        max_attempts: Number(document.getElementById('exRpAttempts')?.value || 3),
+        step: Number(document.getElementById('exRpStep')?.value || 0.05),
+        interval_seconds: Number(document.getElementById('exRpInterval')?.value || 25),
+        max_total_concession: Number(document.getElementById('exRpCap')?.value || 0.15),
+        enabled: !!document.getElementById('exRpEnabled')?.checked,
+      };
+      const d = await jput('/api/execution/reprice-policy', body);
+      document.getElementById('exRpNote').textContent = `updated: ${d.updated_at_utc || '—'}`;
+      toast('reprice policy saved', 'success');
+      return d;
+    }
+
+    async function exRefreshOpenTrades() {
+      const d = await jget('/api/execution/trades/open?limit=500');
+      const tb = document.getElementById('exTradesTable');
+      if (!tb) return d;
+      tb.innerHTML = '';
+      for (const it of (d.items || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${it.id ?? ''}</td>
+          <td>${it.status ?? ''}</td>
+          <td>${it.underlying ?? ''}</td>
+          <td>${it.qty ?? ''}</td>
+          <td>${it.protection_status ?? ''}</td>
+          <td>${exFmtMoney(it.pnl_realized_usd)}</td>
+          <td>${exFmtMoney(it.pnl_unrealized_usd)}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return d;
+    }
+
+    async function exRefreshIntents() {
+      const st = (document.getElementById('exIntentStatus')?.value || '').trim();
+      const q = st ? `?status=${encodeURIComponent(st)}&limit=500` : '?limit=500';
+      const d = await jget(`/api/execution/intents${q}`);
+      const tb = document.getElementById('exIntentsTable');
+      if (!tb) return d;
+      tb.innerHTML = '';
+      for (const it of (d.items || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${it.id ?? ''}</td>
+          <td>${it.status ?? ''}</td>
+          <td>${it.strategy_key ?? ''}</td>
+          <td>${it.symbol ?? ''}</td>
+          <td>${it.candidate_ref ?? ''}</td>
+          <td>${it.updated_at_utc ?? ''}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return d;
+    }
+
     // Logs
     async function refreshLogs() {
       const name = document.getElementById('logName').value;
@@ -3360,6 +3582,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     document.getElementById('refreshMetrics')?.addEventListener('click', () => safe('refreshMetrics', () => refreshMetrics()));
     document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
+
+    document.getElementById('exRefreshTrades')?.addEventListener('click', () => safe('ex_trades', () => exRefreshOpenTrades()));
+    document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
+    document.getElementById('exRpLoad')?.addEventListener('click', () => safe('ex_rp_load', () => exLoadRepricePolicy()));
+    document.getElementById('exRpSave')?.addEventListener('click', () => safe('ex_rp_save', () => exSaveRepricePolicy()));
+    document.getElementById('exKillOn')?.addEventListener('click', () => safe('ex_kill_on', () => exSetKillSwitch(true)));
+    document.getElementById('exKillOff')?.addEventListener('click', () => safe('ex_kill_off', () => exSetKillSwitch(false)));
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
@@ -3545,6 +3774,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       await safe('health', () => refreshHealth());
       await safe('config', () => refreshConfig());
+      await safe('ex_risk', () => exRefreshRiskSession());
+      await safe('ex_reprice', () => exLoadRepricePolicy());
+      await safe('ex_trades', () => exRefreshOpenTrades());
+      await safe('ex_intents', () => exRefreshIntents());
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
       await safe('pipes', () => refreshPipelines());
@@ -3570,6 +3803,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       // intervals
       setInterval(() => safe('health', () => refreshHealth()), 5000);
       setInterval(() => safe('config', () => refreshConfig()), 5000);
+      setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
+      setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), 7000);
       setInterval(() => safe('processing', () => refreshProcessing()), 2000);
       setInterval(() => safe('pipes', () => refreshPipelines()), 10000);
       setInterval(() => safe('tokens', () => refreshTokens()), 10000);
