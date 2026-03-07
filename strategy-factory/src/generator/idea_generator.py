@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +38,51 @@ def _parse_bool(v: Any) -> bool:
     return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
 
+
+
+def _resolve_openai_auth() -> tuple[str | None, str]:
+    """Resolve auth token for OpenAI client.
+
+    Supports:
+      - API key (OPENAI_API_KEY)
+      - OAuth bearer token (OPENAI_OAUTH_ACCESS_TOKEN)
+      - OAuth token command (OPENAI_OAUTH_TOKEN_CMD), output can be:
+          * raw token string
+          * JSON with access_token
+
+    Auth mode:
+      - STRATEGY_FACTORY_AI_AUTH_MODE=oauth -> ignore OPENAI_API_KEY fallback
+      - default/auto -> prefer API key then oauth token
+    """
+    mode = str(os.getenv("STRATEGY_FACTORY_AI_AUTH_MODE", "auto")).strip().lower()
+
+    if mode != 'oauth':
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if api_key:
+            return api_key, 'api_key'
+
+    oauth_tok = os.getenv("OPENAI_OAUTH_ACCESS_TOKEN", "").strip()
+    if oauth_tok:
+        return oauth_tok, 'oauth_access_token'
+
+    cmd = os.getenv("OPENAI_OAUTH_TOKEN_CMD", "").strip()
+    if cmd:
+        try:
+            out = subprocess.check_output(cmd, shell=True, text=True, timeout=20).strip()
+            if out:
+                try:
+                    obj = json.loads(out)
+                    tok = (obj.get('access_token') if isinstance(obj, dict) else None)
+                    if tok:
+                        return str(tok), 'oauth_token_cmd_json'
+                except Exception:
+                    pass
+                return out, 'oauth_token_cmd_raw'
+        except Exception:
+            return None, 'oauth_token_cmd_error'
+
+    return None, 'none'
+
 def _generate_ai_ideas(
     *,
     run_id: str,
@@ -46,7 +92,7 @@ def _generate_ai_ideas(
     timeout_seconds: int,
     approved_structures: list[str],
 ) -> list[Idea]:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key, auth_source = _resolve_openai_auth()
     if not api_key:
         return []
 

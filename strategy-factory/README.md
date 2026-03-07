@@ -172,6 +172,19 @@ export OPENAI_API_KEY=...
 - `configs/generator.yaml` -> `ai.enabled: true`, or
 - env flag: `STRATEGY_FACTORY_AI_ENABLED=true`
 
+3. Auth options (API key **or OAuth token**):
+
+```bash
+# API key mode (default auto)
+export OPENAI_API_KEY=...
+
+# OAuth mode
+export STRATEGY_FACTORY_AI_AUTH_MODE=oauth
+export OPENAI_OAUTH_ACCESS_TOKEN=...
+# or fetch token dynamically each run
+export OPENAI_OAUTH_TOKEN_CMD="your-token-command --json"
+```
+
 Optional model override:
 
 ```bash
