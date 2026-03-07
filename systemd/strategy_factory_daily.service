@@ -21,6 +21,7 @@ Group=nate
 WorkingDirectory=/opt/OptionsPredicator
 EnvironmentFile=/opt/OptionsPredicator/.env
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/OptionsPredicator/strategy-factory/src
 ExecStart=/opt/OptionsPredicator/.venv/bin/python strategy-factory/src/orchestrator/run_daily.py --repo-root /opt/OptionsPredicator
 Nice=10
 NoNewPrivileges=true
