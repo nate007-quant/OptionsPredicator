@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BacktestResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "strategy_id",
+    "spec_hash",
+    "data_snapshot_id",
+    "engine",
+    "period",
+    "metrics",
+    "options_metrics",
+    "robustness",
+    "decision"
+  ],
+  "properties": {
+    "run_id": {"type": "string"},
+    "strategy_id": {"type": "string"},
+    "spec_hash": {"type": "string"},
+    "data_snapshot_id": {"type": "string"},
+    "engine": {"type": "string"},
+    "period": {"type": "object"},
+    "metrics": {
+      "type": "object",
+      "required": ["cagr", "sharpe", "sortino", "calmar", "max_drawdown_pct", "win_rate", "profit_factor", "trades", "return_on_margin"]
+    },
+    "options_metrics": {
+      "type": "object",
+      "required": ["assignment_events", "spread_slippage", "pnl_decomposition"]
+    },
+    "robustness": {
+      "type": "object",
+      "required": ["oos_pass", "walk_forward_pass", "cost_stress_pass", "parameter_stability_pass", "min_trade_count_pass"]
+    },
+    "decision": {
+      "type": "object",
+      "required": ["state", "score", "reasons"],
+      "properties": {
+        "state": {"type": "string"},
+        "score": {"type": "number"},
+        "reasons": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "capability_gaps": {"type": "array", "items": {"type": "string"}}
+  }
+}

@@ -1,0 +1,16 @@
+hard_gates:
+  min_trades: 20
+  max_drawdown_pct: 25.0
+  min_oos_sharpe: 0.6
+  min_oos_calmar: 0.4
+  min_walk_forward_pass_ratio: 0.6
+  min_parameter_stability_score: 0.55
+  max_cost_stress_degradation_pct: 35.0
+
+stress_scenarios:
+  - base
+  - adverse
+  - severe
+
+promotion:
+  paper_to_live_requires_approval: true

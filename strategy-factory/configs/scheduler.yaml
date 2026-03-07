@@ -1,0 +1,10 @@
+timezone: UTC
+schedule_cron: "5 0 * * *"
+default_run_time_utc: "00:05"
+retries:
+  max_attempts: 2
+  retry_delay_seconds: 60
+runtime:
+  max_runtime_seconds: 7200
+  lock_file: "strategy-factory/artifacts/runs/.factory.lock"
+  skip_if_active: true
