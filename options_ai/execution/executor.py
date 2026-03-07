@@ -191,6 +191,17 @@ class ExecutionExecutor:
         return long_sym, short_sym
 
     @staticmethod
+    def _intent_qty(params: dict[str, Any]) -> int:
+        p = params or {}
+        for k in ('qty', 'quantity', 'contracts'):
+            if p.get(k) is not None:
+                try:
+                    return max(1, int(p.get(k)))
+                except Exception:
+                    pass
+        return 1
+
+    @staticmethod
     def _price_effect_from_params(params: dict[str, Any]) -> str:
         style = str((params or {}).get("spread_style") or "debit").strip().lower()
         return "CREDIT" if style == "credit" else "DEBIT"
@@ -255,6 +266,33 @@ class ExecutionExecutor:
             ),
         )
 
+    def _record_incident(
+        self,
+        con: sqlite3.Connection,
+        *,
+        severity: str,
+        incident_type: str,
+        trade_run_id: int | None,
+        execution_intent_id: int | None,
+        details: dict[str, Any],
+    ) -> None:
+        con.execute(
+            """
+            INSERT INTO incident_events(created_at_utc, environment, broker_name, severity, incident_type, trade_run_id, execution_intent_id, details_json)
+            VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                _now_utc_iso(),
+                self.environment,
+                self.broker_name,
+                str(severity),
+                str(incident_type),
+                (int(trade_run_id) if trade_run_id is not None else None),
+                (int(execution_intent_id) if execution_intent_id is not None else None),
+                json.dumps(details, separators=(",", ":"), sort_keys=True),
+            ),
+        )
+
     def _mark_intent(
         self,
         con: sqlite3.Connection,
@@ -292,7 +330,7 @@ class ExecutionExecutor:
             ),
         )
 
-    def _create_trade_run(self, con: sqlite3.Connection, *, intent_id: int, payload: dict[str, Any]) -> int:
+    def _create_trade_run(self, con: sqlite3.Connection, *, intent_id: int, payload: dict[str, Any], qty: int = 1) -> int:
         params = (payload.get("params") or {}) if isinstance(payload, dict) else {}
         cur = con.execute(
             """
@@ -310,7 +348,7 @@ class ExecutionExecutor:
                 int(intent_id),
                 str((payload.get("symbol") if isinstance(payload, dict) else None) or "SPX"),
                 str(self._price_effect_from_params(params)),
-                1,
+                int(max(1, qty)),
                 "intent_executor",
                 json.dumps(payload, separators=(",", ":"), sort_keys=True),
             ),
@@ -461,6 +499,7 @@ class ExecutionExecutor:
                 try:
                     payload = _parse_json(it["intent_payload_json"], {})
                     params = (payload.get("params") or {}) if isinstance(payload, dict) else {}
+                    qty = self._intent_qty(params)
                     ew = (payload.get("entry_window_ct") or {}) if isinstance(payload, dict) else {}
 
                     # close-only control plane gate
@@ -496,7 +535,7 @@ class ExecutionExecutor:
                         continue
 
                     self._mark_intent(con, intent_id=iid, status="PRECHECK_PENDING", error=None, precheck_status="running")
-                    trade_run_id = self._create_trade_run(con, intent_id=iid, payload=payload)
+                    trade_run_id = self._create_trade_run(con, intent_id=iid, payload=payload, qty=qty)
 
                     long_sym, short_sym = self._extract_leg_symbols(params)
                     if not long_sym or not short_sym:
@@ -524,6 +563,7 @@ class ExecutionExecutor:
                     broker_external_id = f"ei-{iid}-{int(time.time())}"
                     if self.require_broker_external_identifier and (not broker_external_id):
                         self._mark_intent(con, intent_id=iid, status="PRECHECK_FAILED", error="missing broker_external_id", precheck_status="failed")
+                        self._record_incident(con, severity="error", incident_type="precheck_failed", trade_run_id=trade_run_id, execution_intent_id=iid, details={"reason": pre_fail, "checks": pre_payload})
                         out["precheck_failed"] += 1
                         out["processed"] += 1
                         continue
@@ -531,12 +571,12 @@ class ExecutionExecutor:
                     pre_dto = OrderDTO(
                         account_number=(self.client.account_number or ""),
                         underlying=str(it["symbol"] or "SPX"),
-                        quantity=1,
+                        quantity=qty,
                         price_effect=("CREDIT" if effect == "CREDIT" else "DEBIT"),
                         limit_price=base_limit,
                         legs=[
-                            OptionLeg(symbol=long_sym, quantity=1, side="BUY", effect="OPEN"),
-                            OptionLeg(symbol=short_sym, quantity=1, side="SELL", effect="OPEN"),
+                            OptionLeg(symbol=long_sym, quantity=qty, side="BUY", effect="OPEN"),
+                            OptionLeg(symbol=short_sym, quantity=qty, side="SELL", effect="OPEN"),
                         ],
                         client_order_id=broker_external_id,
                     )
@@ -561,6 +601,7 @@ class ExecutionExecutor:
                             status="rejected",
                             payload={"checks": pre_payload, "reason": pre_fail},
                         )
+                        self._record_incident(con, severity="error", incident_type="precheck_failed", trade_run_id=trade_run_id, execution_intent_id=iid, details={"reason": pre_fail, "checks": pre_payload})
                         out["precheck_failed"] += 1
                         out["processed"] += 1
                         continue
@@ -592,18 +633,33 @@ class ExecutionExecutor:
                         dto = OrderDTO(
                             account_number=(self.client.account_number or ""),
                             underlying=str(it["symbol"] or "SPX"),
-                            quantity=1,
+                            quantity=qty,
                             price_effect=("CREDIT" if effect == "CREDIT" else "DEBIT"),
                             limit_price=limit_px,
                             legs=[
-                                OptionLeg(symbol=long_sym, quantity=1, side="BUY", effect="OPEN"),
-                                OptionLeg(symbol=short_sym, quantity=1, side="SELL", effect="OPEN"),
+                                OptionLeg(symbol=long_sym, quantity=qty, side="BUY", effect="OPEN"),
+                                OptionLeg(symbol=short_sym, quantity=qty, side="SELL", effect="OPEN"),
                             ],
                             client_order_id=f"{broker_external_id}-a{attempt}",
                         )
 
                         if attempt == 1:
-                            resp = self.client.place_order(dto, dry_run=(not self.trading_enabled))
+                            resp = self.client.place_order_with_warning_reconfirm(dto, dry_run=(not self.trading_enabled)) if hasattr(self.client, 'place_order_with_warning_reconfirm') else self.client.place_order(dto, dry_run=(not self.trading_enabled))
+                            if isinstance(resp, dict) and ('reconfirm' in resp):
+                                self._mark_intent(con, intent_id=iid, status='WARNING_RECONFIRM_REQUIRED', error=None)
+                                self._record_order_event(
+                                    con,
+                                    trade_run_id=trade_run_id,
+                                    execution_intent_id=iid,
+                                    order_id=None,
+                                    event_type='warning_reconfirm_completed',
+                                    status='accepted',
+                                    payload=resp,
+                                )
+                                # proceed using reconfirm payload
+                                rr = resp.get('reconfirm')
+                                if isinstance(rr, dict):
+                                    resp = rr
                         else:
                             if order_id:
                                 resp = self.client.replace_order(
@@ -643,6 +699,14 @@ class ExecutionExecutor:
 
                     if filled:
                         # place OCO exits from candidate TP/SL params
+                        filled_qty = qty
+                        try:
+                            fd = (resp.get('data') if isinstance(resp, dict) else None) or {}
+                            fq = fd.get('filled-quantity') or fd.get('filled_quantity') or fd.get('filled_qty')
+                            if fq is not None:
+                                filled_qty = max(1, int(float(fq)))
+                        except Exception:
+                            filled_qty = qty
                         tp = (payload.get("risk") or {}).get("take_profit_pct")
                         sl = (payload.get("risk") or {}).get("stop_loss")
                         oco_resp = {"skipped": True, "reason": "no tp/sl params"}
@@ -651,33 +715,43 @@ class ExecutionExecutor:
                             tp_dto = OrderDTO(
                                 account_number=(self.client.account_number or ""),
                                 underlying=str(it["symbol"] or "SPX"),
-                                quantity=1,
+                                quantity=qty,
                                 price_effect=("CREDIT" if effect == "DEBIT" else "DEBIT"),
                                 limit_price=max(0.01, float(base_limit) + 0.10),
                                 legs=[
-                                    OptionLeg(symbol=long_sym, quantity=1, side="SELL", effect="CLOSE"),
-                                    OptionLeg(symbol=short_sym, quantity=1, side="BUY", effect="CLOSE"),
+                                    OptionLeg(symbol=long_sym, quantity=filled_qty, side="SELL", effect="CLOSE"),
+                                    OptionLeg(symbol=short_sym, quantity=filled_qty, side="BUY", effect="CLOSE"),
                                 ],
                                 client_order_id=f"intent-{iid}-tp",
                             )
                             sl_dto = OrderDTO(
                                 account_number=(self.client.account_number or ""),
                                 underlying=str(it["symbol"] or "SPX"),
-                                quantity=1,
+                                quantity=qty,
                                 price_effect=("DEBIT" if effect == "DEBIT" else "CREDIT"),
                                 limit_price=max(0.01, float(base_limit) - 0.10),
                                 legs=[
-                                    OptionLeg(symbol=long_sym, quantity=1, side="SELL", effect="CLOSE"),
-                                    OptionLeg(symbol=short_sym, quantity=1, side="BUY", effect="CLOSE"),
+                                    OptionLeg(symbol=long_sym, quantity=filled_qty, side="SELL", effect="CLOSE"),
+                                    OptionLeg(symbol=short_sym, quantity=filled_qty, side="BUY", effect="CLOSE"),
                                 ],
                                 client_order_id=f"intent-{iid}-sl",
                             )
-                            oco_resp = self.client.place_oco_exits(
-                                account_number=(self.client.account_number or ""),
-                                take_profit=tp_dto,
-                                stop_loss=sl_dto,
-                                dry_run=(not self.trading_enabled),
-                            )
+                            if self.require_complex_exit_orders and hasattr(self.client, "submit_complex_order"):
+                                oco_resp = self.client.submit_complex_order(
+                                    account_number=(self.client.account_number or ""),
+                                    payload={"order-type": "OCO", "orders": [
+                                        {"price": f"{tp_dto.limit_price:.2f}", "side": "take_profit", "qty": filled_qty},
+                                        {"price": f"{sl_dto.limit_price:.2f}", "side": "stop_loss", "qty": filled_qty},
+                                    ]},
+                                    dry_run=(not self.trading_enabled),
+                                )
+                            else:
+                                oco_resp = self.client.place_oco_exits(
+                                    account_number=(self.client.account_number or ""),
+                                    take_profit=tp_dto,
+                                    stop_loss=sl_dto,
+                                    dry_run=(not self.trading_enabled),
+                                )
 
                         armed_ok = not bool((oco_resp or {}).get("skipped", False))
                         self._record_order_event(
@@ -696,7 +770,7 @@ class ExecutionExecutor:
                                 cl = self.client.close_position(
                                     account_number=(self.client.account_number or ""),
                                     symbol=str(it["symbol"] or "SPX"),
-                                    quantity=1,
+                                    quantity=qty,
                                     dry_run=(not self.trading_enabled),
                                 )
                                 self._record_order_event(
@@ -713,11 +787,13 @@ class ExecutionExecutor:
                                     (_now_utc_iso(), _now_utc_iso(), int(trade_run_id)),
                                 )
                                 self._mark_intent(con, intent_id=iid, status="PROTECTION_ARMING_FAILED", error="protection arming failed")
+                                self._record_incident(con, severity="critical", incident_type="protection_arming_failed", trade_run_id=trade_run_id, execution_intent_id=iid, details={"auto_close_attempted": True})
                                 out["errors"] += 1
                                 out["processed"] += 1
                                 continue
                             except Exception as e:
                                 self._mark_intent(con, intent_id=iid, status="PROTECTION_ARMING_FAILED", error=str(e))
+                                self._record_incident(con, severity="critical", incident_type="protection_arming_failed", trade_run_id=trade_run_id, execution_intent_id=iid, details={"auto_close_attempted": False, "error": str(e)})
                                 out["errors"] += 1
                                 out["processed"] += 1
                                 continue
@@ -729,7 +805,7 @@ class ExecutionExecutor:
                             SET status='open', entry_order_id=?, complex_exit_order_id=?, protection_state=?, opened_at_utc=?, updated_at_utc=?
                             WHERE id=?
                             """,
-                            (order_id, None, ('armed' if armed_ok else 'missing'), _now_utc_iso(), _now_utc_iso(), int(trade_run_id)),
+                            (order_id, str(((oco_resp.get('data') or {}).get('id') if isinstance(oco_resp, dict) else '') or '') or None, ('partial' if (armed_ok and int(filled_qty) < int(qty)) else ('armed' if armed_ok else 'missing')), _now_utc_iso(), _now_utc_iso(), int(trade_run_id)),
                         )
                         out["filled"] += 1
                     else:

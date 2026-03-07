@@ -265,6 +265,42 @@ class TastytradeClient:
     def get_positions(self, *, account_number: str) -> dict[str, Any]:
         return self._request("GET", f"/accounts/{account_number}/positions")
 
+    def submit_complex_order(self, *, account_number: str, payload: dict[str, Any], dry_run: bool | None = None) -> dict[str, Any]:
+        dr = self.dry_run if dry_run is None else bool(dry_run)
+        if dr:
+            return {"ok": True, "dry_run": True, "action": "submit_complex_order", "account_number": account_number, "payload": payload}
+        return self._request("POST", f"/accounts/{account_number}/complex-orders", json_body=payload)
+
+    def cancel_complex_order(self, *, account_number: str, complex_order_id: str, dry_run: bool | None = None) -> dict[str, Any]:
+        dr = self.dry_run if dry_run is None else bool(dry_run)
+        if dr:
+            return {"ok": True, "dry_run": True, "action": "cancel_complex_order", "account_number": account_number, "complex_order_id": complex_order_id}
+        return self._request("DELETE", f"/accounts/{account_number}/complex-orders/{complex_order_id}")
+
+    def place_order_with_warning_reconfirm(self, dto: OrderDTO, *, dry_run: bool | None = None) -> dict[str, Any]:
+        # First submit. If broker returns warning requiring confirm/reconfirm, submit confirm path.
+        resp = self.place_order(dto, dry_run=dry_run)
+        if bool(dry_run if dry_run is not None else self.dry_run):
+            return resp
+
+        # Generic warning shapes; API versions can vary.
+        warning = None
+        data = resp.get('data') if isinstance(resp, dict) else None
+        if isinstance(resp, dict):
+            warning = resp.get('warning') or resp.get('warnings')
+        if warning is None and isinstance(data, dict):
+            warning = data.get('warning') or data.get('warnings')
+
+        if warning:
+            confirm_payload = map_order_dto_to_tasty_payload(dto)
+            confirm_payload['confirm'] = True
+            acct = dto.account_number or self.account_number
+            if not acct:
+                raise RuntimeError('account number required for warning reconfirm')
+            resp2 = self._request('POST', f"/accounts/{acct}/orders", json_body=confirm_payload)
+            return {'initial': resp, 'reconfirm': resp2}
+        return resp
+
     def place_oco_exits(
         self,
         *,
