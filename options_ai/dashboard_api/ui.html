@@ -495,6 +495,45 @@
             </div>
           </div>
 
+
+
+        <div class="grid2" style="margin-top: var(--space-4);">
+          <div class="card">
+            <div class="card-h"><h2>Circuit Breakers / Incidents</h2><div class="hint">Stream, mismatch, slippage, reject streak</div></div>
+            <div class="card-b">
+              <div class="row"><button class="btn-primary" id="exRefreshIncidents">Refresh</button></div>
+              <div style="margin-top:10px; overflow:auto; max-height:260px;">
+                <table>
+                  <thead><tr><th>time</th><th>type</th><th>severity</th><th>trade</th><th>intent</th></tr></thead>
+                  <tbody id="exIncidentsTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>Reconciliation + Operator Actions</h2><div class="hint">Diff + control plane history</div></div>
+            <div class="card-b">
+              <div class="row">
+                <button class="btn-primary" id="exRefreshRecon">Refresh Reconciliation</button>
+                <button id="exCancelAll">Cancel All</button>
+                <button class="btn-danger" id="exFlattenAll">Flatten All</button>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <div>Resolved: <span id="exReconResolved" class="pill">—</span></div>
+                <div>Open orders: <span id="exReconOrders" class="pill">—</span></div>
+                <div>Open positions: <span id="exReconPositions" class="pill">—</span></div>
+              </div>
+              <pre id="exReconDiff" class="mono" style="margin-top:10px; white-space:pre-wrap; max-height:120px; overflow:auto;"></pre>
+              <div style="margin-top:10px; overflow:auto; max-height:180px;">
+                <table>
+                  <thead><tr><th>time</th><th>action</th><th>entity</th></tr></thead>
+                  <tbody id="exActionsTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
         </div>
       </section>
 
@@ -533,6 +572,7 @@
                 <div>Force-close countdown: <span id="exForceCountdown" class="pill">—</span></div>
                 <button class="btn-danger" id="exKillOn">Kill switch ON</button>
                 <button id="exKillOff">Kill switch OFF</button>
+                <button id="exQuarantineClear">Clear Quarantine</button>
               </div>
               <div class="hint" id="exRiskNote" style="margin-top:8px;"></div>
             </div>
@@ -3429,6 +3469,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
+    async function exClearQuarantine() {
+      const d = await jpost('/api/execution/quarantine/clear', { reason: 'operator_quarantine_clear' });
+      toast('quarantine cleared', 'success');
+      return d;
+    }
+
     async function exSetKillSwitch(on) {
       const d = await jpost('/api/execution/kill-switch', { block_new_entries: !!on, reason: (on ? 'manual_kill_switch' : 'manual_unblock') });
       toast(on ? 'kill switch enabled' : 'kill switch disabled', on ? 'warn' : 'success');
@@ -3481,6 +3527,65 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         `;
         tb.appendChild(tr);
       }
+      return d;
+    }
+
+    async function exRefreshIncidents() {
+      const d = await jget('/api/execution/incidents?limit=300');
+      const tb = document.getElementById('exIncidentsTable');
+      if (!tb) return d;
+      tb.innerHTML = '';
+      for (const it of (d.items || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${it.created_at_utc ?? ''}</td>
+          <td>${it.incident_type ?? ''}</td>
+          <td>${it.severity ?? ''}</td>
+          <td>${it.trade_run_id ?? ''}</td>
+          <td>${it.execution_intent_id ?? ''}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return d;
+    }
+
+    async function exRefreshReconciliation() {
+      const d = await jget('/api/execution/reconciliation/latest');
+      document.getElementById('exReconResolved').textContent = d.resolved_bool ? 'YES' : 'NO';
+      const oo = Array.isArray((d.open_orders || {}).items) ? d.open_orders.items.length : 0;
+      const op = Array.isArray((d.open_positions || {}).items) ? d.open_positions.items.length : 0;
+      document.getElementById('exReconOrders').textContent = String(oo);
+      document.getElementById('exReconPositions').textContent = String(op);
+      document.getElementById('exReconDiff').textContent = JSON.stringify(d.diff || {}, null, 2);
+      return d;
+    }
+
+    async function exRefreshOperatorActions() {
+      const d = await jget('/api/execution/operator-actions?limit=300');
+      const tb = document.getElementById('exActionsTable');
+      if (!tb) return d;
+      tb.innerHTML = '';
+      for (const it of (d.items || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${it.created_at_utc ?? ''}</td>
+          <td>${it.action ?? ''}</td>
+          <td>${it.entity_type ?? ''}:${it.entity_id ?? ''}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return d;
+    }
+
+    async function exCancelAll() {
+      const d = await jpost('/api/execution/cancel-all', {});
+      toast(`cancel-all requested (${d.affected_trades || 0})`, 'warn');
+      return d;
+    }
+
+    async function exFlattenAll() {
+      const d = await jpost('/api/execution/flatten-all', {});
+      toast(`flatten-all requested (${d.affected_trades || 0})`, 'warn');
       return d;
     }
 
@@ -3617,10 +3722,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('exRefreshTrades')?.addEventListener('click', () => safe('ex_trades', () => exRefreshOpenTrades()));
     document.getElementById('exRefreshKpis')?.addEventListener('click', () => safe('ex_kpis', () => exRefreshKpis()));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
+    document.getElementById('exRefreshIncidents')?.addEventListener('click', () => safe('ex_incidents', () => exRefreshIncidents()));
+    document.getElementById('exRefreshRecon')?.addEventListener('click', () => safe('ex_recon', () => exRefreshReconciliation()));
+    document.getElementById('exCancelAll')?.addEventListener('click', () => safe('ex_cancel_all', () => exCancelAll()));
+    document.getElementById('exFlattenAll')?.addEventListener('click', () => safe('ex_flatten_all', () => exFlattenAll()));
     document.getElementById('exRpLoad')?.addEventListener('click', () => safe('ex_rp_load', () => exLoadRepricePolicy()));
     document.getElementById('exRpSave')?.addEventListener('click', () => safe('ex_rp_save', () => exSaveRepricePolicy()));
     document.getElementById('exKillOn')?.addEventListener('click', () => safe('ex_kill_on', () => exSetKillSwitch(true)));
     document.getElementById('exKillOff')?.addEventListener('click', () => safe('ex_kill_off', () => exSetKillSwitch(false)));
+    document.getElementById('exQuarantineClear')?.addEventListener('click', () => safe('ex_quarantine_clear', () => exClearQuarantine()));
     document.getElementById('refreshDebit')?.addEventListener('click', () => safe('refreshDebitSpreads', () => refreshDebitSpreads()));
     document.getElementById('refreshDailyPick')?.addEventListener('click', () => safe('daily_pick', () => refreshDailyPick()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
@@ -3811,6 +3921,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('ex_reprice', () => exLoadRepricePolicy());
       await safe('ex_trades', () => exRefreshOpenTrades());
       await safe('ex_intents', () => exRefreshIntents());
+      await safe('ex_incidents', () => exRefreshIncidents());
+      await safe('ex_recon', () => exRefreshReconciliation());
+      await safe('ex_actions', () => exRefreshOperatorActions());
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
       await safe('pipes', () => refreshPipelines());
@@ -3839,6 +3952,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
       setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
       setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), 7000);
+      setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
+      setInterval(() => safe('ex_recon', () => exRefreshReconciliation()), 10000);
+      setInterval(() => safe('ex_actions', () => exRefreshOperatorActions()), 15000);
       setInterval(() => safe('processing', () => refreshProcessing()), 2000);
       setInterval(() => safe('pipes', () => refreshPipelines()), 10000);
       setInterval(() => safe('tokens', () => refreshTokens()), 10000);

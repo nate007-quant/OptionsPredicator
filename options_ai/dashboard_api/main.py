@@ -37,6 +37,7 @@ from options_ai.backtest.sampler_service import BacktestSamplerService
 from options_ai.backtest.portfolio_backtest_service import PortfolioBacktestService
 from options_ai.backtest.portfolio_group_backtest_service import PortfolioGroupBacktestService
 from options_ai.backtest.sqlite_migrations import migrate_backtest_schema, backfill_params_hash
+from options_ai.execution.schema import ensure_execution_hardening_schema
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -427,6 +428,7 @@ def create_app() -> FastAPI:
                 """
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at_utc DESC)")
+            ensure_execution_hardening_schema(con)
             con.commit()
 
     def _audit_execution(*, actor: str, action: str, entity_type: str | None, entity_id: str | None, details: dict[str, Any] | None = None) -> None:
@@ -2080,6 +2082,249 @@ def create_app() -> FastAPI:
         )
 
         return execution_risk_session_get()
+
+    @app.get('/api/execution/prechecks/{intent_id}')
+    def execution_prechecks_get(intent_id: int) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id, status, precheck_status, precheck_payload_json, risk_gate_status, quarantine_reason, broker_external_id, error, updated_at_utc
+                FROM execution_intents
+                WHERE id=?
+                """,
+                (int(intent_id),),
+            ).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail='intent not found')
+        try:
+            payload = _json.loads(r['precheck_payload_json'] or '{}')
+        except Exception:
+            payload = {}
+        return {
+            'id': int(r['id']),
+            'status': str(r['status']),
+            'precheck_status': (str(r['precheck_status']) if r['precheck_status'] is not None else None),
+            'precheck_payload': payload,
+            'risk_gate_status': (str(r['risk_gate_status']) if r['risk_gate_status'] is not None else None),
+            'quarantine_reason': (str(r['quarantine_reason']) if r['quarantine_reason'] is not None else None),
+            'broker_external_id': (str(r['broker_external_id']) if r['broker_external_id'] is not None else None),
+            'error': (str(r['error']) if r['error'] is not None else None),
+            'updated_at_utc': str(r['updated_at_utc']),
+        }
+
+    @app.get('/api/execution/operator-actions')
+    def execution_operator_actions(limit: int = Query(200, ge=1, le=2000)) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, created_at_utc, actor, action, entity_type, entity_id, details_json
+                FROM audit_log
+                WHERE environment=?
+                  AND action IN ('kill_switch_updated','close_only_updated','cancel_all_requested','flatten_all_requested','reprice_policy_updated')
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (str(cfg.broker_env), int(limit)),
+            ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                details = _json.loads(r['details_json'] or '{}')
+            except Exception:
+                details = {}
+            items.append({
+                'id': int(r['id']),
+                'created_at_utc': str(r['created_at_utc']),
+                'actor': str(r['actor']),
+                'action': str(r['action']),
+                'entity_type': (str(r['entity_type']) if r['entity_type'] is not None else None),
+                'entity_id': (str(r['entity_id']) if r['entity_id'] is not None else None),
+                'details': details,
+            })
+        return {'items': items}
+
+    @app.get('/api/execution/incidents')
+    def execution_incidents(limit: int = Query(200, ge=1, le=2000)) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, created_at_utc, severity, incident_type, trade_run_id, execution_intent_id, details_json
+                FROM incident_events
+                WHERE environment=? AND broker_name=?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name), int(limit)),
+            ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                d = _json.loads(r['details_json'] or '{}')
+            except Exception:
+                d = {}
+            items.append({
+                'id': int(r['id']),
+                'created_at_utc': str(r['created_at_utc']),
+                'severity': str(r['severity']),
+                'incident_type': str(r['incident_type']),
+                'trade_run_id': (int(r['trade_run_id']) if r['trade_run_id'] is not None else None),
+                'execution_intent_id': (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
+                'details': d,
+            })
+        return {'items': items}
+
+    @app.get('/api/execution/reconciliation/latest')
+    def execution_reconciliation_latest() -> dict[str, Any]:
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id, snapshot_ts, open_orders_json, open_positions_json, diff_json, resolved_bool
+                FROM broker_reconciliation_log
+                WHERE environment=? AND broker_name=?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (str(cfg.broker_env), str(cfg.broker_name)),
+            ).fetchone()
+        if not r:
+            return {'id': None, 'resolved_bool': True, 'open_orders': [], 'open_positions': [], 'diff': {}}
+        try:
+            oo = _json.loads(r['open_orders_json'] or '{}')
+        except Exception:
+            oo = {}
+        try:
+            op = _json.loads(r['open_positions_json'] or '{}')
+        except Exception:
+            op = {}
+        try:
+            df = _json.loads(r['diff_json'] or '{}')
+        except Exception:
+            df = {}
+        return {
+            'id': int(r['id']),
+            'snapshot_ts': str(r['snapshot_ts']),
+            'open_orders': oo,
+            'open_positions': op,
+            'diff': df,
+            'resolved_bool': bool(int(r['resolved_bool'] or 0)),
+        }
+
+    @app.post('/api/execution/quarantine/clear')
+    def execution_quarantine_clear(body: dict[str, Any] | None = None) -> dict[str, Any]:
+        b = body or {}
+        reason = str(b.get('reason') or 'operator_quarantine_clear').strip() or 'operator_quarantine_clear'
+        now = datetime.now(timezone.utc)
+        day_local = now.astimezone(CENTRAL_TZ).date().isoformat()
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                INSERT INTO risk_session_state(
+                  created_at_utc, updated_at_utc, environment, broker_name,
+                  session_day_local, session_tz,
+                  realized_pnl_usd, unrealized_pnl_usd,
+                  max_daily_loss_usd, block_new_entries, reason
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
+                  updated_at_utc=excluded.updated_at_utc,
+                  block_new_entries=0,
+                  reason=?
+                """,
+                (
+                    now.replace(microsecond=0).isoformat(),
+                    now.replace(microsecond=0).isoformat(),
+                    str(cfg.broker_env),
+                    str(cfg.broker_name),
+                    day_local,
+                    str(cfg.session_tz),
+                    0.0,
+                    0.0,
+                    float(cfg.max_daily_loss_usd),
+                    0,
+                    reason,
+                    reason,
+                ),
+            )
+            con.commit()
+        _audit_execution(actor='dashboard_api', action='quarantine_cleared', entity_type='risk_session_state', entity_id=f"{cfg.broker_env}:{day_local}", details={'reason': reason})
+        return execution_risk_session_get()
+
+    @app.post('/api/execution/close-only')
+    def execution_close_only(body: dict[str, Any]) -> dict[str, Any]:
+        b = body or {}
+        enabled = bool(b.get('enabled') if b.get('enabled') is not None else True)
+        reason = str(b.get('reason') or ('operator_close_only_on' if enabled else 'operator_close_only_off'))
+        # model as kill-switch gate in v1.1 patch
+        out = execution_kill_switch({'block_new_entries': enabled, 'reason': reason})
+        _audit_execution(actor='dashboard_api', action='close_only_updated', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'enabled': enabled, 'reason': reason})
+        return {'ok': True, 'close_only_mode': enabled, 'risk_session': out}
+
+    @app.post('/api/execution/cancel-all')
+    def execution_cancel_all() -> dict[str, Any]:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                "SELECT id, execution_intent_id, entry_order_id FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
+                (str(cfg.broker_env), str(cfg.broker_name)),
+            ).fetchall()
+            n = 0
+            for r in rows:
+                con.execute(
+                    """
+                    INSERT INTO order_events(created_at_utc, environment, broker_name, trade_run_id, execution_intent_id, order_id, event_type, status, raw_payload_json)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        now,
+                        str(cfg.broker_env),
+                        str(cfg.broker_name),
+                        int(r['id']),
+                        (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
+                        (str(r['entry_order_id']) if r['entry_order_id'] is not None else None),
+                        'operator_cancel_all',
+                        'accepted',
+                        _json.dumps({'note': 'operator cancel-all requested; worker must apply broker cancel'}, separators=(',', ':'), sort_keys=True),
+                    ),
+                )
+                n += 1
+            con.commit()
+        _audit_execution(actor='dashboard_api', action='cancel_all_requested', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'affected_trades': n})
+        return {'ok': True, 'affected_trades': n}
+
+    @app.post('/api/execution/flatten-all')
+    def execution_flatten_all() -> dict[str, Any]:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                "SELECT id, execution_intent_id FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
+                (str(cfg.broker_env), str(cfg.broker_name)),
+            ).fetchall()
+            n = 0
+            for r in rows:
+                con.execute(
+                    "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', updated_at_utc=? WHERE id=?",
+                    (now, int(r['id'])),
+                )
+                con.execute(
+                    """
+                    INSERT INTO order_events(created_at_utc, environment, broker_name, trade_run_id, execution_intent_id, order_id, event_type, status, raw_payload_json)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        now,
+                        str(cfg.broker_env),
+                        str(cfg.broker_name),
+                        int(r['id']),
+                        (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
+                        None,
+                        'operator_flatten_all',
+                        'accepted',
+                        _json.dumps({'note': 'operator flatten-all requested; risk_guard/worker should close positions'}, separators=(',', ':'), sort_keys=True),
+                    ),
+                )
+                n += 1
+            con.commit()
+        _audit_execution(actor='dashboard_api', action='flatten_all_requested', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'affected_trades': n})
+        return {'ok': True, 'affected_trades': n}
 
     @app.get('/api/execution/kpis')
     def execution_kpis(days: int = Query(7, ge=1, le=60)) -> dict[str, Any]:

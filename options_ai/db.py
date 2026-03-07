@@ -364,3 +364,10 @@ def init_db(db_path: str, schema_sql_path: str) -> None:
         except Exception:
             pass
 
+        # Execution v1.1 additive schema hardening
+        try:
+            from options_ai.execution.schema import ensure_execution_hardening_schema
+            ensure_execution_hardening_schema(conn)
+        except Exception:
+            pass
+

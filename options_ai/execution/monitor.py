@@ -54,6 +54,8 @@ class ExecutionMonitor:
         client: Any,
         connect_fn: Any | None = None,
         rearm_missing_protection: bool = False,
+        max_position_mismatch_count: int = 3,
+        max_streamer_downtime_seconds: int = 120,
     ) -> None:
         self.db_path = str(db_path)
         self.environment = str(environment or "sandbox")
@@ -62,6 +64,8 @@ class ExecutionMonitor:
         self.client = client
         self._connect_fn = connect_fn
         self.rearm_missing_protection = bool(rearm_missing_protection)
+        self.max_position_mismatch_count = max(1, int(max_position_mismatch_count))
+        self.max_streamer_downtime_seconds = max(5, int(max_streamer_downtime_seconds))
 
     def _connect(self):
         if self._connect_fn is not None:
@@ -151,6 +155,33 @@ class ExecutionMonitor:
             ),
         )
 
+    def _incident(
+        self,
+        con: sqlite3.Connection,
+        *,
+        severity: str,
+        incident_type: str,
+        trade_run_id: int | None,
+        execution_intent_id: int | None,
+        details: dict[str, Any],
+    ) -> None:
+        con.execute(
+            """
+            INSERT INTO incident_events(created_at_utc, environment, broker_name, severity, incident_type, trade_run_id, execution_intent_id, details_json)
+            VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                _now_utc_iso(),
+                self.environment,
+                self.broker_name,
+                str(severity),
+                str(incident_type),
+                (int(trade_run_id) if trade_run_id is not None else None),
+                (int(execution_intent_id) if execution_intent_id is not None else None),
+                _json(details),
+            ),
+        )
+
     def ingest_stream_event(self, event: dict[str, Any]) -> dict[str, Any]:
         """Persist one stream event (if broker stream integration forwards events here)."""
         et = str((event or {}).get("type") or "stream_event")
@@ -209,6 +240,43 @@ class ExecutionMonitor:
                     return [x for x in v if isinstance(x, dict)]
         return []
 
+    def _streamer_down_breaker(self, con: sqlite3.Connection) -> tuple[bool, dict[str, Any]]:
+        row = con.execute(
+            """
+            SELECT created_at_utc FROM order_events
+            WHERE environment=? AND broker_name=? AND event_type LIKE 'stream:%'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (self.environment, self.broker_name),
+        ).fetchone()
+        if not row:
+            return False, {'last_stream_event_utc': None, 'downtime_seconds': None, 'threshold_seconds': self.max_streamer_downtime_seconds}
+        try:
+            ts = datetime.fromisoformat(str(row[0]).replace('Z', '+00:00'))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            dt = (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds()
+        except Exception:
+            dt = 0.0
+        return (dt > float(self.max_streamer_downtime_seconds)), {
+            'last_stream_event_utc': str(row[0]),
+            'downtime_seconds': float(dt),
+            'threshold_seconds': self.max_streamer_downtime_seconds,
+        }
+
+    def _recent_unresolved_mismatch_count(self, con: sqlite3.Connection) -> int:
+        row = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM broker_reconciliation_log
+            WHERE environment=? AND broker_name=? AND resolved_bool=0
+            ORDER BY id DESC
+            LIMIT 200
+            """,
+            (self.environment, self.broker_name),
+        ).fetchone()
+        return int((row[0] if row else 0) or 0)
+
     def process_once(self, *, limit: int = 200) -> dict[str, Any]:
         st = MonitorStats()
 
@@ -243,6 +311,128 @@ class ExecutionMonitor:
 
             orders = self._extract_list(orders_payload)
             positions = self._extract_list(positions_payload)
+
+            # reconciliation snapshot
+            open_runs = len(rows)
+            pos_count = len(positions)
+            mismatch = 1 if (open_runs > 0 and pos_count == 0) else 0
+            resolved = 0 if mismatch else 1
+            con.execute(
+                """
+                INSERT INTO broker_reconciliation_log(snapshot_ts, environment, broker_name, open_orders_json, open_positions_json, diff_json, resolved_bool)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    _now_utc_iso(),
+                    self.environment,
+                    self.broker_name,
+                    _json({'items': orders}),
+                    _json({'items': positions}),
+                    _json({'open_trade_runs': open_runs, 'positions_count': pos_count, 'mismatch': bool(mismatch)}),
+                    int(resolved),
+                ),
+            )
+
+            # stream-down breaker
+            stream_down, stream_meta = self._streamer_down_breaker(con)
+            if stream_down:
+                self._incident(
+                    con,
+                    severity='error',
+                    incident_type='strict_quarantine_stream_down',
+                    trade_run_id=None,
+                    execution_intent_id=None,
+                    details=stream_meta,
+                )
+                try:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo('America/Chicago')
+                    day_local = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+                    now = _now_utc_iso()
+                    con.execute(
+                        """
+                        INSERT INTO risk_session_state(
+                          created_at_utc, updated_at_utc, environment, broker_name,
+                          session_day_local, session_tz,
+                          realized_pnl_usd, unrealized_pnl_usd,
+                          max_daily_loss_usd, block_new_entries, reason
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
+                          updated_at_utc=excluded.updated_at_utc,
+                          block_new_entries=1,
+                          reason='strict_quarantine_stream_down'
+                        """,
+                        (now, now, self.environment, self.broker_name, day_local, 'America/Chicago', 0.0, 0.0, 300.0, 1, 'strict_quarantine_stream_down'),
+                    )
+                except Exception:
+                    pass
+
+            if mismatch:
+                self._incident(
+                    con,
+                    severity='error',
+                    incident_type='position_mismatch',
+                    trade_run_id=None,
+                    execution_intent_id=None,
+                    details={'open_trade_runs': open_runs, 'positions_count': pos_count},
+                )
+                # unresolved mismatch => enter close-only behavior by blocking new entries
+                try:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo('America/Chicago')
+                    day_local = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+                    now = _now_utc_iso()
+                    con.execute(
+                        """
+                        INSERT INTO risk_session_state(
+                          created_at_utc, updated_at_utc, environment, broker_name,
+                          session_day_local, session_tz,
+                          realized_pnl_usd, unrealized_pnl_usd,
+                          max_daily_loss_usd, block_new_entries, reason
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
+                          updated_at_utc=excluded.updated_at_utc,
+                          block_new_entries=1,
+                          reason='position_mismatch_close_only'
+                        """,
+                        (now, now, self.environment, self.broker_name, day_local, 'America/Chicago', 0.0, 0.0, 300.0, 1, 'position_mismatch_close_only'),
+                    )
+                except Exception:
+                    pass
+
+            # mismatch breaker threshold
+            mm_count = self._recent_unresolved_mismatch_count(con)
+            if mm_count >= self.max_position_mismatch_count:
+                self._incident(
+                    con,
+                    severity='error',
+                    incident_type='position_mismatch_breaker',
+                    trade_run_id=None,
+                    execution_intent_id=None,
+                    details={'unresolved_mismatch_count': mm_count, 'threshold': self.max_position_mismatch_count, 'operator_clear_required': True},
+                )
+                try:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo('America/Chicago')
+                    day_local = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+                    now = _now_utc_iso()
+                    con.execute(
+                        """
+                        INSERT INTO risk_session_state(
+                          created_at_utc, updated_at_utc, environment, broker_name,
+                          session_day_local, session_tz,
+                          realized_pnl_usd, unrealized_pnl_usd,
+                          max_daily_loss_usd, block_new_entries, reason
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
+                          updated_at_utc=excluded.updated_at_utc,
+                          block_new_entries=1,
+                          reason='strict_quarantine_position_mismatch'
+                        """,
+                        (now, now, self.environment, self.broker_name, day_local, 'America/Chicago', 0.0, 0.0, 300.0, 1, 'strict_quarantine_position_mismatch'),
+                    )
+                except Exception:
+                    pass
 
             for tr in rows:
                 st.scanned += 1

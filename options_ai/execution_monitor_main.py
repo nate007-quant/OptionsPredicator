@@ -39,6 +39,7 @@ def main() -> None:
         streamer_url=cfg.tasty_streamer_url,
         environment=cfg.broker_env,
         dry_run=(not cfg.trading_enabled),
+        target_api_version=cfg.target_api_version,
     )
 
     mon = ExecutionMonitor(
@@ -47,6 +48,8 @@ def main() -> None:
         broker_name=cfg.broker_name,
         account_number=(client.account_number or ""),
         client=client,
+        max_position_mismatch_count=cfg.max_position_mismatch_count,
+        max_streamer_downtime_seconds=cfg.max_streamer_downtime_seconds,
     )
 
     try:

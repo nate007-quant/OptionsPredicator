@@ -210,7 +210,7 @@ class RiskGuard:
     def _force_close_positions(self, con: sqlite3.Connection) -> int:
         rows = con.execute(
             """
-            SELECT id, execution_intent_id, underlying, qty, exit_order_id
+            SELECT id, execution_intent_id, underlying, qty, exit_order_id, complex_exit_order_id
             FROM trade_runs
             WHERE environment=? AND broker_name=? AND status IN ('open','opening','closing')
             ORDER BY id ASC
@@ -225,10 +225,37 @@ class RiskGuard:
             underlying = str(r[2] or "SPX")
             qty = int(r[3] or 1)
             exit_order_id = str(r[4]) if r[4] is not None else None
+            complex_exit_order_id = str(r[5]) if r[5] is not None else None
 
             # cancel existing protective exit if present
             cancel_resp = None
-            if exit_order_id:
+            if complex_exit_order_id:
+                try:
+                    cancel_resp = self.client.cancel_complex_order(
+                        account_number=self.account_number,
+                        complex_order_id=complex_exit_order_id,
+                        dry_run=(not self.trading_enabled),
+                    )
+                    self._record_order_event(
+                        con,
+                        trade_run_id=rid,
+                        execution_intent_id=intent_id,
+                        order_id=complex_exit_order_id,
+                        event_type="force_close_cancel_complex_exit",
+                        status="accepted",
+                        payload={"response": cancel_resp},
+                    )
+                except Exception as e:
+                    self._record_order_event(
+                        con,
+                        trade_run_id=rid,
+                        execution_intent_id=intent_id,
+                        order_id=complex_exit_order_id,
+                        event_type="force_close_cancel_complex_exit_error",
+                        status="error",
+                        payload={"error": str(e)},
+                    )
+            elif exit_order_id:
                 try:
                     cancel_resp = self.client.cancel_order(
                         account_number=self.account_number,

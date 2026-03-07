@@ -51,3 +51,24 @@ def test_execution_endpoints_smoke(tmp_path: Path, monkeypatch):
     assert r7.status_code == 200
     kb = r7.json()
     assert kb["days"] == 7
+
+
+    r8 = client.get("/api/execution/incidents")
+    assert r8.status_code == 200
+
+    r9 = client.get("/api/execution/reconciliation/latest")
+    assert r9.status_code == 200
+
+    r10 = client.post("/api/execution/close-only", json={"enabled": True, "reason": "test_close_only"})
+    assert r10.status_code == 200
+    assert r10.json()["close_only_mode"] is True
+
+    r11 = client.post("/api/execution/cancel-all")
+    assert r11.status_code == 200
+
+    r12 = client.post("/api/execution/flatten-all")
+    assert r12.status_code == 200
+
+
+    r13 = client.post("/api/execution/quarantine/clear", json={"reason": "test_clear"})
+    assert r13.status_code == 200

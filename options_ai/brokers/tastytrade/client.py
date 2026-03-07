@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 import os
+import time
 
 import httpx
 
@@ -158,6 +159,9 @@ class TastytradeClient:
         account_number: str | None = None,
         timeout_seconds: int = 20,
         dry_run: bool = True,
+        target_api_version: str | None = None,
+        http_max_retries: int = 3,
+        http_backoff_seconds: float = 0.5,
     ) -> None:
         self.environment = str(environment or "sandbox").lower()
         self.base_url = (base_url or os.getenv("TASTY_BASE_URL") or "https://api.cert.tastyworks.com").rstrip("/")
@@ -168,6 +172,9 @@ class TastytradeClient:
         self.account_number = (account_number or os.getenv("TASTY_ACCOUNT_NUMBER") or "").strip() or None
         self.timeout_seconds = int(timeout_seconds)
         self.dry_run = bool(dry_run)
+        self.target_api_version = (target_api_version or os.getenv("TARGET_API_VERSION") or "").strip() or None
+        self.http_max_retries = max(0, int(http_max_retries))
+        self.http_backoff_seconds = max(0.0, float(http_backoff_seconds))
 
     def _headers(self) -> dict[str, str]:
         h = {
@@ -176,21 +183,50 @@ class TastytradeClient:
         }
         if self.session_token:
             h["Authorization"] = f"Bearer {self.session_token}"
+        if self.target_api_version:
+            h["Accept-Version"] = str(self.target_api_version)
         return h
 
     def _request(self, method: str, path: str, *, json_body: Any | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not path.startswith("/"):
             path = "/" + path
         url = f"{self.base_url}{path}"
-        with httpx.Client(timeout=self.timeout_seconds) as client:
-            resp = client.request(method.upper(), url, headers=self._headers(), json=json_body, params=params)
-            resp.raise_for_status()
-            if not resp.content:
-                return {"ok": True, "status_code": resp.status_code}
+
+        last_exc: Exception | None = None
+        for attempt in range(0, self.http_max_retries + 1):
             try:
-                return resp.json()
-            except Exception:
-                return {"ok": True, "status_code": resp.status_code, "raw": resp.text}
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    resp = client.request(method.upper(), url, headers=self._headers(), json=json_body, params=params)
+                    # Retryable statuses
+                    if resp.status_code == 429 or resp.status_code >= 500:
+                        if attempt < self.http_max_retries:
+                            time.sleep(self.http_backoff_seconds * (2 ** attempt))
+                            continue
+                    resp.raise_for_status()
+                    if not resp.content:
+                        return {"ok": True, "status_code": resp.status_code}
+                    try:
+                        return resp.json()
+                    except Exception:
+                        return {"ok": True, "status_code": resp.status_code, "raw": resp.text}
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                code = int(e.response.status_code) if e.response is not None else 0
+                if code == 429 or code >= 500:
+                    if attempt < self.http_max_retries:
+                        time.sleep(self.http_backoff_seconds * (2 ** attempt))
+                        continue
+                raise
+            except Exception as e:
+                last_exc = e
+                if attempt < self.http_max_retries:
+                    time.sleep(self.http_backoff_seconds * (2 ** attempt))
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("request failed with unknown error")
 
     def authenticate(self) -> dict[str, Any]:
         if self.session_token:
@@ -260,6 +296,42 @@ class TastytradeClient:
 
     def get_positions(self, *, account_number: str) -> dict[str, Any]:
         return self._request("GET", f"/accounts/{account_number}/positions")
+
+    def submit_complex_order(self, *, account_number: str, payload: dict[str, Any], dry_run: bool | None = None) -> dict[str, Any]:
+        dr = self.dry_run if dry_run is None else bool(dry_run)
+        if dr:
+            return {"ok": True, "dry_run": True, "action": "submit_complex_order", "account_number": account_number, "payload": payload}
+        return self._request("POST", f"/accounts/{account_number}/complex-orders", json_body=payload)
+
+    def cancel_complex_order(self, *, account_number: str, complex_order_id: str, dry_run: bool | None = None) -> dict[str, Any]:
+        dr = self.dry_run if dry_run is None else bool(dry_run)
+        if dr:
+            return {"ok": True, "dry_run": True, "action": "cancel_complex_order", "account_number": account_number, "complex_order_id": complex_order_id}
+        return self._request("DELETE", f"/accounts/{account_number}/complex-orders/{complex_order_id}")
+
+    def place_order_with_warning_reconfirm(self, dto: OrderDTO, *, dry_run: bool | None = None) -> dict[str, Any]:
+        # First submit. If broker returns warning requiring confirm/reconfirm, submit confirm path.
+        resp = self.place_order(dto, dry_run=dry_run)
+        if bool(dry_run if dry_run is not None else self.dry_run):
+            return resp
+
+        # Generic warning shapes; API versions can vary.
+        warning = None
+        data = resp.get('data') if isinstance(resp, dict) else None
+        if isinstance(resp, dict):
+            warning = resp.get('warning') or resp.get('warnings')
+        if warning is None and isinstance(data, dict):
+            warning = data.get('warning') or data.get('warnings')
+
+        if warning:
+            confirm_payload = map_order_dto_to_tasty_payload(dto)
+            confirm_payload['confirm'] = True
+            acct = dto.account_number or self.account_number
+            if not acct:
+                raise RuntimeError('account number required for warning reconfirm')
+            resp2 = self._request('POST', f"/accounts/{acct}/orders", json_body=confirm_payload)
+            return {'initial': resp, 'reconfirm': resp2}
+        return resp
 
     def place_oco_exits(
         self,
