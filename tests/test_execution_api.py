@@ -68,3 +68,7 @@ def test_execution_endpoints_smoke(tmp_path: Path, monkeypatch):
 
     r12 = client.post("/api/execution/flatten-all")
     assert r12.status_code == 200
+
+
+    r13 = client.post("/api/execution/quarantine/clear", json={"reason": "test_clear"})
+    assert r13.status_code == 200

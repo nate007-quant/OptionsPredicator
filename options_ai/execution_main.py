@@ -63,10 +63,17 @@ def main() -> None:
         require_broker_external_identifier=cfg.require_broker_external_identifier,
         max_reject_streak=cfg.max_reject_streak,
         max_allowed_entry_slippage_abs=cfg.max_allowed_entry_slippage_abs,
+        startup_reconcile_required=cfg.startup_reconcile_required,
+        strict_quarantine_requires_operator_clear=cfg.strict_quarantine_requires_operator_clear,
     )
 
     try:
         while True:
+            ok_startup, meta = ex.startup_reconcile_ready()
+            if not ok_startup:
+                log_daemon_event(paths.logs_daemon_dir, "warn", "execution_startup_reconcile_block", **meta)
+                time.sleep(poll_s)
+                continue
             st = ex.process_once(limit=25)
             if int(st.get("processed") or 0) > 0:
                 log_daemon_event(paths.logs_daemon_dir, "info", "execution_executor_poll", **st)

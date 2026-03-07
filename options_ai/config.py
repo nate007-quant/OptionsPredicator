@@ -47,6 +47,8 @@ class Config:
     pretrade_required_checks: bool = True
     require_complex_exit_orders: bool = True
     require_broker_external_identifier: bool = True
+    startup_reconcile_required: bool = True
+    strict_quarantine_requires_operator_clear: bool = True
 
     # OAuth (v2.0)
     oauth_client_id: str = ""
@@ -216,6 +218,8 @@ def load_config() -> Config:
         pretrade_required_checks=_get_bool("PRETRADE_REQUIRED_CHECKS", True),
         require_complex_exit_orders=_get_bool("REQUIRE_COMPLEX_EXIT_ORDERS", True),
         require_broker_external_identifier=_get_bool("REQUIRE_BROKER_EXTERNAL_IDENTIFIER", True),
+        startup_reconcile_required=_get_bool("STARTUP_RECONCILE_REQUIRED", True),
+        strict_quarantine_requires_operator_clear=_get_bool("STRICT_QUARANTINE_REQUIRES_OPERATOR_CLEAR", True),
         oauth_client_id=oauth_client_id,
         oauth_client_secret=oauth_client_secret,
         oauth_token_url=oauth_token_url,

@@ -339,7 +339,7 @@ class ExecutionMonitor:
                 self._incident(
                     con,
                     severity='error',
-                    incident_type='stream_down_breaker',
+                    incident_type='strict_quarantine_stream_down',
                     trade_run_id=None,
                     execution_intent_id=None,
                     details=stream_meta,
@@ -360,9 +360,9 @@ class ExecutionMonitor:
                         ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
                           updated_at_utc=excluded.updated_at_utc,
                           block_new_entries=1,
-                          reason='stream_down_breaker'
+                          reason='strict_quarantine_stream_down'
                         """,
-                        (now, now, self.environment, self.broker_name, day_local, 'America/Chicago', 0.0, 0.0, 300.0, 1, 'stream_down_breaker'),
+                        (now, now, self.environment, self.broker_name, day_local, 'America/Chicago', 0.0, 0.0, 300.0, 1, 'strict_quarantine_stream_down'),
                     )
                 except Exception:
                     pass
@@ -409,8 +409,30 @@ class ExecutionMonitor:
                     incident_type='position_mismatch_breaker',
                     trade_run_id=None,
                     execution_intent_id=None,
-                    details={'unresolved_mismatch_count': mm_count, 'threshold': self.max_position_mismatch_count},
+                    details={'unresolved_mismatch_count': mm_count, 'threshold': self.max_position_mismatch_count, 'operator_clear_required': True},
                 )
+                try:
+                    from zoneinfo import ZoneInfo
+                    tz = ZoneInfo('America/Chicago')
+                    day_local = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+                    now = _now_utc_iso()
+                    con.execute(
+                        """
+                        INSERT INTO risk_session_state(
+                          created_at_utc, updated_at_utc, environment, broker_name,
+                          session_day_local, session_tz,
+                          realized_pnl_usd, unrealized_pnl_usd,
+                          max_daily_loss_usd, block_new_entries, reason
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
+                          updated_at_utc=excluded.updated_at_utc,
+                          block_new_entries=1,
+                          reason='strict_quarantine_position_mismatch'
+                        """,
+                        (now, now, self.environment, self.broker_name, day_local, 'America/Chicago', 0.0, 0.0, 300.0, 1, 'strict_quarantine_position_mismatch'),
+                    )
+                except Exception:
+                    pass
 
             for tr in rows:
                 st.scanned += 1

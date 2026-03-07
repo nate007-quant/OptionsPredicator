@@ -112,6 +112,8 @@ class ExecutionExecutor:
         require_broker_external_identifier: bool = True,
         max_reject_streak: int = 5,
         max_allowed_entry_slippage_abs: float = 0.15,
+        startup_reconcile_required: bool = True,
+        strict_quarantine_requires_operator_clear: bool = True,
     ) -> None:
         self.db_path = str(db_path)
         self.environment = str(environment or "sandbox")
@@ -128,6 +130,8 @@ class ExecutionExecutor:
         self.require_broker_external_identifier = bool(require_broker_external_identifier)
         self.max_reject_streak = max(1, int(max_reject_streak))
         self.max_allowed_entry_slippage_abs = max(0.0, float(max_allowed_entry_slippage_abs))
+        self.startup_reconcile_required = bool(startup_reconcile_required)
+        self.strict_quarantine_requires_operator_clear = bool(strict_quarantine_requires_operator_clear)
 
     def _connect(self):
         if self._connect_fn is not None:
@@ -137,6 +141,48 @@ class ExecutionExecutor:
         con.execute("PRAGMA journal_mode=WAL;")
         con.execute("PRAGMA busy_timeout=5000;")
         return con
+
+    def startup_reconcile_ready(self) -> tuple[bool, dict[str, Any]]:
+        if not self.startup_reconcile_required:
+            return True, {'required': False}
+        with self._connect() as con:
+            r = con.execute(
+                """
+                SELECT id, snapshot_ts, resolved_bool, diff_json
+                FROM broker_reconciliation_log
+                WHERE environment=? AND broker_name=?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (self.environment, self.broker_name),
+            ).fetchone()
+        if r is None:
+            return False, {'required': True, 'reason': 'no_reconciliation_snapshot'}
+        ok = bool(int(r['resolved_bool'] or 0))
+        return ok, {
+            'required': True,
+            'snapshot_id': int(r['id']),
+            'snapshot_ts': str(r['snapshot_ts']),
+            'resolved_bool': bool(int(r['resolved_bool'] or 0)),
+        }
+
+    def _strict_quarantine_active(self, con: sqlite3.Connection) -> bool:
+        if not self.strict_quarantine_requires_operator_clear:
+            return False
+        tz = ZoneInfo(self.session_tz)
+        sess_day = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+        r = con.execute(
+            """
+            SELECT block_new_entries, reason
+            FROM risk_session_state
+            WHERE environment=? AND broker_name=? AND session_day_local=?
+            """,
+            (self.environment, self.broker_name, sess_day),
+        ).fetchone()
+        if not r:
+            return False
+        blocked = bool(int(r[0] or 0))
+        reason = str(r[1] or '')
+        return blocked and reason.startswith('strict_quarantine_')
 
     def _risk_blocked(self, con: sqlite3.Connection) -> bool:
         tz = ZoneInfo(self.session_tz)
@@ -505,6 +551,13 @@ class ExecutionExecutor:
                     # close-only control plane gate
                     if self.close_only_mode:
                         self._mark_intent(con, intent_id=iid, status="QUARANTINED", error="close_only_mode", quarantine_reason="close_only_mode")
+                        out["quarantined"] += 1
+                        out["processed"] += 1
+                        continue
+
+                    # strict quarantine gate (requires operator clear)
+                    if self._strict_quarantine_active(con):
+                        self._mark_intent(con, intent_id=iid, status="QUARANTINED", error="strict_quarantine_active", quarantine_reason="strict_quarantine_active")
                         out["quarantined"] += 1
                         out["processed"] += 1
                         continue

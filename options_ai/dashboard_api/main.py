@@ -2208,6 +2208,46 @@ def create_app() -> FastAPI:
             'resolved_bool': bool(int(r['resolved_bool'] or 0)),
         }
 
+    @app.post('/api/execution/quarantine/clear')
+    def execution_quarantine_clear(body: dict[str, Any] | None = None) -> dict[str, Any]:
+        b = body or {}
+        reason = str(b.get('reason') or 'operator_quarantine_clear').strip() or 'operator_quarantine_clear'
+        now = datetime.now(timezone.utc)
+        day_local = now.astimezone(CENTRAL_TZ).date().isoformat()
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                INSERT INTO risk_session_state(
+                  created_at_utc, updated_at_utc, environment, broker_name,
+                  session_day_local, session_tz,
+                  realized_pnl_usd, unrealized_pnl_usd,
+                  max_daily_loss_usd, block_new_entries, reason
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(environment, broker_name, session_day_local) DO UPDATE SET
+                  updated_at_utc=excluded.updated_at_utc,
+                  block_new_entries=0,
+                  reason=?
+                """,
+                (
+                    now.replace(microsecond=0).isoformat(),
+                    now.replace(microsecond=0).isoformat(),
+                    str(cfg.broker_env),
+                    str(cfg.broker_name),
+                    day_local,
+                    str(cfg.session_tz),
+                    0.0,
+                    0.0,
+                    float(cfg.max_daily_loss_usd),
+                    0,
+                    reason,
+                    reason,
+                ),
+            )
+            con.commit()
+        _audit_execution(actor='dashboard_api', action='quarantine_cleared', entity_type='risk_session_state', entity_id=f"{cfg.broker_env}:{day_local}", details={'reason': reason})
+        return execution_risk_session_get()
+
     @app.post('/api/execution/close-only')
     def execution_close_only(body: dict[str, Any]) -> dict[str, Any]:
         b = body or {}

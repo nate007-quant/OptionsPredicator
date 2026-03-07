@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 import os
+import time
 
 import httpx
 
@@ -159,6 +160,8 @@ class TastytradeClient:
         timeout_seconds: int = 20,
         dry_run: bool = True,
         target_api_version: str | None = None,
+        http_max_retries: int = 3,
+        http_backoff_seconds: float = 0.5,
     ) -> None:
         self.environment = str(environment or "sandbox").lower()
         self.base_url = (base_url or os.getenv("TASTY_BASE_URL") or "https://api.cert.tastyworks.com").rstrip("/")
@@ -170,6 +173,8 @@ class TastytradeClient:
         self.timeout_seconds = int(timeout_seconds)
         self.dry_run = bool(dry_run)
         self.target_api_version = (target_api_version or os.getenv("TARGET_API_VERSION") or "").strip() or None
+        self.http_max_retries = max(0, int(http_max_retries))
+        self.http_backoff_seconds = max(0.0, float(http_backoff_seconds))
 
     def _headers(self) -> dict[str, str]:
         h = {
@@ -186,15 +191,42 @@ class TastytradeClient:
         if not path.startswith("/"):
             path = "/" + path
         url = f"{self.base_url}{path}"
-        with httpx.Client(timeout=self.timeout_seconds) as client:
-            resp = client.request(method.upper(), url, headers=self._headers(), json=json_body, params=params)
-            resp.raise_for_status()
-            if not resp.content:
-                return {"ok": True, "status_code": resp.status_code}
+
+        last_exc: Exception | None = None
+        for attempt in range(0, self.http_max_retries + 1):
             try:
-                return resp.json()
-            except Exception:
-                return {"ok": True, "status_code": resp.status_code, "raw": resp.text}
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    resp = client.request(method.upper(), url, headers=self._headers(), json=json_body, params=params)
+                    # Retryable statuses
+                    if resp.status_code == 429 or resp.status_code >= 500:
+                        if attempt < self.http_max_retries:
+                            time.sleep(self.http_backoff_seconds * (2 ** attempt))
+                            continue
+                    resp.raise_for_status()
+                    if not resp.content:
+                        return {"ok": True, "status_code": resp.status_code}
+                    try:
+                        return resp.json()
+                    except Exception:
+                        return {"ok": True, "status_code": resp.status_code, "raw": resp.text}
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                code = int(e.response.status_code) if e.response is not None else 0
+                if code == 429 or code >= 500:
+                    if attempt < self.http_max_retries:
+                        time.sleep(self.http_backoff_seconds * (2 ** attempt))
+                        continue
+                raise
+            except Exception as e:
+                last_exc = e
+                if attempt < self.http_max_retries:
+                    time.sleep(self.http_backoff_seconds * (2 ** attempt))
+                    continue
+                raise
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("request failed with unknown error")
 
     def authenticate(self) -> dict[str, Any]:
         if self.session_token:
