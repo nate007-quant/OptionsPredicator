@@ -4188,51 +4188,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     })();
   </script>
-  <script>
-    // dashboard-fallback-runtime
-    // If main app JS fails, this keeps nav/tabs and health status usable.
-    (function(){
-      function setView(v){
-        try {
-          document.querySelectorAll('main.content > section.view').forEach(el=>{el.style.display='none'; el.classList.remove('active');});
-          const tgt=document.getElementById('view-'+v);
-          if(tgt){tgt.style.display='block'; tgt.classList.add('active');}
-          document.querySelectorAll('#nav a[data-view]').forEach(a=>a.classList.remove('active'));
-          const a=document.querySelector('#nav a[data-view="'+v+'"]');
-          if(a) a.classList.add('active');
-        } catch(e){}
-      }
-      function route(){
-        const h=(location.hash||'#overview').replace('#','');
-        const allowed=new Set(['overview','debit','backtest','portfolio','execution','factory','processing','logs','controls']);
-        setView(allowed.has(h)?h:'overview');
-      }
-      async function ping(){
-        try{
-          const r=await fetch('/api/health',{cache:'no-store'});
-          const ok=!!r.ok;
-          const dot=document.getElementById('healthDot');
-          const txt=document.getElementById('healthText');
-          if(dot) dot.className='dot '+(ok?'ok':'err');
-          if(txt) txt.textContent=ok?'healthy':'unreachable';
-        }catch(e){
-          const dot=document.getElementById('healthDot');
-          const txt=document.getElementById('healthText');
-          if(dot) dot.className='dot err';
-          if(txt) txt.textContent='unreachable';
-        }
-      }
-      window.addEventListener('DOMContentLoaded',()=>{
-        document.querySelectorAll('#nav a[data-view]').forEach(a=>{
-          a.addEventListener('click',ev=>{ev.preventDefault(); const v=a.getAttribute('data-view')||'overview'; location.hash='#'+v; setView(v);});
-        });
-        route();
-        window.addEventListener('hashchange', route);
-        ping();
-        setInterval(ping,4000);
-      });
-    })();
-  </script>
 
 </body>
 </html>
