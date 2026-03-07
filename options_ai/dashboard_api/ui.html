@@ -392,6 +392,7 @@
         <a href="#backtest" data-view="backtest">Backtest</a>
         <a href="#portfolio" data-view="portfolio">Portfolio Backtest</a>
         <a href="#execution" data-view="execution">Execution</a>
+        <a href="#factory" data-view="factory">Strategy Factory</a>
         <a href="#processing" data-view="processing">Processing</a>
                 <a href="#logs" data-view="logs">Logs</a>
         <a href="#controls" data-view="controls">Controls & Admin</a>
@@ -656,6 +657,70 @@
                   <tbody id="exIntentsTable"></tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- STRATEGY FACTORY -->
+      <section class="view" id="view-factory">
+        <div class="card">
+          <div class="card-h"><h2>Strategy Factory Latest Run</h2><div class="hint">Daily autonomous strategy pipeline</div></div>
+          <div class="card-b">
+            <div class="row">
+              <button class="btn-primary" id="sfRefreshLatest">Refresh</button>
+              <span class="hint" id="sfLatestMeta"></span>
+            </div>
+            <div class="grid2" style="margin-top:10px;">
+              <div>
+                <h3 style="margin-top:0">State Counts</h3>
+                <pre id="sfStateCounts" class="mono" style="white-space:pre-wrap; max-height:180px; overflow:auto;"></pre>
+              </div>
+              <div>
+                <h3 style="margin-top:0">Weekly Digest</h3>
+                <pre id="sfWeeklyDigest" class="mono" style="white-space:pre-wrap; max-height:180px; overflow:auto;"></pre>
+              </div>
+            </div>
+            <h3>Strategies</h3>
+            <div style="overflow:auto; max-height:280px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>strategy_id</th>
+                    <th>state</th>
+                    <th>score</th>
+                    <th>trades</th>
+                    <th>sharpe</th>
+                    <th>max_dd%</th>
+                    <th>reasons</th>
+                  </tr>
+                </thead>
+                <tbody id="sfStrategiesTable"></tbody>
+              </table>
+            </div>
+            <h3>Audit Tail</h3>
+            <pre id="sfAuditTail" class="mono" style="white-space:pre-wrap; max-height:220px; overflow:auto;"></pre>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-h"><h2>Recent Runs</h2><div class="hint">Run history + artifact paths</div></div>
+          <div class="card-b">
+            <div class="row"><button id="sfRefreshRuns">Refresh Runs</button></div>
+            <div style="overflow:auto; max-height:280px; margin-top:10px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>run_id</th>
+                    <th>strategies</th>
+                    <th>state_counts</th>
+                    <th>summary_path</th>
+                    <th>audit_path</th>
+                  </tr>
+                </thead>
+                <tbody id="sfRunsTable"></tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -1478,7 +1543,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function routeFromHash() {
 
       const h = (window.location.hash || '#overview').replace('#','');
-      const allowed = new Set(['overview','debit','backtest','portfolio','execution','processing','logs','controls']);
+      const allowed = new Set(['overview','debit','backtest','portfolio','execution','factory','processing','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
@@ -3671,6 +3736,85 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
+
+    // Strategy Factory UI
+    async function sfRefreshLatest() {
+      const d = await jget('/api/strategy_factory/latest');
+      const latest = d.latest;
+      const meta = document.getElementById('sfLatestMeta');
+      const statePre = document.getElementById('sfStateCounts');
+      const stratTb = document.getElementById('sfStrategiesTable');
+      const auditPre = document.getElementById('sfAuditTail');
+
+      if (!latest) {
+        if (meta) meta.textContent = 'No runs found';
+        if (statePre) statePre.textContent = '{}';
+        if (stratTb) stratTb.innerHTML = '';
+        if (auditPre) auditPre.textContent = '';
+        return d;
+      }
+
+      const summary = latest.summary || {};
+      const runId = latest.run_id || 'unknown';
+      if (meta) meta.textContent = `run_id: ${runId} | snapshot: ${summary.data_snapshot_id || '—'} | code: ${summary.code_version || '—'}`;
+
+      // state counts
+      const counts = {};
+      for (const r of (summary.strategies || [])) {
+        const st = r.state || 'UNKNOWN';
+        counts[st] = (counts[st] || 0) + 1;
+      }
+      if (statePre) statePre.textContent = JSON.stringify(counts, null, 2);
+
+      if (stratTb) {
+        stratTb.innerHTML = '';
+        for (const r of (summary.strategies || [])) {
+          const m = r.metrics || {};
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${r.strategy_id || r.idea_id || ''}</td>
+            <td>${r.state || ''}</td>
+            <td>${r.score == null ? '—' : Number(r.score).toFixed(3)}</td>
+            <td>${m.trades ?? '—'}</td>
+            <td>${m.sharpe == null ? '—' : Number(m.sharpe).toFixed(2)}</td>
+            <td>${m.max_drawdown_pct == null ? '—' : Number(m.max_drawdown_pct).toFixed(2)}</td>
+            <td>${(r.reasons || []).join(', ')}</td>
+          `;
+          stratTb.appendChild(tr);
+        }
+      }
+
+      if (auditPre) auditPre.textContent = (latest.audit_tail || []).join('
+');
+      return d;
+    }
+
+    async function sfRefreshWeeklyDigest() {
+      const d = await jget('/api/strategy_factory/weekly_digest');
+      const el = document.getElementById('sfWeeklyDigest');
+      if (el) el.textContent = JSON.stringify((d.weekly_digest || {}), null, 2);
+      return d;
+    }
+
+    async function sfRefreshRuns() {
+      const d = await jget('/api/strategy_factory/runs?limit=30');
+      const tb = document.getElementById('sfRunsTable');
+      if (!tb) return d;
+      tb.innerHTML = '';
+      for (const it of (d.items || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${it.run_id || ''}</td>
+          <td>${it.strategies_count ?? 0}</td>
+          <td>${JSON.stringify(it.state_counts || {})}</td>
+          <td class="mono">${it.summary_path || ''}</td>
+          <td class="mono">${it.audit_path || ''}</td>
+        `;
+        tb.appendChild(tr);
+      }
+      return d;
+    }
+
     // Logs
     async function refreshLogs() {
       const name = document.getElementById('logName').value;
@@ -3985,6 +4129,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('ex_incidents', () => exRefreshIncidents());
       await safe('ex_recon', () => exRefreshReconciliation());
       await safe('ex_actions', () => exRefreshOperatorActions());
+      await safe('sf_latest', () => sfRefreshLatest());
+      await safe('sf_weekly', () => sfRefreshWeeklyDigest());
+      await safe('sf_runs', () => sfRefreshRuns());
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
       await safe('pipes', () => refreshPipelines());
