@@ -1,0 +1,16 @@
+ai:
+  enabled: false
+  model: gpt-5.2
+  temperature: 0.3
+  max_ideas_from_ai: 4
+  timeout_seconds: 30
+
+approved_structures:
+  - SINGLE
+  - VERTICAL
+  - STRADDLE
+  - STRANGLE
+  - IRON_CONDOR
+  - CALENDAR
+  - BUTTERFLY
+  - RATIO
