@@ -258,6 +258,9 @@ class TastytradeClient:
     def get_order_history(self, *, account_number: str, order_id: str) -> dict[str, Any]:
         return self._request("GET", f"/accounts/{account_number}/orders/{order_id}")
 
+    def get_positions(self, *, account_number: str) -> dict[str, Any]:
+        return self._request("GET", f"/accounts/{account_number}/positions")
+
     def place_oco_exits(
         self,
         *,
