@@ -182,7 +182,9 @@ class TastytradeClient:
             "Content-Type": "application/json",
         }
         if self.session_token:
-            h["Authorization"] = f"Bearer {self.session_token}"
+            # Tastytrade expects raw session token in Authorization header
+            # (not Bearer scheme). If caller provides a prefixed value, preserve it.
+            h["Authorization"] = self.session_token
         if self.target_api_version:
             h["Accept-Version"] = str(self.target_api_version)
         return h
