@@ -258,3 +258,32 @@ LIVE_ARMED=false
 ```
 
 and restart executor to immediately stop new live entries.
+
+
+## 9) Dual-target mode (sandbox always + optional live per trade)
+
+You can execute against sandbox and live simultaneously using intent targeting:
+
+- sandbox intent is **always** created
+- live intent is created only when trade params include one of:
+  - `execute_live=true`
+  - `enable_live=true`
+  - `live_enabled=true`
+
+Required env:
+
+```bash
+DUAL_ENV_EXECUTION_ENABLED=true
+LIVE_EXECUTION_ENABLED=true
+
+# sandbox always runs
+TASTY_SANDBOX_BASE_URL=https://api.cert.tastyworks.com
+TASTY_SANDBOX_ACCOUNT_NUMBER=...
+
+# optional live path
+TASTY_LIVE_BASE_URL=https://api.tastyworks.com
+TASTY_LIVE_ACCOUNT_NUMBER=...
+LIVE_ARMED=true   # required for live submission
+```
+
+Safety note: if `LIVE_ARMED=false`, live intents are quarantined (`live_not_armed`) while sandbox still executes.

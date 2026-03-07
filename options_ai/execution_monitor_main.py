@@ -33,30 +33,53 @@ def main() -> None:
         broker_env=cfg.broker_env,
         poll_seconds=poll_s,
     )
-
-    client = TastytradeClient(
-        base_url=cfg.tasty_base_url,
-        streamer_url=cfg.tasty_streamer_url,
-        environment=cfg.broker_env,
+    client_sandbox = TastytradeClient(
+        base_url=(cfg.tasty_sandbox_base_url or cfg.tasty_base_url),
+        streamer_url=(cfg.tasty_sandbox_streamer_url or cfg.tasty_streamer_url),
+        environment='sandbox',
+        account_number=(cfg.tasty_sandbox_account_number or None),
         dry_run=(not cfg.trading_enabled),
         target_api_version=cfg.target_api_version,
     )
-
-    mon = ExecutionMonitor(
+    mon_sandbox = ExecutionMonitor(
         db_path=db_path,
-        environment=cfg.broker_env,
+        environment='sandbox',
         broker_name=cfg.broker_name,
-        account_number=(client.account_number or ""),
-        client=client,
+        account_number=(client_sandbox.account_number or ""),
+        client=client_sandbox,
+        max_position_mismatch_count=cfg.max_position_mismatch_count,
+        max_streamer_downtime_seconds=cfg.max_streamer_downtime_seconds,
+    )
+
+    client_live = TastytradeClient(
+        base_url=(cfg.tasty_live_base_url or cfg.tasty_base_url),
+        streamer_url=(cfg.tasty_live_streamer_url or cfg.tasty_streamer_url),
+        environment='live',
+        account_number=(cfg.tasty_live_account_number or None),
+        dry_run=(not (cfg.trading_enabled and cfg.live_execution_enabled and cfg.live_armed)),
+        target_api_version=cfg.target_api_version,
+    )
+    mon_live = ExecutionMonitor(
+        db_path=db_path,
+        environment='live',
+        broker_name=cfg.broker_name,
+        account_number=(client_live.account_number or ""),
+        client=client_live,
         max_position_mismatch_count=cfg.max_position_mismatch_count,
         max_streamer_downtime_seconds=cfg.max_streamer_downtime_seconds,
     )
 
     try:
         while True:
-            st = mon.process_once(limit=200)
-            if int(st.get("updated") or 0) > 0 or int(st.get("errors") or 0) > 0:
-                log_daemon_event(paths.logs_daemon_dir, "info", "execution_monitor_poll", **st)
+            st_sbx = mon_sandbox.process_once(limit=200)
+            if int(st_sbx.get("updated") or 0) > 0 or int(st_sbx.get("errors") or 0) > 0:
+                log_daemon_event(paths.logs_daemon_dir, "info", "execution_monitor_poll", env='sandbox', **st_sbx)
+
+            if cfg.live_execution_enabled:
+                st_live = mon_live.process_once(limit=200)
+                if int(st_live.get("updated") or 0) > 0 or int(st_live.get("errors") or 0) > 0:
+                    log_daemon_event(paths.logs_daemon_dir, "info", "execution_monitor_poll", env='live', **st_live)
+
             time.sleep(poll_s)
     except KeyboardInterrupt:
         log_daemon_event(paths.logs_daemon_dir, "info", "execution_monitor_stop_keyboard")

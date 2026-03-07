@@ -44,11 +44,13 @@ class ExecutionIntentBuilder:
       - upsert intent in `pending` status
     """
 
-    def __init__(self, *, db_path: str, connect_fn: Any | None = None, environment: str = "sandbox", broker_name: str = "tastytrade") -> None:
+    def __init__(self, *, db_path: str, connect_fn: Any | None = None, environment: str = "sandbox", broker_name: str = "tastytrade", dual_env_enabled: bool = True, live_execution_enabled: bool = False) -> None:
         self.db_path = str(db_path)
         self._connect_fn = connect_fn
         self.environment = str(environment or "sandbox")
         self.broker_name = str(broker_name or "tastytrade")
+        self.dual_env_enabled = bool(dual_env_enabled)
+        self.live_execution_enabled = bool(live_execution_enabled)
 
     def _connect(self):
         if self._connect_fn is not None:
@@ -98,10 +100,26 @@ class ExecutionIntentBuilder:
         return out
 
     @staticmethod
-    def _idempotency_key(*, source_type: str, source_id: int, strategy_key: str, params: dict[str, Any]) -> str:
+    def _idempotency_key(*, source_type: str, source_id: int, strategy_key: str, params: dict[str, Any], environment: str) -> str:
         canon = _canonical_json(params)
-        raw = f"{source_type}|{int(source_id)}|{strategy_key}|{canon}".encode("utf-8")
+        raw = f"{environment}|{source_type}|{int(source_id)}|{strategy_key}|{canon}".encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
+
+    @staticmethod
+    def _live_enabled_from_params(params: dict[str, Any]) -> bool:
+        p = params or {}
+        for k in ('enable_live', 'live_enabled', 'execute_live'):
+            v = p.get(k)
+            if v is None:
+                continue
+            if isinstance(v, bool):
+                return v
+            sv = str(v).strip().lower()
+            if sv in {'1', 'true', 'yes', 'on'}:
+                return True
+            if sv in {'0', 'false', 'no', 'off'}:
+                return False
+        return False
 
     def _intent_payload_from_run(self, *, run_row: sqlite3.Row, params: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
         first_ct, last_ct = self._entry_window_ct(params)
@@ -150,48 +168,56 @@ class ExecutionIntentBuilder:
                 stats.qualified += 1
 
                 intent_payload = self._intent_payload_from_run(run_row=r, params=params, summary=summary)
-                idem = self._idempotency_key(
-                    source_type="backtest_run",
-                    source_id=int(r["id"]),
-                    strategy_key=str(r["strategy_key"]),
-                    params=params,
-                )
 
-                ex0 = con.execute(
-                    "SELECT id FROM execution_intents WHERE idempotency_key=?",
-                    (idem,),
-                ).fetchone()
-                if ex0 is not None:
-                    con.execute(
-                        "UPDATE execution_intents SET updated_at_utc=? WHERE idempotency_key=?",
-                        (now, idem),
+                # Always target sandbox. Optionally add live target per params.
+                target_envs: list[str] = ['sandbox']
+                if self.dual_env_enabled and self.live_execution_enabled and self._live_enabled_from_params(params):
+                    target_envs.append('live')
+
+                for tgt_env in target_envs:
+                    idem = self._idempotency_key(
+                        source_type="backtest_run",
+                        source_id=int(r["id"]),
+                        strategy_key=str(r["strategy_key"]),
+                        params=params,
+                        environment=tgt_env,
                     )
-                    stats.existing += 1
-                else:
-                    con.execute(
-                        """
-                        INSERT INTO execution_intents(
-                          created_at_utc, updated_at_utc,
-                          environment, broker_name,
-                          status, strategy_key, symbol,
-                          candidate_ref, idempotency_key, intent_payload_json, error
+
+                    ex0 = con.execute(
+                        "SELECT id FROM execution_intents WHERE idempotency_key=?",
+                        (idem,),
+                    ).fetchone()
+                    if ex0 is not None:
+                        con.execute(
+                            "UPDATE execution_intents SET updated_at_utc=? WHERE idempotency_key=?",
+                            (now, idem),
                         )
-                        VALUES(?,?,?,?,?,?,?,?,?,?,NULL)
-                        """,
-                        (
-                            now,
-                            now,
-                            self.environment,
-                            self.broker_name,
-                            "pending",
-                            str(r["strategy_key"]),
-                            "SPX",
-                            f"backtest_run:{int(r['id'])}",
-                            idem,
-                            _canonical_json(intent_payload),
-                        ),
-                    )
-                    stats.inserted += 1
+                        stats.existing += 1
+                    else:
+                        con.execute(
+                            """
+                            INSERT INTO execution_intents(
+                              created_at_utc, updated_at_utc,
+                              environment, broker_name,
+                              status, strategy_key, symbol,
+                              candidate_ref, idempotency_key, intent_payload_json, error
+                            )
+                            VALUES(?,?,?,?,?,?,?,?,?,?,NULL)
+                            """,
+                            (
+                                now,
+                                now,
+                                tgt_env,
+                                self.broker_name,
+                                "pending",
+                                str(r["strategy_key"]),
+                                "SPX",
+                                f"backtest_run:{int(r['id'])}",
+                                idem,
+                                _canonical_json(intent_payload),
+                            ),
+                        )
+                        stats.inserted += 1
 
             con.commit()
 

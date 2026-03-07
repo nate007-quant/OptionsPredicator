@@ -36,32 +36,57 @@ def main() -> None:
         max_daily_loss_usd=cfg.max_daily_loss_usd,
         force_close_minutes_before_end=cfg.force_close_minutes_before_end,
     )
-
-    client = TastytradeClient(
-        base_url=cfg.tasty_base_url,
-        streamer_url=cfg.tasty_streamer_url,
-        environment=cfg.broker_env,
+    client_sandbox = TastytradeClient(
+        base_url=(cfg.tasty_sandbox_base_url or cfg.tasty_base_url),
+        streamer_url=(cfg.tasty_sandbox_streamer_url or cfg.tasty_streamer_url),
+        environment='sandbox',
+        account_number=(cfg.tasty_sandbox_account_number or None),
         dry_run=(not cfg.trading_enabled),
         target_api_version=cfg.target_api_version,
     )
-
-    rg = RiskGuard(
+    rg_sandbox = RiskGuard(
         db_path=db_path,
-        environment=cfg.broker_env,
+        environment='sandbox',
         broker_name=cfg.broker_name,
         session_tz=cfg.session_tz,
         max_daily_loss_usd=cfg.max_daily_loss_usd,
         force_close_minutes_before_end=cfg.force_close_minutes_before_end,
         trading_enabled=cfg.trading_enabled,
-        client=client,
-        account_number=(client.account_number or ""),
+        client=client_sandbox,
+        account_number=(client_sandbox.account_number or ""),
+    )
+
+    client_live = TastytradeClient(
+        base_url=(cfg.tasty_live_base_url or cfg.tasty_base_url),
+        streamer_url=(cfg.tasty_live_streamer_url or cfg.tasty_streamer_url),
+        environment='live',
+        account_number=(cfg.tasty_live_account_number or None),
+        dry_run=(not (cfg.trading_enabled and cfg.live_execution_enabled and cfg.live_armed)),
+        target_api_version=cfg.target_api_version,
+    )
+    rg_live = RiskGuard(
+        db_path=db_path,
+        environment='live',
+        broker_name=cfg.broker_name,
+        session_tz=cfg.session_tz,
+        max_daily_loss_usd=cfg.max_daily_loss_usd,
+        force_close_minutes_before_end=cfg.force_close_minutes_before_end,
+        trading_enabled=(cfg.trading_enabled and cfg.live_execution_enabled and cfg.live_armed),
+        client=client_live,
+        account_number=(client_live.account_number or ""),
     )
 
     try:
         while True:
-            st = rg.process_once()
-            if int(st.get("force_closed") or 0) > 0 or int(st.get("errors") or 0) > 0 or int(st.get("blocked_new_entries") or 0) > 0:
-                log_daemon_event(paths.logs_daemon_dir, "info", "execution_risk_guard_poll", **st)
+            st_sbx = rg_sandbox.process_once()
+            if int(st_sbx.get("force_closed") or 0) > 0 or int(st_sbx.get("errors") or 0) > 0 or int(st_sbx.get("blocked_new_entries") or 0) > 0:
+                log_daemon_event(paths.logs_daemon_dir, "info", "execution_risk_guard_poll", env='sandbox', **st_sbx)
+
+            if cfg.live_execution_enabled:
+                st_live = rg_live.process_once()
+                if int(st_live.get("force_closed") or 0) > 0 or int(st_live.get("errors") or 0) > 0 or int(st_live.get("blocked_new_entries") or 0) > 0:
+                    log_daemon_event(paths.logs_daemon_dir, "info", "execution_risk_guard_poll", env='live', **st_live)
+
             time.sleep(poll_s)
     except KeyboardInterrupt:
         log_daemon_event(paths.logs_daemon_dir, "info", "execution_risk_guard_stop_keyboard")

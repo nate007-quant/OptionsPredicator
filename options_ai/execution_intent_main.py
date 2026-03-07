@@ -45,8 +45,10 @@ def main() -> None:
 
     b = ExecutionIntentBuilder(
         db_path=db_path,
-        environment=cfg.broker_env,
+        environment='sandbox',
         broker_name=cfg.broker_name,
+        dual_env_enabled=cfg.dual_env_execution_enabled,
+        live_execution_enabled=cfg.live_execution_enabled,
     )
 
     try:
