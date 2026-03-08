@@ -139,7 +139,7 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -
     # walk timeline with one active position at a time
     cursor: datetime | None = None
     while True:
-        open_candidates = [r for r in recs if cursor is None or r["entry"] >= cursor]
+        open_candidates = [r for r in recs if cursor is None or r["entry"] > cursor]
         if not open_candidates:
             break
         opener = min(open_candidates, key=lambda r: (r["entry"], r["exit"]))
@@ -151,6 +151,10 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -
         closer = min(close_candidates, key=lambda r: (r["exit"], r["entry"]))
         close_ts = closer["exit"]
         pnl = float(closer["pnl"])
+
+        # Guard: ensure time cursor always advances to avoid pathological loops.
+        if cursor is not None and close_ts <= cursor:
+            break
 
         synth_pnls.append(pnl)
         cum += pnl
@@ -206,10 +210,47 @@ class PortfolioBacktestService:
     def _ensure_no_active(self) -> None:
         with self._connect(self.db_path) as con:
             r = con.execute(
-                "SELECT id FROM portfolio_backtest_sessions WHERE status IN ('running','stopping') ORDER BY id DESC LIMIT 1"
+                """
+                SELECT id, status, COALESCE(cancel_requested,0) AS cancel_requested, last_activity_at_utc
+                FROM portfolio_backtest_sessions
+                WHERE status IN ('running','stopping')
+                ORDER BY id DESC LIMIT 1
+                """
             ).fetchone()
-            if r is not None:
-                raise HTTPException(status_code=409, detail=f"portfolio backtest already active: {int(r[0])}")
+            if r is None:
+                return
+
+            sid = int(r[0])
+            status = str(r[1] or 'running')
+            cancel_requested = int(r[2] or 0)
+            last_activity = str(r[3] or '')
+            now = now_utc_iso()
+
+            # If user already requested stop, reconcile immediately to unblock next run.
+            if cancel_requested == 1 or status == 'stopping':
+                con.execute(
+                    "UPDATE portfolio_backtest_sessions SET status='stopped', stopped_at_utc=?, last_activity_at_utc=? WHERE id=?",
+                    (now, now, sid),
+                )
+                con.commit()
+                return
+
+            # Stale active session safeguard (e.g., crashed worker thread)
+            dt = _parse_iso(last_activity) if last_activity else None
+            if dt is not None and dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_sec = None
+            if dt is not None:
+                age_sec = max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+            if age_sec is not None and age_sec > 600.0:
+                con.execute(
+                    "UPDATE portfolio_backtest_sessions SET status='failed', stopped_at_utc=?, last_activity_at_utc=? WHERE id=?",
+                    (now, now, sid),
+                )
+                con.commit()
+                return
+
+            raise HTTPException(status_code=409, detail=f"portfolio backtest already active: {sid}")
 
     def start(self, *, legs: list[dict[str, Any]], merge_mode: str = "independent") -> dict[str, Any]:
         if not isinstance(legs, list) or not legs:
