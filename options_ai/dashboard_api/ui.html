@@ -197,6 +197,41 @@
       gap: var(--space-4);
     }
 
+    .ops-head { display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; }
+    .ops-title { font-size:20px; font-weight:700; }
+    .ops-health-badge { padding:6px 12px; border-radius:999px; border:1px solid var(--border); font-weight:700; text-transform:uppercase; }
+    .ops-health-badge.green { background: rgba(34,197,94,0.18); border-color: rgba(34,197,94,0.55); color:#86efac; }
+    .ops-health-badge.yellow { background: rgba(245,158,11,0.18); border-color: rgba(245,158,11,0.55); color:#fcd34d; }
+    .ops-health-badge.red { background: rgba(239,68,68,0.18); border-color: rgba(239,68,68,0.55); color:#fca5a5; }
+    .ops-kpis { display:grid; grid-template-columns: repeat(5, minmax(180px, 1fr)); gap:16px; }
+    .kpi-card .kpi-label { color: var(--muted); font-size: 12px; }
+    .kpi-card .kpi-val { font-size: 24px; font-weight: 700; margin-top: 8px; }
+    .ops-main { display:grid; grid-template-columns: 2fr 1fr; gap:16px; }
+    .ops-bottom { display:grid; grid-template-columns: 2fr 1fr 1fr; gap:16px; }
+    .ops-stale-banner { display:none; margin-top:8px; padding:8px 10px; border-radius:10px; border:1px solid rgba(245,158,11,0.55); background: rgba(245,158,11,0.12); color:#fcd34d; font-size:12px; }
+    .ops-exec-summary { display:none; margin-top:12px; }
+    .ops-exec-summary .risk { font-size:13px; color: var(--muted); }
+    #view-processing.executive .ops-exec-summary { display:block; }
+    #view-processing.executive .ops-operator-only { display:none !important; }
+
+    .pipeline-flow { display:flex; gap:10px; overflow:auto; padding-bottom:6px; }
+    .pipe-node { min-width:152px; border:2px solid var(--border); border-radius:12px; padding:10px; background: var(--surface-2); }
+    .pipe-node.green { border-color: rgba(34,197,94,0.8); }
+    .pipe-node.yellow { border-color: rgba(245,158,11,0.8); }
+    .pipe-node.red { border-color: rgba(239,68,68,0.8); }
+    .pipe-node .n1 { font-size:13px; font-weight:700; }
+    .pipe-node .n2 { font-size:11px; color: var(--muted); margin-top:6px; }
+    .svc-badge { padding:2px 8px; border-radius:999px; font-size:11px; border:1px solid var(--border); text-transform:uppercase; }
+    .svc-badge.green { color:#86efac; border-color: rgba(34,197,94,0.65); }
+    .svc-badge.yellow { color:#fcd34d; border-color: rgba(245,158,11,0.65); }
+    .svc-badge.red { color:#fca5a5; border-color: rgba(239,68,68,0.65); }
+    .svc-badge.gray { color:#cbd5e1; border-color: rgba(148,163,184,0.6); background: rgba(148,163,184,0.14); }
+
+    @media (max-width: 1200px) {
+      .ops-kpis { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+      .ops-main, .ops-bottom { grid-template-columns: 1fr; }
+    }
+
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -495,8 +530,7 @@
               </div>
             </div>
           </div>
-
-
+        </div>
 
         <div class="grid2" style="margin-top: var(--space-4);">
           <div class="card">
@@ -534,7 +568,6 @@
               </div>
             </div>
           </div>
-        </div>
         </div>
       </section>
 
@@ -660,6 +693,38 @@
             </div>
           </div>
         </div>
+
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-h"><h2>Trade History (Broker Source of Truth)</h2><div class="hint">Direct Tastytrade API pull (sandbox + live)</div></div>
+          <div class="card-b">
+            <div class="row">
+              <label>Limit <input id="exHistLimit" type="number" min="1" max="2000" value="200" style="width:90px;" /></label>
+              <button class="btn-primary" id="exRefreshHistory">Refresh</button>
+              <div>Sandbox: <span id="exHistSandboxCount" class="pill">—</span></div>
+              <div>Live: <span id="exHistLiveCount" class="pill">—</span></div>
+            </div>
+            <div class="grid2" style="margin-top:10px;">
+              <div>
+                <div class="hint" style="margin-bottom:6px;">Sandbox</div>
+                <div style="overflow:auto; max-height:320px;">
+                  <table>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>size</th><th>received</th><th>terminal</th><th>price</th></tr></thead>
+                    <tbody id="exHistSandboxTable"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div>
+                <div class="hint" style="margin-bottom:6px;">Live</div>
+                <div style="overflow:auto; max-height:320px;">
+                  <table>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>size</th><th>received</th><th>terminal</th><th>price</th></tr></thead>
+                    <tbody id="exHistLiveTable"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
 
@@ -728,56 +793,109 @@
 
       <!-- PROCESSING -->
       <section class="view" id="view-processing">
-        <div class="grid1">
-          <div class="card">
-            <div class="card-h">
-              <h2>Processing</h2>
-              <div class="hint">Queue oldest-first + paging</div>
-            </div>
-            <div class="card-b">
-              <div class="row" style="justify-content:space-between;">
-                <div class="row">
-                  <div>Queue: <span class="pill" id="queueCount2">—</span></div>
-                  <div>Processing: <span class="pill" id="procCount2">—</span></div>
-                </div>
-                <div class="row">
-                  <label>Order
-                    <select id="queueOrder">
-                      <option value="oldest" selected>Oldest</option>
-                      <option value="newest">Newest</option>
-                    </select>
-                  </label>
-                  <label>Page <input id="queuePage" type="number" min="1" value="1" style="width:70px;" /></label>
-                  <label>Page size <input id="queuePageSize" type="number" min="10" max="200" value="50" style="width:80px;" /></label>
-                  <button id="refreshProcessingBtn">Refresh</button>
-                </div>
+        <div class="card ops-head-card">
+          <div class="card-b">
+            <div class="ops-head">
+              <div>
+                <div class="ops-title">Processing Health</div>
+                <div class="hint">Operational dashboard (R/Y/G)</div>
               </div>
-
-              <div class="card" style="margin-top: var(--space-4);">
-            <div class="card-h"><h2>Pipeline Progress (Timescale)</h2><div class="hint">Backlog + latest snapshot per stage</div></div>
-            <div class="card-b">
               <div class="row">
-                <label>Window <input id="pipeWin" type="number" min="50" max="5000" value="500" style="width:90px;" /></label>
-                <button class="btn-primary" id="refreshPipes">Refresh</button>
-                <span class="hint" id="pipeNote"></span>
+                <span class="ops-health-badge" id="opsOverallHealth">—</span>
+                <label>Mode
+                  <select id="opsMode">
+                    <option value="operator" selected>Operator</option>
+                    <option value="executive">Executive</option>
+                  </select>
+                </label>
+                <label>Window
+                  <select id="opsWindow">
+                    <option value="15m" selected>15m</option>
+                    <option value="1h">1h</option>
+                    <option value="24h">24h</option>
+                    <option value="7d">7d</option>
+                  </select>
+                </label>
+                <label>Auto-refresh
+                  <select id="opsRefreshSec">
+                    <option value="5">5s</option>
+                    <option value="10" selected>10s</option>
+                    <option value="15">15s</option>
+                    <option value="30">30s</option>
+                  </select>
+                </label>
+                <button id="refreshProcessingBtn" class="btn-primary">Refresh</button>
               </div>
-              <pre id="pipeBox" style="margin-top:10px; font-family: var(--mono); font-size: 12px; color: var(--muted);">(loading)</pre>
+            </div>
+            <div class="hint" id="opsFreshnessMeta" style="margin-top:8px;">Updated —</div>
+            <div class="ops-stale-banner" id="opsStaleBanner">Telemetry stale. Data may be delayed.</div>
+            <div class="ops-exec-summary card" id="opsExecutiveSummary">
+              <div class="card-b">
+                <div><strong>Executive Summary</strong></div>
+                <div class="risk" id="opsExecRisk">Top risk: —</div>
+                <div class="risk" id="opsExecBottleneck">Bottleneck: —</div>
+                <div class="risk" id="opsExecFlags">Flags: —</div>
+              </div>
             </div>
           </div>
+        </div>
 
-              <div style="margin-top:10px;">
+        <div class="ops-kpis" style="margin-top: var(--space-4);">
+          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Freshness Lag</div><div class="kpi-val" id="kpiLag">—</div></div></div>
+          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Inflight</div><div class="kpi-val" id="kpiInflight">—</div></div></div>
+          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Queue Depth</div><div class="kpi-val" id="kpiQueue">—</div></div></div>
+          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Throughput</div><div class="kpi-val" id="kpiThroughput">—</div></div></div>
+          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Error Rate</div><div class="kpi-val" id="kpiError">—</div></div></div>
+        </div>
+
+        <div class="ops-main" style="margin-top: var(--space-4);">
+          <div class="card">
+            <div class="card-h"><h2>Pipeline Flow</h2><div class="hint" id="opsBottleneck">Bottleneck: —</div></div>
+            <div class="card-b"><div class="pipeline-flow" id="pipelineFlow"></div></div>
+          </div>
+          <div class="card ops-operator-only">
+            <div class="card-h"><h2>Service Control Panel</h2><div class="hint">viewer/operator/admin via X-Role header</div></div>
+            <div class="card-b">
+              <div class="row" style="margin-bottom:8px;">
+                <button onclick="serviceGlobalAction('restart-unhealthy')">Restart unhealthy</button>
+                <button onclick="serviceGlobalAction('start-safe')">Start safe services</button>
+                <button onclick="serviceGlobalAction('stop-non-critical')">Stop non-critical</button>
+              </div>
+              <div style="overflow:auto; max-height:320px;">
                 <table>
-                  <thead><tr><th>file</th><th>size</th><th>mtime</th></tr></thead>
-                  <tbody id="queueTable"></tbody>
+                  <thead><tr><th>Service</th><th>Stage</th><th>Status</th><th>Uptime</th><th>Heartbeat</th><th>CPU</th><th>Mem</th><th>Restarts</th><th>OOM</th><th>Version</th><th>Actions</th></tr></thead>
+                  <tbody id="opsServicesTable"></tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        </div>
 
-              <div style="margin-top:14px;" class="row">
-                <div class="badge">Newest snapshot_index: <strong id="newestSnap2">—</strong></div>
-                <div class="badge">Oldest unscored: <strong id="oldestUnscored2">—</strong></div>
-              </div>
+        <div class="ops-bottom" style="margin-top: var(--space-4);">
+          <div class="card">
+            <div class="card-h"><h2>Dependencies / DB Health</h2><div class="hint">Data layer status</div></div>
+            <div class="card-b"><div id="opsDepsBox" class="mono" style="font-size:12px;"></div></div>
+          </div>
+          <div class="card ops-operator-only">
+            <div class="card-h"><h2>Long-running Queries</h2><div class="hint">advisory</div></div>
+            <div class="card-b"><div id="opsLongQueries" class="mono" style="font-size:12px; max-height:240px; overflow:auto;"></div></div>
+          </div>
+          <div class="card ops-operator-only">
+            <div class="card-h"><h2>Index Recommendations</h2><div class="hint">never auto-apply</div></div>
+            <div class="card-b"><div id="opsIndexRecs" class="mono" style="font-size:12px; max-height:240px; overflow:auto;"></div></div>
+          </div>
+        </div>
 
-              <div style="margin-top:12px;" class="badge">Currently processing: <strong id="processingBox2">—</strong></div>
+        <div class="card ops-operator-only" style="margin-top: var(--space-4);">
+          <div class="card-h"><h2>Diagnostics</h2><div class="hint">24h trends + threshold bands + event annotations</div></div>
+          <div class="card-b">
+            <div class="grid2" style="margin-bottom:12px;">
+              <div><canvas id="opsTrendThroughput" height="120"></canvas></div>
+              <div><canvas id="opsTrendErrors" height="120"></canvas></div>
+            </div>
+            <div class="grid2">
+              <div><h3 style="margin-top:0;">Top Errors</h3><div id="opsTopErrors" class="mono" style="font-size:12px;"></div></div>
+              <div><h3 style="margin-top:0;">Audit / Incidents</h3><div id="opsAuditFeed" class="mono" style="font-size:12px; max-height:220px; overflow:auto;"></div></div>
             </div>
           </div>
         </div>
@@ -855,7 +973,6 @@ Filter candidates by ML p(bigwin) (if ML score exists for the selected horizon).
 
       <!-- BACKTEST -->
       <section class="view" id="view-backtest">
-        <div class="hint" style="margin-bottom:8px;">Parameter Backtests → Parameter Groups → Parameter Portfolio</div>
         <div class="grid1">
           <div class="card">
             <div class="card-h"><h2>Backtester — Debit Spreads</h2><div class="hint">0DTE uses ML scores; target-DTE mode builds candidates on-the-fly.</div></div>
@@ -1119,7 +1236,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             </div>
           </div>
 
-        </div>
 
 
           <div class="card">
@@ -1192,7 +1308,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                       <th class="sortable" data-sort="profit_factor">profit_factor</th>
                       <th class="sortable" data-sort="avg_pnl_dollars">avg_pnl</th>
                       <th class="sortable" data-sort="max_drawdown_dollars">max_dd</th>
-                      <th>status</th><th>linked to</th><th>next</th>
                       <th>actions</th>
                     </tr>
                   </thead>
@@ -1205,7 +1320,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       <!-- PORTFOLIO BACKTEST -->
       <section class="view" id="view-portfolio">
-        <div class="hint" style="margin-bottom:8px;">Parameter Backtests → Parameter Groups → Parameter Portfolio</div>
         <div class="grid1">
           <div class="card">
             <div class="card-h"><h2>Portfolio Backtest</h2><div class="hint">Combine multiple backtest parameter sets (equal weight) into one equity curve.</div></div>
@@ -1230,38 +1344,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <button class="btn-danger" id="pfClear">Clear legs</button>
               </div>
 
-              <fieldset class="fs" style="margin-top:12px;">
-                <legend>Parameter Groups</legend>
-                <div class="row">
-                  <button id="pgRefresh">Refresh Groups</button>
-                  <button id="pgCreate">Create Group</button>
-                  <label>Filter
-                    <select id="pgLinkFilter"><option value="">all</option><option value="linked">linked only</option><option value="unlinked">unlinked only</option></select>
-                  </label>
-                </div>
-                <div style="margin-top:10px; overflow:auto; max-height:240px;">
-                  <table>
-                    <thead><tr><th>id</th><th>name</th><th>status</th><th>linked to</th><th>next</th><th>actions</th></tr></thead>
-                    <tbody id="pgTable"></tbody>
-                  </table>
-                </div>
-              </fieldset>
-
-              <div class="hint" style="margin-top:8px;">
-                Add parameter groups from <strong>Backtest</strong> tab (select runs, then click <em>Add selected to Portfolio</em>).
-
-                Remove/move groups below using checkboxes.
-              </div>
-
-              <div class="row" style="margin-top:10px;">
-                <button id="pfGotoBacktest">Go to Backtest Runs</button>
-                <button class="btn-danger" id="pfRemoveSelectedLegs">Remove selected groups</button>
-                <label>Move selected to
-                  <select id="pfMoveTarget" style="min-width:220px;"></select>
-                </label>
-                <button id="pfMoveSelectedLegs">Move selected groups</button>
-                <span class="hint" id="pfLegOpsNote"></span>
-              </div>
+              
 
               <fieldset class="fs" style="margin-top:12px;">
                 <legend>Run multiple portfolios (group)</legend>
@@ -1301,8 +1384,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <table>
                   <thead>
                     <tr>
-                      <th>sel</th>
-                      <th>rm</th>
+                      <th></th>
                       <th>#</th>
                       <th>source</th>
                       <th>start</th>
@@ -1430,19 +1512,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
   </div>
 
   <script>
-    function computeApiBase() {
-      let p = window.location.pathname || '/';
-      p = p.replace(/\/+$/, '');
-      if (!p) return '';
-      if (p.endsWith('.html')) {
-        const i = p.lastIndexOf('/');
-        p = i > 0 ? p.slice(0, i) : '';
-      }
-      return p;
-    }
-
-    // Support both root deployment and reverse-proxy path prefixes (e.g. /dashboard).
-    const api = computeApiBase();
+    const api = '';
 
     function setTheme(theme) {
       const t = theme === 'light' ? 'light' : 'dark';
@@ -1530,10 +1600,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return await r.json();
     }
 
-    async function jpost(path, obj) {
+    async function jpost(path, obj, extraHeaders) {
       const r = await fetch(api + path, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: Object.assign({'Content-Type': 'application/json'}, (extraHeaders || {})),
         body: JSON.stringify(obj)
       });
       const txt = await r.text();
@@ -1585,6 +1655,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
 
       try { document.title = `Nate's Option Dashboard — ${view}`; } catch {}
+      if (view === 'processing') { safe('processing', () => refreshProcessing()); }
     }
 
     function routeFromHash() {
@@ -1637,6 +1708,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       }
 
+      pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
       return data;
     }
 
@@ -1655,7 +1727,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfGroupRunId = null;
     let pfGroupPoll = null;
     let pfGroupSelected = new Set();
-    let pfSelectedLegIdx = new Set();
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -2364,72 +2435,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     // (removed unused btRunsComputeRender helper)
 
-
-    function renderLinkedChips(obj, entityType) {
-      const c = obj?.link_counts || {};
-      const ups = obj?.upstream_refs || [];
-      const dns = obj?.downstream_refs || [];
-      const chips = [];
-      if (ups.length) chips.push(`<button data-link-type="${entityType}" data-link-id="${obj.id}" class="pill">↑ ${ups[0].type || 'up'} (${ups.length})</button>`);
-      if (dns.length) chips.push(`<button data-link-type="${entityType}" data-link-id="${obj.id}" class="pill">↓ ${(dns[0].type || 'down')} (${dns.length})</button>`);
-      if (!ups.length && !dns.length) chips.push('<span class="pill" style="opacity:0.7;">Unlinked</span>');
-      return chips.join(' ');
-    }
-
-    async function showLinksPanel(entityType, entityId) {
-      const d = await jget(`/api/links/panel?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`);
-      const txt = JSON.stringify(d, null, 2);
-      alert(txt);
-    }
-
-    async function btSendToGroups(runId) {
-      const existing = await jget('/api/parameter-groups');
-      const names = (existing.items || []).map(x => `${x.id}:${x.name}`).join(', ');
-      const choice = prompt(`Send run ${runId} to group. Enter existing group id, or NEW:<name>\nExisting: ${names}`,'');
-      if (!choice) return;
-      let body = {};
-      if (choice.startsWith('NEW:')) body.create_group_name = choice.slice(4).trim();
-      else body.group_id = Number(choice);
-      body.tag = prompt('Optional tag','') || '';
-      body.comment = prompt('Optional comment','') || '';
-      await jpost(`/api/backtest/runs/${runId}/send-to-groups`, body);
-      toast('Sent to groups','success');
-      await btRefreshRuns();
-      await pgRefresh();
-    }
-
-    async function pgSendToPortfolio(groupId) {
-      const ports = await jget('/api/portfolios');
-      const names = (ports.items || []).map(x => `${x.id}:${x.name}`).join(', ');
-      const choice = prompt(`Send group ${groupId} to portfolio. Enter existing portfolio id, or NEW:<name>\nExisting: ${names}`,'');
-      if (!choice) return;
-      const body = {};
-      if (choice.startsWith('NEW:')) body.create_portfolio_name = choice.slice(4).trim();
-      else body.portfolio_id = Number(choice);
-      await jpost(`/api/parameter-groups/${groupId}/send-to-portfolio`, body);
-      toast('Sent to portfolio','success');
-      await pgRefresh();
-      await pfReloadPortfolios();
-    }
-
-    async function pgRefresh() {
-      const flt = document.getElementById('pgLinkFilter')?.value || '';
-      const q = flt ? `?link_state=${encodeURIComponent(flt)}` : '';
-      const d = await jget(`/api/parameter-groups${q}`);
-      const tb = document.getElementById('pgTable');
-      if (!tb) return d;
-      tb.innerHTML = '';
-      for (const g of (d.items || [])) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${g.id}</td><td>${esc(g.name)}</td><td><span class="pill">${esc(g.status||'Draft')}</span></td><td>${renderLinkedChips(g,'group')}</td><td><button class="btn-primary" data-pg-send="${g.id}">Send to Portfolio</button></td><td><button data-pg-del="${g.id}" class="btn-danger">Archive</button></td>`;
-        tb.appendChild(tr);
-      }
-      tb.querySelectorAll('button[data-pg-send]').forEach(b=>b.addEventListener('click',()=>safe('pg_send',()=>pgSendToPortfolio(Number(b.getAttribute('data-pg-send'))))));
-      tb.querySelectorAll('button[data-pg-del]').forEach(b=>b.addEventListener('click',()=>safe('pg_del',async()=>{await jdel(`/api/parameter-groups/${Number(b.getAttribute('data-pg-del'))}`);await pgRefresh();} )));
-      tb.querySelectorAll('button[data-link-type]').forEach(b=>b.addEventListener('click',()=>safe('links',()=>showLinksPanel(b.getAttribute('data-link-type'), Number(b.getAttribute('data-link-id'))))));
-      return d;
-    }
-
     function btRunsUpdateSelNote() {
       const el = document.getElementById('btRunsSelNote');
       if (!el) return;
@@ -2522,11 +2527,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const tdDd = document.createElement('td');
         tdDd.textContent = (maxdd === null || maxdd === undefined) ? '—' : fmtNum(maxdd, 2);
 
-        const tdStatus = document.createElement('td'); tdStatus.innerHTML = `<span class="pill">${it.in_use ? 'In Use' : 'Ready'}</span>`;
-        const tdLinked = document.createElement('td'); tdLinked.innerHTML = renderLinkedChips(it,'backtest'); tdLinked.querySelectorAll('button[data-link-type]').forEach(b=>b.addEventListener('click', async (ev)=>{ev.stopPropagation(); await safe('links',()=>showLinksPanel(b.getAttribute('data-link-type'), Number(b.getAttribute('data-link-id'))));}));
-        const tdNext = document.createElement('td');
-        const sendBtn = document.createElement('button'); sendBtn.textContent='Send to Groups'; sendBtn.className='btn-primary'; sendBtn.style.padding='4px 8px'; sendBtn.addEventListener('click', async (ev)=>{ev.stopPropagation(); await safe('bt_send_group', ()=>btSendToGroups(rid));}); tdNext.appendChild(sendBtn);
-
         const tdAct = document.createElement('td');
         const delBtn = document.createElement('button');
         delBtn.textContent = 'Delete';
@@ -2542,7 +2542,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           toast('run deleted', 'warn');
           await safe('bt_runs', () => btRefreshRuns());
       await safe('pf_portfolios', () => pfReloadPortfolios());
-      await safe('pg_refresh', () => pgRefresh());
         });
         tdAct.appendChild(delBtn);
 
@@ -2582,9 +2581,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tr.appendChild(tdPf);
         tr.appendChild(tdAvg);
         tr.appendChild(tdDd);
-        tr.appendChild(tdStatus);
-        tr.appendChild(tdLinked);
-        tr.appendChild(tdNext);
         tr.appendChild(tdAct);
 
         tr.addEventListener('click', () => {
@@ -2813,10 +2809,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       }
 
-      // Render group portfolio table when portfolio list changes (not on health refresh).
-      pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
-      pfRefreshMoveTargets();
-
       const sel = document.getElementById('pfPortfolioSelect');
       if (sel) {
         const cur = sel.value;
@@ -2854,89 +2846,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return Number.isFinite(n) ? n : null;
     }
 
-    function pfRefreshMoveTargets() {
-      const sel = document.getElementById('pfMoveTarget');
-      if (!sel) return;
-      const cur = pfSelectedPortfolioId();
-      const keep = sel.value || '';
-      sel.innerHTML = '';
-      const opts = (pfPortfolios || []).filter(it => String(it.id) !== String(cur));
-      if (!opts.length) {
-        const o = document.createElement('option');
-        o.value = '';
-        o.textContent = '(no other portfolios)';
-        sel.appendChild(o);
-        return;
-      }
-      for (const it of opts) {
-        const o = document.createElement('option');
-        o.value = String(it.id);
-        o.textContent = it.name;
-        sel.appendChild(o);
-      }
-      if (keep && Array.from(sel.options).some(o => o.value === keep)) sel.value = keep;
-    }
-
-    async function pfRemoveSelectedLegs() {
-      const ids = Array.from(pfSelectedLegIdx || []).map(x => parseInt(String(x), 10)).filter(Number.isFinite).sort((a,b)=>b-a);
-      if (!ids.length) throw new Error('select one or more groups first');
-      for (const ix of ids) {
-        if (ix >= 0 && ix < (pfLegs || []).length) pfLegs.splice(ix, 1);
-      }
-      pfSelectedLegIdx.clear();
-      pfRenderLegs();
-      await pfPersistLegs();
-      const note = document.getElementById('pfLegOpsNote');
-      if (note) note.textContent = `removed ${ids.length} group(s)`;
-      toast(`removed ${ids.length} group(s)`, 'warn');
-    }
-
-    async function pfMoveSelectedLegs() {
-      const cur = pfSelectedPortfolioId();
-      const targetSel = document.getElementById('pfMoveTarget');
-      const target = parseInt(String(targetSel?.value || ''), 10);
-      if (!Number.isFinite(cur)) throw new Error('select a source portfolio first');
-      if (!Number.isFinite(target)) throw new Error('select a target portfolio');
-      if (String(cur) === String(target)) throw new Error('target must be different from current portfolio');
-
-      const ids = Array.from(pfSelectedLegIdx || []).map(x => parseInt(String(x), 10)).filter(Number.isFinite).sort((a,b)=>a-b);
-      if (!ids.length) throw new Error('select one or more groups first');
-
-      const moving = [];
-      for (const ix of ids) {
-        if (ix >= 0 && ix < (pfLegs || []).length) moving.push(pfLegs[ix]);
-      }
-      if (!moving.length) throw new Error('selected groups no longer available');
-
-      // Remove from current (descending for stable splice)
-      for (const ix of [...ids].sort((a,b)=>b-a)) {
-        if (ix >= 0 && ix < (pfLegs || []).length) pfLegs.splice(ix, 1);
-      }
-      await jput(`/api/portfolios/${cur}`, { legs: pfLegs || [] });
-
-      // Append to target
-      const tgt = await jget(`/api/portfolios/${target}`);
-      const tgtLegs = Array.isArray(tgt.legs) ? tgt.legs.slice() : [];
-      for (const leg of moving) tgtLegs.push(leg);
-      await jput(`/api/portfolios/${target}`, { legs: tgtLegs });
-
-      pfSelectedLegIdx.clear();
-      await pfReloadPortfolios();
-      const sel = document.getElementById('pfPortfolioSelect');
-      if (sel) sel.value = String(cur);
-      pfRenderLegs();
-      const note = document.getElementById('pfLegOpsNote');
-      if (note) note.textContent = `moved ${moving.length} group(s)`;
-      toast(`moved ${moving.length} group(s)`, 'success');
-    }
-
     async function pfSelectPortfolio(id) {
       const pid = Number(id);
       if (!Number.isFinite(pid)) return;
       const data = await jget(`/api/portfolios/${pid}`);
       pfPortfolioId = data.id;
       pfLegs = data.legs || [];
-      pfSelectedLegIdx.clear();
       pfRenderLegs();
       const note = document.getElementById('pfNote');
       if (note) note.textContent = `portfolio: ${data.name} | legs: ${(pfLegs||[]).length}`;
@@ -3009,7 +2924,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (sel) sel.value = String(resp.id);
       pfPortfolioId = resp.id;
       pfLegs = [];
-      pfSelectedLegIdx.clear();
       pfRenderLegs();
       toast('portfolio created', 'success');
     }
@@ -3051,7 +2965,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const p = leg.params || {};
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td><input type="checkbox" data-sel-ix="${idx}" ${pfSelectedLegIdx.has(idx) ? 'checked' : ''} /></td>
           <td><button class="btn-danger" data-ix="${idx}" style="padding:2px 8px;">x</button></td>
           <td>${idx+1}</td>
           <td style="font-family:var(--mono); font-size:11px;">${esc(leg.source||'manual')}</td>
@@ -3065,31 +2978,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tb.appendChild(tr);
       });
 
-      // select legs for bulk operations
-      tb.querySelectorAll('input[data-sel-ix]').forEach(cb => {
-        cb.addEventListener('change', () => {
-          const ix = parseInt(cb.getAttribute('data-sel-ix')||'', 10);
-          if (!Number.isFinite(ix)) return;
-          if (cb.checked) pfSelectedLegIdx.add(ix);
-          else pfSelectedLegIdx.delete(ix);
-          const ops = document.getElementById('pfLegOpsNote');
-          if (ops) ops.textContent = pfSelectedLegIdx.size ? `selected: ${pfSelectedLegIdx.size}` : '';
-        });
-      });
-
       // delete leg
       tb.querySelectorAll('button[data-ix]').forEach(btn => {
         btn.addEventListener('click', () => {
           const ix = parseInt(btn.getAttribute('data-ix')||'', 10);
           if (!Number.isFinite(ix)) return;
           pfLegs.splice(ix, 1);
-          // Reindex selected set after deletion
-          const nxt = new Set();
-          for (const j of (pfSelectedLegIdx || [])) {
-            if (j === ix) continue;
-            nxt.add(j > ix ? (j - 1) : j);
-          }
-          pfSelectedLegIdx = nxt;
           pfRenderLegs();
           safe('portfolio_save', async () => { await pfPersistLegs(); });
         });
@@ -3528,78 +3422,248 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return data;
     }
 
-// Processing
+// Processing Operations Dashboard
+    function fmtSec(v) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—';
+      const n = Number(v);
+      if (n < 60) return `${n.toFixed(0)}s`;
+      if (n < 3600) return `${(n/60).toFixed(1)}m`;
+      return `${(n/3600).toFixed(2)}h`;
+    }
+
+    function fmtBytes(v) {
+      if (v === null || v === undefined || Number.isNaN(Number(v))) return '—';
+      const n = Number(v);
+      if (n < 1024) return `${n} B`;
+      if (n < 1024**2) return `${(n/1024).toFixed(1)} KB`;
+      if (n < 1024**3) return `${(n/1024**2).toFixed(1)} MB`;
+      return `${(n/1024**3).toFixed(2)} GB`;
+    }
+
+    function setHealthBadge(el, color, txt) {
+      if (!el) return;
+      el.classList.remove('green', 'yellow', 'red');
+      if (color) el.classList.add(color);
+      el.textContent = txt || (color || 'unknown');
+    }
+
+    async function serviceAction(serviceId, action, criticalName) {
+      const role = prompt('Role for this action? viewer/operator/admin', 'operator') || 'viewer';
+      const confirm = prompt(`Type YES to ${action} ${serviceId}`);
+      if (confirm !== 'YES') return;
+      const body = { confirm: 'YES' };
+      if (criticalName && (action === 'stop' || action === 'restart')) {
+        const cc = prompt(`Critical service. Type exact service name to confirm: ${criticalName}`);
+        body.confirm_critical = cc || '';
+      }
+      await jpost(`/api/services/${encodeURIComponent(serviceId)}/${action}`, body, {'X-Role': role});
+      await refreshProcessing();
+    }
+
+    
+    async function serviceGlobalAction(action) {
+      const role = prompt('Role for this action? viewer/operator/admin', 'operator') || 'viewer';
+      const confirm = prompt(`Type YES to run global action: ${action}`);
+      if (confirm !== 'YES') return;
+      await jpost(`/api/services/actions/${encodeURIComponent(action)}`, {confirm: 'YES'}, {'X-Role': role});
+      await refreshProcessing();
+    }
+
+
+    let opsTrendThroughputChart = null;
+    let opsTrendErrorsChart = null;
+
+    function _opsThreshold(thr, key, fallback) {
+      if (!thr || !thr[key]) return fallback;
+      const cfg = thr[key] || {};
+      return {
+        yellow: Number(cfg.yellow_max ?? cfg.yellow_min ?? fallback.yellow),
+        red: Number(cfg.red_max ?? cfg.red_min ?? fallback.red),
+      };
+    }
+
+    function renderOpsTrendCharts(series, thresholds, events) {
+      if (!chartsAvailable()) return;
+      const rows = (series || []);
+      const labels = rows.map(r => (r.bucket_start || '').replace('T',' ').slice(0,16));
+      const tp = rows.map(r => Number(r.throughput_items_per_min || 0));
+      const erPct = rows.map(r => 100 * Number(r.error_rate || 0));
+
+      const errThr = _opsThreshold(thresholds, 'error_rate', {yellow: 1, red: 3});
+
+      const eventMap = new Map();
+      for (const e of (events || [])) {
+        const ts = String(e.timestamp || '').slice(0,16);
+        eventMap.set(ts, e);
+      }
+
+      const tpEventY = tp.length ? Math.max(...tp) : 0;
+      const evTp = labels.map((lb) => eventMap.has(lb) ? tpEventY : null);
+      const evEr = labels.map((lb) => eventMap.has(lb) ? (errThr.red + 0.5) : null);
+
+      const tpCtx = document.getElementById('opsTrendThroughput');
+      const erCtx = document.getElementById('opsTrendErrors');
+      if (tpCtx) {
+        const data = {
+          labels,
+          datasets: [
+            {label:'Throughput/min', data: tp, borderColor:'#60a5fa', tension:0.2, pointRadius:0},
+            {label:'Events', data: evTp, borderColor:'#f59e0b', backgroundColor:'#f59e0b', showLine:false, pointRadius:3},
+          ]
+        };
+        if (!opsTrendThroughputChart) opsTrendThroughputChart = new Chart(tpCtx, {type:'line', data, options:{responsive:true, plugins:{legend:{display:true}}, scales:{x:{display:false}}}});
+        else { opsTrendThroughputChart.data = data; opsTrendThroughputChart.update(); }
+      }
+
+      if (erCtx) {
+        const yBand = labels.map(() => errThr.yellow);
+        const rBand = labels.map(() => errThr.red);
+        const data = {
+          labels,
+          datasets: [
+            {label:'Error %', data: erPct, borderColor:'#ef4444', tension:0.2, pointRadius:0},
+            {label:'Yellow threshold', data:yBand, borderColor:'rgba(245,158,11,0.8)', borderDash:[4,4], pointRadius:0},
+            {label:'Red threshold', data:rBand, borderColor:'rgba(239,68,68,0.8)', borderDash:[4,4], pointRadius:0},
+            {label:'Events', data:evEr, borderColor:'#f59e0b', backgroundColor:'#f59e0b', showLine:false, pointRadius:3},
+          ]
+        };
+        if (!opsTrendErrorsChart) opsTrendErrorsChart = new Chart(erCtx, {type:'line', data, options:{responsive:true, plugins:{legend:{display:true}}, scales:{x:{display:false}}}});
+        else { opsTrendErrorsChart.data = data; opsTrendErrorsChart.update(); }
+      }
+    }
+
     async function refreshProcessing() {
-      const order = document.getElementById('queueOrder')?.value || 'oldest';
-      const page = parseInt(document.getElementById('queuePage')?.value || '1', 10);
-      const page_size = parseInt(document.getElementById('queuePageSize')?.value || '50', 10);
-      const data = await jget(`/api/status/processing?page=${page}&page_size=${page_size}&order=${order}`);
+      const window = document.getElementById('opsWindow')?.value || '15m';
+      const [catalog, timeseries, summary, pipeline, services, deps, dbSummary, longQ, idxRec, topErr, audit, incidents] = await Promise.all([
+        jget('/api/metrics'),
+        jget(`/api/metrics/processing/timeseries?window=24h&resolution=5m`),
+        jget(`/api/metrics/processing/summary?window=${encodeURIComponent(window)}`),
+        jget(`/api/metrics/processing/pipeline?window=${encodeURIComponent(window)}`),
+        jget(`/api/services?window=${encodeURIComponent(window)}`),
+        jget(`/api/metrics/dependencies?window=${encodeURIComponent(window)}`),
+        jget(`/api/metrics/database/summary?window=${encodeURIComponent(window)}`),
+        jget(`/api/metrics/database/queries/long-running?window=${encodeURIComponent(window)}`),
+        jget(`/api/metrics/database/index-recommendations?window=24h`),
+        jget(`/api/metrics/processing/errors/top?window=24h`),
+        jget(`/api/audit/actions?window=24h`),
+        jget(`/api/audit/incidents?window=24h`),
+      ]);
 
-      // Overview counters
-      document.getElementById('queueCount').textContent = data.queue.count;
-      document.getElementById('procCount').textContent = data.processing.count;
-      document.getElementById('totPred').textContent = data.counters.total_predictions;
-      document.getElementById('totScored').textContent = data.counters.total_scored;
-      document.getElementById('totUnscored').textContent = data.counters.unscored;
+      const mode = document.getElementById('opsMode')?.value || 'operator';
 
-      // Processing page counters
-      const qc2 = document.getElementById('queueCount2');
-      const pc2 = document.getElementById('procCount2');
-      if (qc2) qc2.textContent = data.queue.count;
-      if (pc2) pc2.textContent = data.processing.count;
+      const overallColor = summary.overall_health || 'yellow';
+      setHealthBadge(document.getElementById('opsOverallHealth'), overallColor, overallColor);
+      const fresh = summary.freshness || {};
+      const meta = `Updated ${summary.generated_at || '—'} | last data ${fmtSec(fresh.last_update_age_sec)} ago | cause: ${summary.likely_cause || 'none'}`;
+      const fm = document.getElementById('opsFreshnessMeta');
+      if (fm) fm.textContent = meta;
 
-      document.getElementById('newestSnap').textContent = data.snapshot_index_newest_ts || '—';
-      document.getElementById('oldestUnscored').textContent = data.oldest_unscored_ts || '—';
-      const ns2 = document.getElementById('newestSnap2');
-      const ou2 = document.getElementById('oldestUnscored2');
-      if (ns2) ns2.textContent = data.snapshot_index_newest_ts || '—';
-      if (ou2) ou2.textContent = data.oldest_unscored_ts || '—';
+      const k = summary.kpis || {};
+      document.getElementById('kpiLag').textContent = fmtSec(k.freshness_lag_sec);
+      document.getElementById('kpiInflight').textContent = `${k.inflight_count ?? 0}`;
+      document.getElementById('kpiQueue').textContent = `${k.queue_depth_total ?? 0}`;
+      document.getElementById('kpiThroughput').textContent = `${fmtNum(k.throughput_items_per_min ?? 0, 1)}/min`;
+      document.getElementById('kpiError').textContent = `${fmtNum(100 * Number(k.error_rate ?? 0), 2)}%`;
 
-      // Queue table
-      const tb = document.getElementById('queueTable');
-      tb.innerHTML = '';
+      const pb = document.getElementById('opsBottleneck');
+      if (pb) pb.textContent = `Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
 
-      for (const it of (data.queue.items || [])) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
-        tb.appendChild(tr);
+      const pf = document.getElementById('pipelineFlow');
+      if (pf) {
+        pf.innerHTML = '';
+        for (const st of (pipeline.stages || [])) {
+          const n = document.createElement('div');
+          n.className = `pipe-node ${st.status_color || 'yellow'}`;
+          n.innerHTML = `<div class="n1">${st.label}</div><div class="n2">lag: ${st.lag_minutes === null || st.lag_minutes === undefined ? '—' : fmtNum(st.lag_minutes,1)+'m'}</div><div class="n2">cause: ${st.likely_cause || '—'}</div>`;
+          pf.appendChild(n);
+        }
       }
 
-      // Currently processing
-      const pbox = document.getElementById('processingBox');
-      const pbox2 = document.getElementById('processingBox2');
-      if ((data.processing.items || []).length === 0) {
-        const msg = 'idle / not available';
-        if (pbox) pbox.textContent = msg;
-        if (pbox2) pbox2.textContent = msg;
-      } else {
-        const it = data.processing.items[0];
-        const msg = `${it.file} | stage=${it.stage} | started=${it.started_at} | elapsed=${(it.elapsed_seconds ?? 0).toFixed(1)}s`;
-        if (pbox) pbox.textContent = msg;
-        if (pbox2) pbox2.textContent = msg;
+      const st = document.getElementById('opsServicesTable');
+      if (st) {
+        st.innerHTML = '';
+        for (const svc of (services.items || [])) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${svc.name}</td>
+            <td>${svc.stage || '—'}</td>
+            <td><span class="svc-badge ${svc.status_color || 'yellow'}">${svc.status || 'unknown'}</span></td>
+            <td>${fmtSec(svc.uptime_sec)}</td>
+            <td>${fmtSec(svc.heartbeat_age_sec)}</td>
+            <td>${svc.cpu_util_pct == null ? '—' : fmtNum(svc.cpu_util_pct,1)+'%'}</td>
+            <td>${svc.memory_util_pct == null ? (svc.memory_bytes == null ? '—' : fmtBytes(svc.memory_bytes)) : fmtNum(svc.memory_util_pct,1)+'%'}</td>
+            <td>${svc.restart_count_24h ?? 0}</td>
+            <td>${(svc.oom_events_24h ?? 0) > 0 ? 'YES' : 'NO'}</td>
+            <td>${svc.version || '—'}</td>
+            <td>
+              <button onclick="serviceAction('${svc.id}','start','${svc.name}')">Start</button>
+              <button onclick="serviceAction('${svc.id}','stop','${svc.name}')">Stop</button>
+              <button onclick="serviceAction('${svc.id}','restart','${svc.name}')">Restart</button>
+            </td>
+          `;
+          st.appendChild(tr);
+        }
       }
 
-      return data;
+      const depBox = document.getElementById('opsDepsBox');
+      if (depBox) {
+        const depLines = (deps.items || []).map(d => `[${(d.status_color || 'yellow').toUpperCase()}] ${d.name} ${JSON.stringify(d.metrics || {})}`);
+        depLines.push(`DB summary: ${JSON.stringify(dbSummary)}`);
+        depBox.textContent = depLines.join('\n');
+      }
+
+      const lq = document.getElementById('opsLongQueries');
+      if (lq) lq.textContent = (longQ.items || []).slice(0, 12).map(q => `[${(q.status_color || 'yellow').toUpperCase()}] ${fmtSec(q.current_runtime_sec)} ${q.status} :: ${q.query_fingerprint}`).join('\n') || 'No long-running query data.';
+
+      const ir = document.getElementById('opsIndexRecs');
+      if (ir) ir.textContent = (idxRec.items || []).slice(0, 12).map(x => `(${x.confidence_score}) ${x.table_columns} -> ${x.recommended_index_type} | ${x.reason}`).join('\n') || 'No recommendations.';
+
+      const te = document.getElementById('opsTopErrors');
+      if (te) te.textContent = (topErr.items || []).map(e => `${e.count}x ${e.component}/${e.event}`).join('\n') || 'No recent errors.';
+
+      const af = document.getElementById('opsAuditFeed');
+      if (af) {
+        const acts = (audit.items || []).slice(0, 20).map(a => `${a.timestamp} [ACTION] ${a.actor} ${a.action} ${a.entity_type || ''}:${a.entity_id || ''}`);
+        const incs = (incidents.items || []).slice(0, 20).map(i => `${i.timestamp} [${i.level}] ${i.component}/${i.event} ${i.message}`);
+        af.textContent = acts.concat(incs).slice(0, 40).join('\n');
+      }
+
+      const events = (audit.items || []).slice(0, 20).concat((incidents.items || []).slice(0, 20));
+      renderOpsTrendCharts(timeseries.series || [], catalog.thresholds || {}, events);
+
+      const procView = document.getElementById('view-processing');
+      if (procView) {
+        if (mode === 'executive') procView.classList.add('executive');
+        else procView.classList.remove('executive');
+      }
+
+      const staleBanner = document.getElementById('opsStaleBanner');
+      if (staleBanner) {
+        const isStale = !!(summary.freshness && summary.freshness.stale_data);
+        staleBanner.style.display = isStale ? 'block' : 'none';
+        if (isStale) staleBanner.textContent = `Telemetry stale (${fmtSec(summary.freshness.last_update_age_sec)} since last update).`;
+      }
+
+      const riskEl = document.getElementById('opsExecRisk');
+      const bottEl = document.getElementById('opsExecBottleneck');
+      const flagsEl = document.getElementById('opsExecFlags');
+      if (riskEl) riskEl.textContent = `Top risk: ${summary.likely_cause || 'None detected'}`;
+      if (bottEl) bottEl.textContent = `Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
+      if (flagsEl) {
+        const flags = [];
+        const kk = summary.kpis || {};
+        if (kk.freshness_lag_color && kk.freshness_lag_color !== 'green') flags.push(`Lag ${kk.freshness_lag_color}`);
+        if (kk.error_rate_color && kk.error_rate_color !== 'green') flags.push(`Errors ${kk.error_rate_color}`);
+        if (kk.oldest_inflight_color && kk.oldest_inflight_color !== 'green') flags.push(`Inflight age ${kk.oldest_inflight_color}`);
+        flagsEl.textContent = `Flags: ${flags.length ? flags.join(', ') : 'All primary signals green'}`;
+      }
+
+      return {summary, pipeline, services};
     }
 
     async function refreshPipelines() {
-      const win = parseInt(document.getElementById('pipeWin')?.value || '500', 10);
-      const note = document.getElementById('pipeNote');
-      if (note) note.textContent = 'loading…';
-      const data = await jget(`/api/status/pipelines?window=${encodeURIComponent(String(win))}`);
-
-      const box = document.getElementById('pipeBox');
-      if (box) box.textContent = JSON.stringify(data, null, 2);
-
-      if (note) {
-        const tsok = data?.timescale?.ok;
-        const err = data?.timescale?.error;
-        if (!tsok) note.textContent = err ? `timescale: ${err}` : 'timescale: unavailable';
-        else note.textContent = 'ok';
-      }
-      return data;
+      return refreshProcessing();
     }
-
 
     // Tokens tile
     async function refreshTokens() {
@@ -3742,6 +3806,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
         exRefreshTrades: 'Refresh currently open/opening/closing trades table.',
         exTradesTable: 'Open trades view including protection status and P&L fields.',
+        exHistLimit: 'Rows per environment for trade history panels.',
+        exRefreshHistory: 'Refresh direct broker order history for sandbox/live.',
+        exHistSandboxCount: 'Number of sandbox trade history rows currently shown.',
+        exHistLiveCount: 'Number of live trade history rows currently shown.',
+        exHistSandboxTable: 'Recent sandbox orders pulled from Tastytrade API.',
+        exHistLiveTable: 'Recent live orders pulled from Tastytrade API.',
 
         exIntentStatus: 'Optional filter for execution intent status.',
         exRefreshIntents: 'Refresh execution intents list.',
@@ -3879,6 +3949,47 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
+    function exRenderTradeHistoryTable(tableId, items) {
+      const tb = document.getElementById(tableId);
+      if (!tb) return;
+      tb.innerHTML = '';
+      for (const it of (items || [])) {
+        const tr = document.createElement('tr');
+        const px = (it.price === null || it.price === undefined || it.price === '') ? '—' : `${it.price} ${it.price_effect || ''}`.trim();
+        tr.innerHTML = `
+          <td>${it.id ?? ''}</td>
+          <td>${it.status ?? ''}</td>
+          <td>${it.underlying ?? ''}</td>
+          <td>${it.size ?? ''}</td>
+          <td>${it.received_at ?? ''}</td>
+          <td>${it.terminal_at ?? ''}</td>
+          <td>${px}</td>
+        `;
+        tb.appendChild(tr);
+      }
+    }
+
+    async function exRefreshTradeHistory() {
+      const limit = Number(document.getElementById('exHistLimit')?.value || 200);
+
+      async function fetchEnv(env) {
+        try {
+          return await jget(`/api/execution/broker/orders?environment=${encodeURIComponent(env)}&limit=${encodeURIComponent(limit)}`);
+        } catch (e) {
+          return { environment: env, items: [], error: String(e && e.message ? e.message : e) };
+        }
+      }
+
+      const [sb, lv] = await Promise.all([fetchEnv('sandbox'), fetchEnv('live')]);
+      exRenderTradeHistoryTable('exHistSandboxTable', sb.items || []);
+      exRenderTradeHistoryTable('exHistLiveTable', lv.items || []);
+      const sbc = document.getElementById('exHistSandboxCount');
+      const lvc = document.getElementById('exHistLiveCount');
+      if (sbc) sbc.textContent = String((sb.items || []).length);
+      if (lvc) lvc.textContent = String((lv.items || []).length);
+      return { sandbox: sb, live: lv };
+    }
+
     async function exRefreshIncidents() {
       const d = await jget('/api/execution/incidents?limit=300');
       const tb = document.getElementById('exIncidentsTable');
@@ -3979,7 +4090,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
 
       const summary = latest.summary || {};
-      const runId = latest.run_id || 'unknown';
+      const runId = latest.run_id || 'unreachable';
       if (meta) meta.textContent = `run_id: ${runId} | snapshot: ${summary.data_snapshot_id || '—'} | code: ${summary.code_version || '—'}`;
 
       // state counts
@@ -4137,6 +4248,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('refreshLogs', () => refreshLogs());
     }
 
+
+    let processingTimer = null;
+    function setupProcessingRefreshTimer() {
+      if (processingTimer) clearInterval(processingTimer);
+      const sec = parseInt(document.getElementById('opsRefreshSec')?.value || '10', 10);
+      const ms = Math.max(3000, sec * 1000);
+      processingTimer = setInterval(() => safe('processing', () => refreshProcessing()), ms);
+    }
+
     // wiring
     document.getElementById('themeToggle')?.addEventListener('click', () => {
       const cur = document.documentElement.getAttribute('data-theme') || 'dark';
@@ -4147,6 +4267,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
 
     document.getElementById('exRefreshTrades')?.addEventListener('click', () => safe('ex_trades', () => exRefreshOpenTrades()));
+    document.getElementById('exRefreshHistory')?.addEventListener('click', () => safe('ex_trade_history', () => exRefreshTradeHistory()));
     document.getElementById('exRefreshKpis')?.addEventListener('click', () => safe('ex_kpis', () => exRefreshKpis()));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
     document.getElementById('exRefreshIncidents')?.addEventListener('click', () => safe('ex_incidents', () => exRefreshIncidents()));
@@ -4240,12 +4361,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('pfPortfolioRename')?.addEventListener('click', () => safe('pf_rename', () => pfRenamePortfolio()));
     document.getElementById('pfPortfolioDelete')?.addEventListener('click', () => safe('pf_delete', () => pfDeletePortfolio()));
     document.getElementById('pfPortfolioSave')?.addEventListener('click', () => safe('pf_save', () => pfSavePortfolio()));
-    document.getElementById('pgRefresh')?.addEventListener('click', () => safe('pg_refresh', () => pgRefresh()));
-    document.getElementById('pgCreate')?.addEventListener('click', () => safe('pg_create', async () => { const n = prompt('Group name:'); if(!n) return; await jpost('/api/parameter-groups',{name:n}); await pgRefresh(); }));
-    document.getElementById('pgLinkFilter')?.addEventListener('change', () => safe('pg_refresh', () => pgRefresh()));
-    document.getElementById('pfGotoBacktest')?.addEventListener('click', () => { window.location.hash = '#backtest'; routeFromHash(); });
-    document.getElementById('pfRemoveSelectedLegs')?.addEventListener('click', () => safe('pf_remove_selected', () => pfRemoveSelectedLegs()));
-    document.getElementById('pfMoveSelectedLegs')?.addEventListener('click', () => safe('pf_move_selected', () => pfMoveSelectedLegs()));
 
     document.getElementById('pfRunGroup')?.addEventListener('click', () => safe('pf_group_run', () => pfRunGroup()));
     document.getElementById('pfStopGroup')?.addEventListener('click', () => safe('pf_group_stop', () => pfStopGroup()));
@@ -4354,6 +4469,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('ex_kpis', () => exRefreshKpis());
       await safe('ex_reprice', () => exLoadRepricePolicy());
       await safe('ex_trades', () => exRefreshOpenTrades());
+      await safe('ex_trade_history', () => exRefreshTradeHistory());
       await safe('ex_intents', () => exRefreshIntents());
       await safe('ex_incidents', () => exRefreshIncidents());
       await safe('ex_recon', () => exRefreshReconciliation());
@@ -4363,6 +4479,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('sf_runs', () => sfRefreshRuns());
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
+      setupProcessingRefreshTimer();
       await safe('pipes', () => refreshPipelines());
       await safe('debit', () => refreshDebitSpreads());
       await safe('daily_pick', () => refreshDailyPick());
@@ -4389,11 +4506,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
       setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
       setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), 7000);
+      setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), 12000);
       setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
       setInterval(() => safe('ex_recon', () => exRefreshReconciliation()), 10000);
       setInterval(() => safe('ex_actions', () => exRefreshOperatorActions()), 15000);
-      setInterval(() => safe('processing', () => refreshProcessing()), 2000);
-      setInterval(() => safe('pipes', () => refreshPipelines()), 10000);
+      // processing refresh handled by configurable interval
+      setInterval(() => safe('pipes', () => refreshPipelines()), 30000);
       setInterval(() => safe('tokens', () => refreshTokens()), 10000);
       setInterval(() => safe('ml', () => refreshML()), 20000);
       setInterval(() => safe('debit', () => refreshDebitSpreads()), 10000);
@@ -4410,12 +4528,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       });
 
-      // queue controls
-      document.getElementById('queueOrder')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
-      document.getElementById('queuePage')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
-      document.getElementById('queuePageSize')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
+      // processing controls
+      document.getElementById('opsWindow')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
+      document.getElementById('opsMode')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
+      document.getElementById('opsRefreshSec')?.addEventListener('change', () => setupProcessingRefreshTimer());
 
     })();
   </script>
+
 </body>
 </html>
