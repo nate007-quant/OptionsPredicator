@@ -1670,6 +1670,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail='legs must be a list')
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
+            if paired_account_label:
+                ex = con.execute(
+                    "SELECT id,name FROM portfolio_defs WHERE paired_environment=? AND paired_account_label=? LIMIT 1",
+                    (paired_environment, paired_account_label),
+                ).fetchone()
+                if ex is not None:
+                    raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
             cur = con.execute(
                 """INSERT INTO portfolio_defs(name, legs_json, execution_mode, group_start_day, group_end_day, paired_environment, paired_account_label, created_at_utc, updated_at_utc)
                    VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -1755,6 +1762,14 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail='paired_environment must be sandbox|live')
             cur_label = str(r['paired_account_label'] or '')
             new_label = cur_label if paired_account_label_raw is None else str(paired_account_label_raw or '').strip()
+
+            if new_label:
+                ex = con.execute(
+                    "SELECT id,name FROM portfolio_defs WHERE paired_environment=? AND paired_account_label=? AND id<>? LIMIT 1",
+                    (new_env, new_label, int(portfolio_id)),
+                ).fetchone()
+                if ex is not None:
+                    raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
 
             con.execute(
                 'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, group_start_day=?, group_end_day=?, paired_environment=?, paired_account_label=?, updated_at_utc=? WHERE id=?',

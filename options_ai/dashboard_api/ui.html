@@ -3741,12 +3741,27 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <label>Paired account
                 <select id="pfCardAcct-${pid}" style="min-width:280px;">
                   ${(() => {
-                    const opts = (exAccounts || []).filter(a => !!a.active);
-                    if (!opts.length) return '<option value="">(no active accounts)</option>';
+                    const currentEnv = String(it.paired_environment || '');
+                    const currentLabel = String(it.paired_account_label || '');
+                    const taken = new Set((pfPortfolios || [])
+                      .filter(g => String(g.id) !== String(pid))
+                      .map(g => `${String(g.paired_environment||'')}|${String(g.paired_account_label||'')}`)
+                      .filter(k => !k.endsWith('|'))
+                    );
+
+                    const opts = (exAccounts || []).filter(a => {
+                      if (!a.active) return false;
+                      const acct = String(a.account_number || a.label || '');
+                      const key = `${String(a.environment||'')}|${acct}`;
+                      if (key === `${currentEnv}|${currentLabel}`) return true;
+                      return !taken.has(key);
+                    });
+
+                    if (!opts.length) return '<option value="">(no unpaired active accounts)</option>';
                     return opts.map(a => {
                       const id = String(a.id || '');
                       const acct = String(a.account_number || a.label || '');
-                      const isSel = (String(a.environment||'') === String(it.paired_environment||'')) && (acct === String(it.paired_account_label||''));
+                      const isSel = (String(a.environment||'') === currentEnv) && (acct === currentLabel);
                       const txt = `${String(a.label || a.broker_name || 'acct')} — ${String(a.environment||'')} ${acct}`.trim();
                       return `<option value="${esc(id)}" ${isSel ? 'selected' : ''}>${esc(txt)}</option>`;
                     }).join('');
