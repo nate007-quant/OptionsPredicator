@@ -1255,11 +1255,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 </label>
                 <label>Strategy
                   <select id="btRunsStrategyScope">
-                    <option value="current" selected>Current</option>
-                    <option value="all">All</option>
+                    <option value="current">Current</option>
+                    <option value="all" selected>All</option>
                   </select>
                 </label>
-                <label>Limit <input id="btRunsLimit" type="number" value="200" min="10" max="2000" style="width:90px;" /></label>
+                <label>Limit <input id="btRunsLimit" type="number" value="500" min="10" max="5000" style="width:90px;" /></label>
+                <label>Page size
+                  <select id="btRunsPageSize">
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                  </select>
+                </label>
+                <button id="btRunsPrevPage">◀ Prev</button>
+                <label>Page <input id="btRunsPage" type="number" value="1" min="1" style="width:80px;" /></label>
+                <button id="btRunsNextPage">Next ▶</button>
                 <button class="btn-primary" id="btRunsRefresh">Refresh</button>
                 <button id="btRefineSelected" disabled style="margin-left:8px;">Refine from selected</button>
                 <span class="hint" id="btRunsNote" style="margin-left:10px;"></span>
@@ -1350,7 +1361,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               </div>
 
               <div class="hint" style="margin-top:8px;">
-                Add parameter groups from <strong>Backtest</strong> tab (select runs, then click <em>Add selected to Portfolio</em>).
+                Add parameter groups from <strong>Parameter Testing</strong> tab (select runs, then click <em>Add selected to Portfolio</em>).
 
                 Remove/move groups below using checkboxes.
               </div>
@@ -1770,6 +1781,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let btRunsSort = { key: 'created_at_utc', dir: 'desc' };
     let btRunsSelected = new Set();
     let btRunsVisibleIds = []; // ids currently rendered after filters
+    let btRunsPage = 1;
+    let btRunsPageSize = 50;
 
 
 
@@ -2475,6 +2488,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       el.textContent = n ? `selected: ${n}` : '';
     }
 
+    function btRunsReadPaginationFromUI() {
+      const pEl = document.getElementById('btRunsPage');
+      const psEl = document.getElementById('btRunsPageSize');
+      const p = parseInt(String(pEl?.value || btRunsPage || 1), 10);
+      const ps = parseInt(String(psEl?.value || btRunsPageSize || 50), 10);
+      btRunsPage = Number.isFinite(p) && p > 0 ? p : 1;
+      btRunsPageSize = Number.isFinite(ps) && ps > 0 ? ps : 50;
+      return { page: btRunsPage, page_size: btRunsPageSize };
+    }
+
+
     function btRunsRenderTable(items) {
       const f = btRunsReadFiltersFromUI();
       btRunsSaveFilters(f);
@@ -2483,6 +2507,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       btRunsRenderSortIndicators();
 
       const itemsSorted = btRunsApplySort(items);
+
+      const pg = btRunsReadPaginationFromUI();
 
       const tb = document.getElementById('btRunsTable');
       if (!tb) return;
@@ -2497,7 +2523,30 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       let visible = 0;
       let passing = 0;
 
+      // First apply filters to get total visible list, then paginate.
+      const filtered = [];
       for (const it of (itemsSorted || [])) {
+        const rid = Number(it && it.id);
+        if (!Number.isFinite(rid)) continue;
+        const passThresh = btRunsPassesThresholds(it, f);
+        const passKeep = keepEnabled ? keepSet.has(it.id) : true;
+        const pass = passThresh && passKeep;
+        if (pass) passing += 1;
+        if (f.onlyShowPassing && !pass) continue;
+        filtered.push([it, pass]);
+      }
+
+      visible = filtered.length;
+      const totalPages = Math.max(1, Math.ceil(visible / Math.max(1, pg.page_size)));
+      if (btRunsPage > totalPages) btRunsPage = totalPages;
+      if (btRunsPage < 1) btRunsPage = 1;
+      const pEl = document.getElementById('btRunsPage');
+      if (pEl) pEl.value = String(btRunsPage);
+      const start = (btRunsPage - 1) * pg.page_size;
+      const end = start + pg.page_size;
+      const pageItems = filtered.slice(start, end);
+
+      for (const [it, pass] of pageItems) {
         const rid = Number(it && it.id);
         if (!Number.isFinite(rid)) continue;
         const p = it.params || {};
@@ -2509,15 +2558,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const pf = btRunsMetric(it, 'profit_factor');
         const avg = btRunsMetric(it, 'avg_pnl_dollars');
         const maxdd = btRunsMetric(it, 'max_drawdown_dollars');
-
-        const passThresh = btRunsPassesThresholds(it, f);
-        const passKeep = keepEnabled ? keepSet.has(it.id) : true;
-        const pass = passThresh && passKeep;
-
-        if (pass) passing += 1;
-        if (f.onlyShowPassing && !pass) continue;
-
-        visible += 1;
 
         const tr = document.createElement('tr');
         if (!pass) tr.style.opacity = '0.55';
@@ -2645,7 +2685,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const note = document.getElementById('btRunsNote');
       if (note) {
         const mode = f.onlyShowPassing ? 'showing passing only' : 'showing all (failing dimmed)';
-        note.textContent = `runs: ${(items||[]).length} | visible: ${visible} | passing: ${passing} | ${mode}`;
+        const totalPages = Math.max(1, Math.ceil(visible / Math.max(1, btRunsPageSize)));
+        note.textContent = `runs: ${(items||[]).length} | visible: ${visible} | page: ${btRunsPage}/${totalPages} | passing: ${passing} | ${mode}`;
       }
 
       btRunsUpdateSelectAllState();
@@ -4431,8 +4472,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('btPresetSave')?.addEventListener('click', () => safe('bt_preset_save', () => btPresetSave()));
     document.getElementById('btPresetDelete')?.addEventListener('click', () => safe('bt_preset_delete', () => btPresetDelete()));
 
-    document.getElementById('btRunsRefresh')?.addEventListener('click', () => safe('bt_runs', () => btRefreshRuns()));
-    document.getElementById('btRunsStrategyScope')?.addEventListener('change', () => safe('bt_runs', () => btRefreshRuns()));
+    document.getElementById('btRunsRefresh')?.addEventListener('click', () => { btRunsPage = 1; safe('bt_runs', () => btRefreshRuns()); });
+    document.getElementById('btRunsStrategyScope')?.addEventListener('change', () => { btRunsPage = 1; safe('bt_runs', () => btRefreshRuns()); });
 
     // sortable backtest runs headers
     (function initBtRunsSort() {
@@ -4460,11 +4501,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     // Backtest run filters (client-side)
     ;['btRunsMinWin','btRunsMinPF','btRunsMinAvg','btRunsMinTotal','btRunsKeepTopPnl','btRunsKeepTopPF'].forEach(id => {
-      document.getElementById(id)?.addEventListener('change', () => btRunsRenderTable(btRunsRaw));
-      document.getElementById(id)?.addEventListener('keyup', () => btRunsRenderTable(btRunsRaw));
+      document.getElementById(id)?.addEventListener('change', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
+      document.getElementById(id)?.addEventListener('keyup', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
     });
-    document.getElementById('btRunsOnlyShowPassing')?.addEventListener('change', () => btRunsRenderTable(btRunsRaw));
-    document.getElementById('btRunsShowZeroTrades')?.addEventListener('change', () => safe('bt_runs', () => btRefreshRuns()));
+    document.getElementById('btRunsOnlyShowPassing')?.addEventListener('change', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
+    document.getElementById('btRunsShowZeroTrades')?.addEventListener('change', () => { btRunsPage = 1; safe('bt_runs', () => btRefreshRuns()); });
+    document.getElementById('btRunsPage')?.addEventListener('change', () => btRunsRenderTable(btRunsRaw));
+    document.getElementById('btRunsPageSize')?.addEventListener('change', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
+    document.getElementById('btRunsPrevPage')?.addEventListener('click', () => { btRunsPage = Math.max(1, (btRunsPage || 1) - 1); const el=document.getElementById('btRunsPage'); if (el) el.value=String(btRunsPage); btRunsRenderTable(btRunsRaw); });
+    document.getElementById('btRunsNextPage')?.addEventListener('click', () => { btRunsPage = Math.max(1, (btRunsPage || 1) + 1); const el=document.getElementById('btRunsPage'); if (el) el.value=String(btRunsPage); btRunsRenderTable(btRunsRaw); });
 
     document.getElementById('btRunsResetFilters')?.addEventListener('click', () => {
       const f = btRunsFiltersDefault();
