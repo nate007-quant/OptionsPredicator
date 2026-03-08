@@ -3287,6 +3287,19 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       });
     }
 
+    function pfRenderCardKpis(pid, summary) {
+      const s = (summary && typeof summary === 'object') ? summary : {};
+      const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+      const num = (x, d=2) => (x === null || x === undefined || Number.isNaN(Number(x))) ? '—' : Number(x).toFixed(d);
+      const pct = (x) => (x === null || x === undefined || Number.isNaN(Number(x))) ? '—' : (100*Number(x)).toFixed(1) + '%';
+
+      setText(`pfCardKpiTrades-${pid}`, String(s.trades ?? s.n_trades ?? '—'));
+      setText(`pfCardKpiPnl-${pid}`, num(s.cum_pnl_dollars, 2));
+      setText(`pfCardKpiWr-${pid}`, pct(s.win_rate));
+      setText(`pfCardKpiPf-${pid}`, (s.profit_factor === Infinity) ? 'inf' : num(s.profit_factor, 2));
+      setText(`pfCardKpiDd-${pid}`, num(s.max_drawdown_dollars ?? s.max_dd, 2));
+    }
+
     async function pfRunSingleGroup(pid) {
       const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
       if (!it) throw new Error('group not found');
@@ -3322,6 +3335,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (st && st.combined_equity_curve) pfRenderCardEquity(pid, st.combined_equity_curve || []);
       const sum = document.getElementById(`pfCardSummary-${pid}`);
       if (sum && st && st.combined_summary) sum.textContent = JSON.stringify(st.combined_summary, null, 2);
+      if (st && st.combined_summary) pfRenderCardKpis(pid, st.combined_summary);
       if (st && (st.status === 'stopped' || st.status === 'failed')) {
         if (pfCardPollers[String(pid)]) { clearInterval(pfCardPollers[String(pid)]); delete pfCardPollers[String(pid)]; }
       }
@@ -3387,16 +3401,24 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <button id="pfCardAdd-${pid}">Add line</button>
               <span class="hint" id="pfCardNote-${pid}"></span>
             </div>
-            <div class="grid2" style="margin-top:10px;">
-              <div>
-                <div class="hint">Equity Curve</div>
-                <div style="height:180px;"><canvas id="pfCardEq-${pid}"></canvas></div>
-              </div>
-              <div>
-                <div class="hint">Summary</div>
-                <pre id="pfCardSummary-${pid}" class="mono" style="max-height:180px; overflow:auto;"></pre>
-              </div>
+            <div style="margin-top:10px;">
+              <div class="hint">Equity Curve</div>
+              <div style="height:260px; width:100%;"><canvas id="pfCardEq-${pid}"></canvas></div>
             </div>
+
+            <div class="row" style="margin-top:10px;" id="pfCardKpis-${pid}">
+              <span class="pill">trades: <strong id="pfCardKpiTrades-${pid}">—</strong></span>
+              <span class="pill">total pnl: <strong id="pfCardKpiPnl-${pid}">—</strong></span>
+              <span class="pill">win rate: <strong id="pfCardKpiWr-${pid}">—</strong></span>
+              <span class="pill">profit factor: <strong id="pfCardKpiPf-${pid}">—</strong></span>
+              <span class="pill">max dd: <strong id="pfCardKpiDd-${pid}">—</strong></span>
+            </div>
+
+            <div style="margin-top:10px;">
+              <div class="hint">Summary</div>
+              <pre id="pfCardSummary-${pid}" class="mono" style="max-height:220px; overflow:auto;"></pre>
+            </div>
+
             <div style="margin-top:10px; overflow:auto;">
               <table>
                 <thead><tr><th>#</th><th>source</th><th>params (JSON)</th><th>actions</th></tr></thead>
