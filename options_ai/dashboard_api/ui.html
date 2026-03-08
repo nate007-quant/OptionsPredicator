@@ -3420,15 +3420,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         // Friendly handling for "already active" conflict.
         const m = detail.match(/already active:\s*(\d+)/i);
         if (m) {
-          const sid = parseInt(String(m[1] || ''), 10);
-          if (Number.isFinite(sid)) {
-            pfCardSessions[String(pid)] = sid;
-            if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
-            pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
-            await pfPollSingleGroup(pid);
-          }
-          if (note) note.textContent = `already running (session ${m[1]}) — attached to live run`;
-          toast('This group backtest is already running. Attached to current run.', 'info');
+          if (note) note.textContent = `another group run is active (session ${m[1]}) — stop it first`;
+          toast(`Another group backtest is already running (session ${m[1]}). Stop it first to avoid cross-group overlap.`, 'warn');
           return;
         }
 
