@@ -1617,6 +1617,10 @@ def create_app() -> FastAPI:
                           COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
                           COALESCE(paired_environment,'sandbox') AS paired_environment,
                           COALESCE(paired_account_label,'') AS paired_account_label,
+                          COALESCE(signal_engine_enabled,0) AS signal_engine_enabled,
+                          COALESCE(signal_last_poll_utc,'') AS signal_last_poll_utc,
+                          COALESCE(signal_last_emit_utc,'') AS signal_last_emit_utc,
+                          COALESCE(signal_last_error,'') AS signal_last_error,
                           created_at_utc,updated_at_utc
                    FROM portfolio_defs
                    ORDER BY updated_at_utc DESC, id DESC"""
@@ -1639,6 +1643,10 @@ def create_app() -> FastAPI:
                     'group_end_day': str(r['group_end_day'] or ''),
                     'paired_environment': str(r['paired_environment'] or 'sandbox'),
                     'paired_account_label': str(r['paired_account_label'] or ''),
+                    'signal_engine_enabled': bool(int(r['signal_engine_enabled'] or 0)),
+                    'signal_last_poll_utc': str(r['signal_last_poll_utc'] or ''),
+                    'signal_last_emit_utc': str(r['signal_last_emit_utc'] or ''),
+                    'signal_last_error': str(r['signal_last_error'] or ''),
                     'link_counts': {'groups': len(pid_to_groups.get(int(r['id']), []))},
                     'upstream_refs': [{'type':'group','id':x} for x in pid_to_groups.get(int(r['id']), [])],
                     'downstream_refs': [],
@@ -1664,6 +1672,7 @@ def create_app() -> FastAPI:
         if paired_environment not in {'sandbox','live'}:
             raise HTTPException(status_code=400, detail='paired_environment must be sandbox|live')
         paired_account_label = str((body or {}).get('paired_account_label') or '').strip()
+        signal_engine_enabled = bool((body or {}).get('signal_engine_enabled') or False)
         if legs is None:
             legs = []
         if not isinstance(legs, list):
@@ -1678,13 +1687,13 @@ def create_app() -> FastAPI:
                 if ex is not None:
                     raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
             cur = con.execute(
-                """INSERT INTO portfolio_defs(name, legs_json, execution_mode, group_start_day, group_end_day, paired_environment, paired_account_label, created_at_utc, updated_at_utc)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, (group_start_day or None), (group_end_day or None), paired_environment, (paired_account_label or None), now, now),
+                """INSERT INTO portfolio_defs(name, legs_json, execution_mode, group_start_day, group_end_day, paired_environment, paired_account_label, signal_engine_enabled, created_at_utc, updated_at_utc)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, (group_start_day or None), (group_end_day or None), paired_environment, (paired_account_label or None), (1 if signal_engine_enabled else 0), now, now),
             )
             pid = int(cur.lastrowid)
             con.commit()
-        return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode, 'group_start_day': group_start_day, 'group_end_day': group_end_day, 'paired_environment': paired_environment, 'paired_account_label': paired_account_label}
+        return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode, 'group_start_day': group_start_day, 'group_end_day': group_end_day, 'paired_environment': paired_environment, 'paired_account_label': paired_account_label, 'signal_engine_enabled': bool(signal_engine_enabled)}
 
     @app.get('/api/portfolios/{portfolio_id}')
     def portfolios_get(portfolio_id: int) -> dict[str, Any]:
@@ -1695,6 +1704,10 @@ def create_app() -> FastAPI:
                           COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
                           COALESCE(paired_environment,'sandbox') AS paired_environment,
                           COALESCE(paired_account_label,'') AS paired_account_label,
+                          COALESCE(signal_engine_enabled,0) AS signal_engine_enabled,
+                          COALESCE(signal_last_poll_utc,'') AS signal_last_poll_utc,
+                          COALESCE(signal_last_emit_utc,'') AS signal_last_emit_utc,
+                          COALESCE(signal_last_error,'') AS signal_last_error,
                           created_at_utc,updated_at_utc
                    FROM portfolio_defs WHERE id=?""",
                 (int(portfolio_id),),
@@ -1716,6 +1729,10 @@ def create_app() -> FastAPI:
             'group_end_day': str(r['group_end_day'] or ''),
             'paired_environment': str(r['paired_environment'] or 'sandbox'),
             'paired_account_label': str(r['paired_account_label'] or ''),
+            'signal_engine_enabled': bool(int(r['signal_engine_enabled'] or 0)),
+            'signal_last_poll_utc': str(r['signal_last_poll_utc'] or ''),
+            'signal_last_emit_utc': str(r['signal_last_emit_utc'] or ''),
+            'signal_last_error': str(r['signal_last_error'] or ''),
         }
 
     @app.put('/api/portfolios/{portfolio_id}')
@@ -1728,6 +1745,7 @@ def create_app() -> FastAPI:
         group_end_day_raw = (body or {}).get('group_end_day')
         paired_environment_raw = (body or {}).get('paired_environment')
         paired_account_label_raw = (body or {}).get('paired_account_label')
+        signal_engine_enabled_raw = (body or {}).get('signal_engine_enabled')
         execution_mode: str | None = None
         if execution_mode_raw is not None:
             execution_mode = str(execution_mode_raw).strip().lower()
@@ -1742,7 +1760,7 @@ def create_app() -> FastAPI:
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
-            r = con.execute("SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode, COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day, COALESCE(paired_environment,'sandbox') AS paired_environment, COALESCE(paired_account_label,'') AS paired_account_label FROM portfolio_defs WHERE id=?", (int(portfolio_id),)).fetchone()
+            r = con.execute("SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode, COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day, COALESCE(paired_environment,'sandbox') AS paired_environment, COALESCE(paired_account_label,'') AS paired_account_label, COALESCE(signal_engine_enabled,0) AS signal_engine_enabled FROM portfolio_defs WHERE id=?", (int(portfolio_id),)).fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail='portfolio not found')
             cur_name = str(r['name'])
@@ -1762,6 +1780,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail='paired_environment must be sandbox|live')
             cur_label = str(r['paired_account_label'] or '')
             new_label = cur_label if paired_account_label_raw is None else str(paired_account_label_raw or '').strip()
+            cur_sig = int(r['signal_engine_enabled'] or 0)
+            new_sig = cur_sig if signal_engine_enabled_raw is None else (1 if bool(signal_engine_enabled_raw) else 0)
 
             if new_label:
                 ex = con.execute(
@@ -1772,8 +1792,8 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
 
             con.execute(
-                'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, group_start_day=?, group_end_day=?, paired_environment=?, paired_account_label=?, updated_at_utc=? WHERE id=?',
-                (new_name, new_legs_json, new_mode, (new_start or None), (new_end or None), new_env, (new_label or None), now, int(portfolio_id)),
+                'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, group_start_day=?, group_end_day=?, paired_environment=?, paired_account_label=?, signal_engine_enabled=?, updated_at_utc=? WHERE id=?',
+                (new_name, new_legs_json, new_mode, (new_start or None), (new_end or None), new_env, (new_label or None), int(new_sig), now, int(portfolio_id)),
             )
             con.commit()
 
@@ -1781,7 +1801,7 @@ def create_app() -> FastAPI:
             out_legs = _json.loads(new_legs_json or '[]')
         except Exception:
             out_legs = []
-        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label}
+        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label, 'signal_engine_enabled': bool(int(new_sig))}
 
     @app.post('/api/portfolios/{portfolio_id}/emit_signals')
     def portfolios_emit_signals(portfolio_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1868,6 +1888,11 @@ def create_app() -> FastAPI:
                 inserted += 1
 
             idem_prefix = str((body or {}).get('idempotency_prefix') or '').strip()
+            emit_source = str((body or {}).get('source') or 'manual').strip().lower()
+            marker = str((body or {}).get('signal_marker') or '').strip()
+            if emit_source == 'engine' and (not marker):
+                rr2 = con.execute("SELECT COALESCE(MAX(id),0) AS mx FROM predictions").fetchone()
+                marker = str(int(rr2['mx'] or 0))
 
             if mode == 'merged':
                 lines: list[dict[str, Any]] = []
@@ -1888,7 +1913,7 @@ def create_app() -> FastAPI:
                     'summary': {},
                     'paired_account': {'environment': env, 'account_label': account_label},
                 }
-                idem = idem_prefix or f"portfolio_group:{int(portfolio_id)}:{env}:merged:{date.today().isoformat()}"
+                idem = idem_prefix or (f"portfolio_group:{int(portfolio_id)}:{env}:merged:marker:{marker}" if emit_source == 'engine' else f"portfolio_group:{int(portfolio_id)}:{env}:merged:{date.today().isoformat()}")
                 _insert_one(
                     strategy_key=strategy_key,
                     candidate_ref=f"portfolio_group:{int(portfolio_id)}:merged",
@@ -1907,7 +1932,7 @@ def create_app() -> FastAPI:
                         'summary': {},
                         'paired_account': {'environment': env, 'account_label': account_label},
                     }
-                    idem = idem_prefix or f"portfolio_group:{int(portfolio_id)}:{env}:line:{i}:{date.today().isoformat()}"
+                    idem = idem_prefix or (f"portfolio_group:{int(portfolio_id)}:{env}:line:{i}:marker:{marker}" if emit_source == 'engine' else f"portfolio_group:{int(portfolio_id)}:{env}:line:{i}:{date.today().isoformat()}")
                     _insert_one(
                         strategy_key=sid,
                         candidate_ref=f"portfolio_group:{int(portfolio_id)}:line:{int(i)}",
@@ -4844,6 +4869,78 @@ def create_app() -> FastAPI:
         }
 
 
+    # ---- Background signal engine (per-group, every 15s, market-hours only) ----
+    def _is_market_hours_central(now_utc: datetime) -> bool:
+        try:
+            dt = now_utc.astimezone(CENTRAL_TZ)
+            if dt.weekday() >= 5:  # Sat/Sun
+                return False
+            hm = dt.hour * 60 + dt.minute
+            # 08:30-15:00 America/Chicago (regular session)
+            return (8 * 60 + 30) <= hm <= (15 * 60)
+        except Exception:
+            return False
+
+    def _signal_engine_tick() -> None:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, COALESCE(signal_engine_enabled,0) AS signal_engine_enabled
+                FROM portfolio_defs
+                WHERE COALESCE(signal_engine_enabled,0)=1
+                ORDER BY id ASC
+                """
+            ).fetchall()
+
+        if not rows:
+            return
+
+        market_open = _is_market_hours_central(datetime.now(timezone.utc))
+        for r in rows:
+            pid = int(r['id'])
+            # Always update last poll timestamp
+            with _connect(db_path) as con:
+                con.execute("UPDATE portfolio_defs SET signal_last_poll_utc=? WHERE id=?", (now, pid))
+                con.commit()
+
+            if not market_open:
+                continue
+
+            try:
+                out = portfolios_emit_signals(pid, {'source': 'engine'})
+                if int(out.get('inserted') or 0) > 0:
+                    with _connect(db_path) as con:
+                        con.execute("UPDATE portfolio_defs SET signal_last_emit_utc=?, signal_last_error=NULL WHERE id=?", (now, pid))
+                        con.commit()
+                else:
+                    with _connect(db_path) as con:
+                        con.execute("UPDATE portfolio_defs SET signal_last_error=NULL WHERE id=?", (pid,))
+                        con.commit()
+            except Exception as e:
+                msg = str(getattr(e, 'detail', None) or str(e))[:240]
+                with _connect(db_path) as con:
+                    con.execute("UPDATE portfolio_defs SET signal_last_error=? WHERE id=?", (msg, pid))
+                    con.commit()
+
+    def _signal_engine_loop() -> None:
+        lg = logging.getLogger('options_ai.signal_engine')
+        lg.info('signal engine loop started (15s cadence)')
+        while True:
+            try:
+                _signal_engine_tick()
+            except Exception:
+                lg.exception('signal engine tick failed')
+            # fixed 15s cadence requested
+            threading.Event().wait(15.0)
+
+    # Start a single daemon thread for signal engine
+    try:
+        t = threading.Thread(target=_signal_engine_loop, name='signal-engine', daemon=True)
+        t.start()
+        app.state.signal_engine_thread = t
+    except Exception:
+        logging.getLogger('options_ai.signal_engine').exception('failed to start signal engine thread')
 
 
     return app

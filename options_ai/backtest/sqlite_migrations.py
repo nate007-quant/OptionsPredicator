@@ -191,6 +191,10 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
           group_end_day TEXT NULL,
           paired_environment TEXT NOT NULL DEFAULT 'sandbox',
           paired_account_label TEXT NULL,
+          signal_engine_enabled INTEGER NOT NULL DEFAULT 0,
+          signal_last_poll_utc TEXT NULL,
+          signal_last_emit_utc TEXT NULL,
+          signal_last_error TEXT NULL,
           created_at_utc TEXT NOT NULL,
           updated_at_utc TEXT NOT NULL
         );
@@ -226,6 +230,20 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
         con.commit()
 
 
+
+    # Portfolio definitions: signal engine controls/status
+    if not _has_column(con, "portfolio_defs", "signal_engine_enabled"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN signal_engine_enabled INTEGER NOT NULL DEFAULT 0")
+        con.commit()
+    if not _has_column(con, "portfolio_defs", "signal_last_poll_utc"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN signal_last_poll_utc TEXT NULL")
+        con.commit()
+    if not _has_column(con, "portfolio_defs", "signal_last_emit_utc"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN signal_last_emit_utc TEXT NULL")
+        con.commit()
+    if not _has_column(con, "portfolio_defs", "signal_last_error"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN signal_last_error TEXT NULL")
+        con.commit()
 
 
 def backfill_params_hash(

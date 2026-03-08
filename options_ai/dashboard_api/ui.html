@@ -1725,7 +1725,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfCardModes = {}; // portfolio_id -> independent|merged
     let exAccounts = []; // execution account catalog
     let exAccountsLoading = false;
-    let pfEmitArmed = {}; // portfolio_id -> bool (UI-persistent toggle)
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -3227,14 +3226,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function pfCacheKey(pid) {
       return `pf_card_cache_v1_${String(pid)}`;
     }
-    function pfEmitArmedLoad() {
-      try { return JSON.parse(localStorage.getItem('pf_emit_armed_v1') || '{}') || {}; } catch { return {}; }
-    }
-
-    function pfEmitArmedSave() {
-      try { localStorage.setItem('pf_emit_armed_v1', JSON.stringify(pfEmitArmed || {})); } catch {}
-    }
-
     function pfPortfoliosCacheKey() {
       return 'pf_portfolios_cache_v1';
     }
@@ -3659,6 +3650,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return acct || null;
     }
 
+    async function pfSetGroupSignalEngine(pid, on) {
+      await jput(`/api/portfolios/${pid}`, { signal_engine_enabled: !!on });
+      await pfReloadPortfolios();
+      toast(`signal engine ${on ? 'ON' : 'OFF'}`, on ? 'success' : 'warn');
+    }
+
     async function pfUnpairGroupAccount(pid) {
       const ok = confirm('Unpair this group from its execution account? You will need to re-pair before emitting signals.');
       if (!ok) return;
@@ -3692,7 +3689,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       toast(`account pair saved (${env}${label ? ' ' + label : ''})`, 'success');
     }
 
-    async function pfEmitGroupSignals(pid) {
+    async function pfEmitGroupSignals(pid, source = "manual") {
       const acct = pfSelectedAccountByCard(pid);
       if (!acct) throw new Error('select an active account');
       const env = String(acct.environment || 'sandbox').toLowerCase();
@@ -3700,7 +3697,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const ok = confirm(`Emit signals for this group to ${env}${label ? ' ('+label+')' : ''}?`);
       if (!ok) return;
       try {
-        const res = await jpost(`/api/portfolios/${pid}/emit_signals`, { environment: env, account_label: label });
+        const res = await jpost(`/api/portfolios/${pid}/emit_signals`, { environment: env, account_label: label, source: source });
         const ins = Number(res.inserted || 0);
         const exi = Number(res.existing || 0);
         if (ins > 0) toast(`signals emitted (${res.mode||'independent'}): inserted ${ins}, existing ${exi}`, 'success');
@@ -3832,7 +3829,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <button class="btn-danger" id="pfCardAcctUnpair-${pid}">Unpair</button>
               <label style="display:inline-flex; align-items:center; gap:8px;">
                 <span>Emit signals</span>
-                <label class="switch"><input id="pfCardEmit-${pid}" type="checkbox" role="switch" ${pfEmitArmed[String(pid)] ? "checked" : ""} /><span class="slider"></span></label>
+                <label class="switch"><input id="pfCardEmit-${pid}" type="checkbox" role="switch" ${it.signal_engine_enabled ? "checked" : ""} /><span class="slider"></span></label>
               </label>
               <label>Group start <input id="pfCardStart-${pid}" type="date" value="${esc(String(it.group_start_day || pfInferGroupStartDefault(legs) || ''))}" /></label>
               <label>Group end <input id="pfCardEnd-${pid}" type="date" value="${esc(String(it.group_end_day || pfLastTradingDayIso()))}" /></label>
@@ -3841,6 +3838,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <span class="hint" id="pfCardNote-${pid}"></span>
             </div>
             <div class="hint" style="margin-top:4px;">Run-time window overrides line-level start/end for consistency across this group.</div>
+            <div class="hint" style="margin-top:2px;">Signal engine: ${it.signal_engine_enabled ? 'ON' : 'OFF'} | last poll: ${esc(String(it.signal_last_poll_utc || '—'))} | last emit: ${esc(String(it.signal_last_emit_utc || '—'))}${it.signal_last_error ? ' | error: ' + esc(String(it.signal_last_error)) : ''}</div>
             <div style="margin-top:8px;">
               <div style="height:8px; border-radius:999px; background:rgba(148,163,184,.25); overflow:hidden;">
                 <div id="pfCardProgBar-${pid}" style="height:100%; width:0%; background:linear-gradient(90deg,#60a5fa,#3b82f6);"></div>
@@ -3926,10 +3924,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_emit_${pid}`, async () => {
           const cb = ev.target;
           const on = !!cb?.checked;
-          pfEmitArmed[String(pid)] = on;
-          pfEmitArmedSave();
-          if (!on) return;
-          await pfEmitGroupSignals(pid);
+          if (on) {
+            const ok = confirm('Enable continuous signal engine for this group (15s cadence, market hours only)?');
+            if (!ok) { cb.checked = false; return; }
+            await pfSetGroupSignalEngine(pid, true);
+            // kick one immediate engine-source emit so first signals are available now
+            await pfEmitGroupSignals(pid, 'engine');
+          } else {
+            const ok = confirm('Disable continuous signal engine for this group?');
+            if (!ok) { cb.checked = true; return; }
+            await pfSetGroupSignalEngine(pid, false);
+          }
         }));
         document.getElementById(`pfCardDateSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_date_save_${pid}`, async () => {
           const s0 = document.getElementById(`pfCardStart-${pid}`)?.value || '';
@@ -5536,7 +5541,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     // initial load
     (async () => {
       initTheme();
-      pfEmitArmed = pfEmitArmedLoad();
       routeFromHash();
 
       await safe('health', () => refreshHealth());
