@@ -1349,7 +1349,21 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <button class="btn-danger" id="pfClear">Clear legs</button>
               </div>
 
-              
+              <div class="hint" style="margin-top:8px;">
+                Add parameter groups from <strong>Backtest</strong> tab (select runs, then click <em>Add selected to Portfolio</em>).
+
+                Remove/move groups below using checkboxes.
+              </div>
+
+              <div class="row" style="margin-top:10px;">
+                <button id="pfGotoBacktest">Go to Backtest Runs</button>
+                <button class="btn-danger" id="pfRemoveSelectedLegs">Remove selected groups</button>
+                <label>Move selected to
+                  <select id="pfMoveTarget" style="min-width:220px;"></select>
+                </label>
+                <button id="pfMoveSelectedLegs">Move selected groups</button>
+                <span class="hint" id="pfLegOpsNote"></span>
+              </div>
 
               <fieldset class="fs" style="margin-top:12px;">
                 <legend>Run multiple portfolios (group)</legend>
@@ -1389,7 +1403,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <table>
                   <thead>
                     <tr>
-                      <th></th>
+                      <th>sel</th>
+                      <th>rm</th>
                       <th>#</th>
                       <th>source</th>
                       <th>start</th>
@@ -1517,7 +1532,19 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
   </div>
 
   <script>
-    const api = '';
+    function computeApiBase() {
+      let p = window.location.pathname || '/';
+      p = p.replace(/\/+$/, '');
+      if (!p) return '';
+      if (p.endsWith('.html')) {
+        const i = p.lastIndexOf('/');
+        p = i > 0 ? p.slice(0, i) : '';
+      }
+      return p;
+    }
+
+    // Support both root deployment and reverse-proxy path prefixes (e.g. /dashboard).
+    const api = computeApiBase();
 
     function setTheme(theme) {
       const t = theme === 'light' ? 'light' : 'dark';
@@ -1713,7 +1740,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       }
 
-      pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
       return data;
     }
 
@@ -1732,6 +1758,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfGroupRunId = null;
     let pfGroupPoll = null;
     let pfGroupSelected = new Set();
+    let pfSelectedLegIdx = new Set();
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -2814,6 +2841,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       }
 
+      // Render group portfolio table when portfolio list changes (not on health refresh).
+      pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
+      pfRefreshMoveTargets();
+
       const sel = document.getElementById('pfPortfolioSelect');
       if (sel) {
         const cur = sel.value;
@@ -2851,12 +2882,89 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return Number.isFinite(n) ? n : null;
     }
 
+    function pfRefreshMoveTargets() {
+      const sel = document.getElementById('pfMoveTarget');
+      if (!sel) return;
+      const cur = pfSelectedPortfolioId();
+      const keep = sel.value || '';
+      sel.innerHTML = '';
+      const opts = (pfPortfolios || []).filter(it => String(it.id) !== String(cur));
+      if (!opts.length) {
+        const o = document.createElement('option');
+        o.value = '';
+        o.textContent = '(no other portfolios)';
+        sel.appendChild(o);
+        return;
+      }
+      for (const it of opts) {
+        const o = document.createElement('option');
+        o.value = String(it.id);
+        o.textContent = it.name;
+        sel.appendChild(o);
+      }
+      if (keep && Array.from(sel.options).some(o => o.value === keep)) sel.value = keep;
+    }
+
+    async function pfRemoveSelectedLegs() {
+      const ids = Array.from(pfSelectedLegIdx || []).map(x => parseInt(String(x), 10)).filter(Number.isFinite).sort((a,b)=>b-a);
+      if (!ids.length) throw new Error('select one or more groups first');
+      for (const ix of ids) {
+        if (ix >= 0 && ix < (pfLegs || []).length) pfLegs.splice(ix, 1);
+      }
+      pfSelectedLegIdx.clear();
+      pfRenderLegs();
+      await pfPersistLegs();
+      const note = document.getElementById('pfLegOpsNote');
+      if (note) note.textContent = `removed ${ids.length} group(s)`;
+      toast(`removed ${ids.length} group(s)`, 'warn');
+    }
+
+    async function pfMoveSelectedLegs() {
+      const cur = pfSelectedPortfolioId();
+      const targetSel = document.getElementById('pfMoveTarget');
+      const target = parseInt(String(targetSel?.value || ''), 10);
+      if (!Number.isFinite(cur)) throw new Error('select a source portfolio first');
+      if (!Number.isFinite(target)) throw new Error('select a target portfolio');
+      if (String(cur) === String(target)) throw new Error('target must be different from current portfolio');
+
+      const ids = Array.from(pfSelectedLegIdx || []).map(x => parseInt(String(x), 10)).filter(Number.isFinite).sort((a,b)=>a-b);
+      if (!ids.length) throw new Error('select one or more groups first');
+
+      const moving = [];
+      for (const ix of ids) {
+        if (ix >= 0 && ix < (pfLegs || []).length) moving.push(pfLegs[ix]);
+      }
+      if (!moving.length) throw new Error('selected groups no longer available');
+
+      // Remove from current (descending for stable splice)
+      for (const ix of [...ids].sort((a,b)=>b-a)) {
+        if (ix >= 0 && ix < (pfLegs || []).length) pfLegs.splice(ix, 1);
+      }
+      await jput(`/api/portfolios/${cur}`, { legs: pfLegs || [] });
+
+      // Append to target
+      const tgt = await jget(`/api/portfolios/${target}`);
+      const tgtLegs = Array.isArray(tgt.legs) ? tgt.legs.slice() : [];
+      for (const leg of moving) tgtLegs.push(leg);
+      await jput(`/api/portfolios/${target}`, { legs: tgtLegs });
+
+      pfSelectedLegIdx.clear();
+      await pfReloadPortfolios();
+      const sel = document.getElementById('pfPortfolioSelect');
+      if (sel) sel.value = String(cur);
+      pfRenderLegs();
+      const note = document.getElementById('pfLegOpsNote');
+      if (note) note.textContent = `moved ${moving.length} group(s)`;
+      toast(`moved ${moving.length} group(s)`, 'success');
+    }
+
     async function pfSelectPortfolio(id) {
       const pid = Number(id);
       if (!Number.isFinite(pid)) return;
       const data = await jget(`/api/portfolios/${pid}`);
       pfPortfolioId = data.id;
       pfLegs = data.legs || [];
+      pfSelectedLegIdx.clear();
       pfRenderLegs();
       const note = document.getElementById('pfNote');
       if (note) note.textContent = `portfolio: ${data.name} | legs: ${(pfLegs||[]).length}`;
@@ -2929,6 +3037,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (sel) sel.value = String(resp.id);
       pfPortfolioId = resp.id;
       pfLegs = [];
+      pfSelectedLegIdx.clear();
       pfRenderLegs();
       toast('portfolio created', 'success');
     }
@@ -2970,6 +3079,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const p = leg.params || {};
         const tr = document.createElement('tr');
         tr.innerHTML = `
+          <td><input type="checkbox" data-sel-ix="${idx}" ${pfSelectedLegIdx.has(idx) ? 'checked' : ''} /></td>
           <td><button class="btn-danger" data-ix="${idx}" style="padding:2px 8px;">x</button></td>
           <td>${idx+1}</td>
           <td style="font-family:var(--mono); font-size:11px;">${esc(leg.source||'manual')}</td>
@@ -2983,12 +3093,31 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tb.appendChild(tr);
       });
 
+      // select legs for bulk operations
+      tb.querySelectorAll('input[data-sel-ix]').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const ix = parseInt(cb.getAttribute('data-sel-ix')||'', 10);
+          if (!Number.isFinite(ix)) return;
+          if (cb.checked) pfSelectedLegIdx.add(ix);
+          else pfSelectedLegIdx.delete(ix);
+          const ops = document.getElementById('pfLegOpsNote');
+          if (ops) ops.textContent = pfSelectedLegIdx.size ? `selected: ${pfSelectedLegIdx.size}` : '';
+        });
+      });
+
       // delete leg
       tb.querySelectorAll('button[data-ix]').forEach(btn => {
         btn.addEventListener('click', () => {
           const ix = parseInt(btn.getAttribute('data-ix')||'', 10);
           if (!Number.isFinite(ix)) return;
           pfLegs.splice(ix, 1);
+          // Reindex selected set after deletion
+          const nxt = new Set();
+          for (const j of (pfSelectedLegIdx || [])) {
+            if (j === ix) continue;
+            nxt.add(j > ix ? (j - 1) : j);
+          }
+          pfSelectedLegIdx = nxt;
           pfRenderLegs();
           safe('portfolio_save', async () => { await pfPersistLegs(); });
         });
@@ -4374,6 +4503,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('pfPortfolioRename')?.addEventListener('click', () => safe('pf_rename', () => pfRenamePortfolio()));
     document.getElementById('pfPortfolioDelete')?.addEventListener('click', () => safe('pf_delete', () => pfDeletePortfolio()));
     document.getElementById('pfPortfolioSave')?.addEventListener('click', () => safe('pf_save', () => pfSavePortfolio()));
+    document.getElementById('pfGotoBacktest')?.addEventListener('click', () => { window.location.hash = '#backtest'; routeFromHash(); });
+    document.getElementById('pfRemoveSelectedLegs')?.addEventListener('click', () => safe('pf_remove_selected', () => pfRemoveSelectedLegs()));
+    document.getElementById('pfMoveSelectedLegs')?.addEventListener('click', () => safe('pf_move_selected', () => pfMoveSelectedLegs()));
 
     document.getElementById('pfRunGroup')?.addEventListener('click', () => safe('pf_group_run', () => pfRunGroup()));
     document.getElementById('pfStopGroup')?.addEventListener('click', () => safe('pf_group_stop', () => pfStopGroup()));

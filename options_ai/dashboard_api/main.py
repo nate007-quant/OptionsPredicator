@@ -311,7 +311,8 @@ def create_app() -> FastAPI:
                   preset_id INTEGER NULL,
                   preset_name_at_run TEXT NULL,
                   params_json TEXT NOT NULL,
-                  summary_json TEXT NOT NULL
+                  summary_json TEXT NOT NULL,
+                  result_json TEXT NULL
                 );
                 """
             )

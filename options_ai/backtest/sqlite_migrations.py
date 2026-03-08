@@ -24,7 +24,8 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
           preset_id INTEGER NULL,
           preset_name_at_run TEXT NULL,
           params_json TEXT NOT NULL,
-          summary_json TEXT NOT NULL
+          summary_json TEXT NOT NULL,
+          result_json TEXT NULL
         );
         """
     )
@@ -41,6 +42,8 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
         alters.append("ALTER TABLE backtest_runs ADD COLUMN refinement_sampler_id INTEGER NULL")
     if not _has_column(con, "backtest_runs", "refinement_launched_at_utc"):
         alters.append("ALTER TABLE backtest_runs ADD COLUMN refinement_launched_at_utc TEXT NULL")
+    if not _has_column(con, "backtest_runs", "result_json"):
+        alters.append("ALTER TABLE backtest_runs ADD COLUMN result_json TEXT NULL")
 
     for sql in alters:
         con.execute(sql)

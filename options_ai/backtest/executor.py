@@ -59,7 +59,7 @@ class BacktestExecutor:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT id, params_json, summary_json
+                SELECT id, params_json, summary_json, result_json
                 FROM backtest_runs
                 WHERE strategy_key=? AND schema_version=? AND params_hash=?
                 ORDER BY id ASC
@@ -68,7 +68,7 @@ class BacktestExecutor:
                 (strategy_key, int(schema_version), ph),
             ).fetchone()
             if row is not None and not force_run:
-                # Return existing stored result (no trades/equity persisted) so UI can still render a summary.
+                # Return existing stored result for duplicate params so UI can re-render charts/trades.
                 try:
                     cfg = json.loads(row[1] or '{}')
                 except Exception:
@@ -77,15 +77,22 @@ class BacktestExecutor:
                     summ = json.loads(row[2] or '{}')
                 except Exception:
                     summ = None
-                return {
+                try:
+                    cached = json.loads(row[3] or '{}')
+                except Exception:
+                    cached = {}
+                if not isinstance(cached, dict):
+                    cached = {}
+                cached.setdefault("config", cfg)
+                cached.setdefault("summary", summ)
+                cached.update({
                     "duplicate_skipped": True,
                     "run_id": int(row[0]),
                     "strategy_key": strategy_key,
                     "schema_version": schema_version,
                     "params_hash": ph,
-                    "config": cfg,
-                    "summary": summ,
-                }
+                })
+                return cached
             if row is not None and force_run:
                 existing_run_id = int(row[0])
 
@@ -94,6 +101,7 @@ class BacktestExecutor:
 
         summary = (result or {}).get("summary") or {}
         summary_json = json.dumps(summary, separators=(",", ":"), sort_keys=True)
+        result_json = json.dumps((result or {}), separators=(",", ":"), sort_keys=True)
 
         now = now_utc_iso()
 
@@ -103,7 +111,7 @@ class BacktestExecutor:
                 con.execute(
                     """
                     UPDATE backtest_runs
-                    SET created_at_utc=?, preset_id=?, preset_name_at_run=?, summary_json=?
+                    SET created_at_utc=?, preset_id=?, preset_name_at_run=?, summary_json=?, result_json=?
                     WHERE id=?
                     """,
                     (
@@ -111,6 +119,7 @@ class BacktestExecutor:
                         int(preset_id) if preset_id is not None else None,
                         preset_name_at_run,
                         summary_json,
+                        result_json,
                         int(existing_run_id),
                     ),
                 )
@@ -120,11 +129,11 @@ class BacktestExecutor:
                     """
                     INSERT INTO backtest_runs(
                         strategy_key, created_at_utc, preset_id, preset_name_at_run,
-                        params_json, summary_json,
+                        params_json, summary_json, result_json,
                         schema_version, params_hash,
                         refinement_launched, refinement_sampler_id, refinement_launched_at_utc
                     )
-                    VALUES(?,?,?,?,?,?,?,?,0,NULL,NULL)
+                    VALUES(?,?,?,?,?,?,?,?,?,0,NULL,NULL)
                     """,
                     (
                         strategy_key,
@@ -133,6 +142,7 @@ class BacktestExecutor:
                         preset_name_at_run,
                         params_json,
                         summary_json,
+                        result_json,
                         int(schema_version),
                         ph,
                     ),
