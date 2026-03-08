@@ -1621,6 +1621,7 @@ def create_app() -> FastAPI:
                           COALESCE(signal_last_poll_utc,'') AS signal_last_poll_utc,
                           COALESCE(signal_last_emit_utc,'') AS signal_last_emit_utc,
                           COALESCE(signal_last_error,'') AS signal_last_error,
+                          COALESCE(signal_last_source_ts,'') AS signal_last_source_ts,
                           created_at_utc,updated_at_utc
                    FROM portfolio_defs
                    ORDER BY updated_at_utc DESC, id DESC"""
@@ -1647,6 +1648,7 @@ def create_app() -> FastAPI:
                     'signal_last_poll_utc': str(r['signal_last_poll_utc'] or ''),
                     'signal_last_emit_utc': str(r['signal_last_emit_utc'] or ''),
                     'signal_last_error': str(r['signal_last_error'] or ''),
+                    'signal_last_source_ts': str(r['signal_last_source_ts'] or ''),
                     'link_counts': {'groups': len(pid_to_groups.get(int(r['id']), []))},
                     'upstream_refs': [{'type':'group','id':x} for x in pid_to_groups.get(int(r['id']), [])],
                     'downstream_refs': [],
@@ -1708,6 +1710,7 @@ def create_app() -> FastAPI:
                           COALESCE(signal_last_poll_utc,'') AS signal_last_poll_utc,
                           COALESCE(signal_last_emit_utc,'') AS signal_last_emit_utc,
                           COALESCE(signal_last_error,'') AS signal_last_error,
+                          COALESCE(signal_last_source_ts,'') AS signal_last_source_ts,
                           created_at_utc,updated_at_utc
                    FROM portfolio_defs WHERE id=?""",
                 (int(portfolio_id),),
@@ -1733,6 +1736,7 @@ def create_app() -> FastAPI:
             'signal_last_poll_utc': str(r['signal_last_poll_utc'] or ''),
             'signal_last_emit_utc': str(r['signal_last_emit_utc'] or ''),
             'signal_last_error': str(r['signal_last_error'] or ''),
+            'signal_last_source_ts': str(r['signal_last_source_ts'] or ''),
         }
 
     @app.put('/api/portfolios/{portfolio_id}')
@@ -1802,6 +1806,91 @@ def create_app() -> FastAPI:
         except Exception:
             out_legs = []
         return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label, 'signal_engine_enabled': bool(int(new_sig))}
+
+    def _engine_pick_candidate_for_line(*, snapshot_ts: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        try:
+            hz = int((params or {}).get('horizon_minutes') or 30)
+        except Exception:
+            hz = 30
+        min_p = float((params or {}).get('min_p_bigwin') or 0.0)
+        min_pred = float((params or {}).get('min_pred_change') or 0.0)
+        spread_hint = str((params or {}).get('spread_type') or (params or {}).get('option_side') or '').strip().upper()
+        allowed = None
+        if spread_hint in {'CALL','PUT'}:
+            allowed = spread_hint
+
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      c.anchor_type,
+                      c.spread_type,
+                      c.anchor_strike,
+                      c.k_long,
+                      c.k_short,
+                      c.debit_points,
+                      c.long_symbol,
+                      c.short_symbol,
+                      s.pred_change,
+                      s.p_bigwin
+                    FROM spx.debit_spread_candidates_0dte c
+                    JOIN spx.chain_features_0dte f ON f.snapshot_ts = c.snapshot_ts
+                    JOIN spx.debit_spread_scores_0dte s
+                      ON s.snapshot_ts = c.snapshot_ts
+                     AND s.horizon_minutes = %s
+                     AND s.anchor_type = c.anchor_type
+                     AND s.spread_type = c.spread_type
+                    WHERE c.snapshot_ts = %s
+                      AND c.tradable = true
+                      AND f.low_quality = false
+                      AND s.p_bigwin IS NOT NULL
+                      AND s.pred_change IS NOT NULL
+                      AND s.p_bigwin >= %s
+                      AND s.pred_change >= %s
+                      AND (%s::text IS NULL OR c.spread_type = %s::text)
+                    ORDER BY s.p_bigwin DESC NULLS LAST, s.pred_change DESC NULLS LAST, c.debit_points ASC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (int(hz), snapshot_ts, float(min_p), float(min_pred), allowed, allowed),
+                )
+                r = cur.fetchone()
+                if not r:
+                    return None
+                return {
+                    'snapshot_ts': snapshot_ts,
+                    'anchor_type': r[0],
+                    'spread_type': r[1],
+                    'anchor_strike': float(r[2]) if r[2] is not None else None,
+                    'k_long': float(r[3]) if r[3] is not None else None,
+                    'k_short': float(r[4]) if r[4] is not None else None,
+                    'debit_points': float(r[5]) if r[5] is not None else None,
+                    'long_symbol': r[6],
+                    'short_symbol': r[7],
+                    'pred_change': float(r[8]) if r[8] is not None else None,
+                    'p_bigwin': float(r[9]) if r[9] is not None else None,
+                }
+
+    def _engine_new_snapshots_since(last_source_ts: str | None, *, max_n: int = 50) -> list[str]:
+        dsn = _pg_dsn()
+        if not dsn:
+            return []
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT snapshot_ts
+                    FROM spx.debit_spread_scores_0dte
+                    WHERE (%s::timestamptz IS NULL OR snapshot_ts > %s::timestamptz)
+                    ORDER BY snapshot_ts ASC
+                    LIMIT %s
+                    """,
+                    (last_source_ts if last_source_ts else None, last_source_ts if last_source_ts else None, int(max_n)),
+                )
+                return [str(r[0]) for r in cur.fetchall()]
 
     @app.post('/api/portfolios/{portfolio_id}/emit_signals')
     def portfolios_emit_signals(portfolio_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1890,6 +1979,9 @@ def create_app() -> FastAPI:
             idem_prefix = str((body or {}).get('idempotency_prefix') or '').strip()
             emit_source = str((body or {}).get('source') or 'manual').strip().lower()
             marker = str((body or {}).get('signal_marker') or '').strip()
+            source_snapshot_ts = str((body or {}).get('snapshot_ts') or '').strip()
+            if emit_source == 'engine' and source_snapshot_ts:
+                marker = source_snapshot_ts.replace(':','_')
             if emit_source == 'engine' and (not marker):
                 rr2 = con.execute("SELECT COALESCE(MAX(id),0) AS mx FROM predictions").fetchone()
                 marker = str(int(rr2['mx'] or 0))
@@ -1901,7 +1993,22 @@ def create_app() -> FastAPI:
                     sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
                     strategy_keys.append(sid)
                     params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
-                    lines.append({'line_index': int(i), 'strategy_key': sid, 'params': params})
+                    if emit_source == 'engine' and source_snapshot_ts:
+                        cand = _engine_pick_candidate_for_line(snapshot_ts=source_snapshot_ts, params=params)
+                        if cand is None:
+                            continue
+                        p2 = dict(params)
+                        p2.update({
+                            'long_symbol': cand.get('long_symbol'),
+                            'short_symbol': cand.get('short_symbol'),
+                            'debit_points': cand.get('debit_points'),
+                        })
+                        lines.append({'line_index': int(i), 'strategy_key': sid, 'params': p2, 'candidate': cand})
+                    else:
+                        lines.append({'line_index': int(i), 'strategy_key': sid, 'params': params})
+
+                if emit_source == 'engine' and source_snapshot_ts and (not lines):
+                    return {'ok': True, 'portfolio_id': int(portfolio_id), 'mode': mode, 'environment': env, 'account_label': account_label, 'inserted': 0, 'existing': 0}
 
                 strategy_key = strategy_keys[0] if strategy_keys else 'debit_spreads'
                 payload = {
@@ -1924,6 +2031,18 @@ def create_app() -> FastAPI:
                 for i, leg in enumerate(legs):
                     sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
                     params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
+
+                    if emit_source == 'engine' and source_snapshot_ts:
+                        cand = _engine_pick_candidate_for_line(snapshot_ts=source_snapshot_ts, params=params)
+                        if cand is None:
+                            continue
+                        params = dict(params)
+                        params.update({
+                            'long_symbol': cand.get('long_symbol'),
+                            'short_symbol': cand.get('short_symbol'),
+                            'debit_points': cand.get('debit_points'),
+                        })
+
                     payload = {
                         'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name']), 'line_index': int(i)},
                         'strategy_key': sid,
@@ -1949,6 +2068,7 @@ def create_app() -> FastAPI:
             'account_label': account_label,
             'inserted': inserted,
             'existing': existing,
+            'source_snapshot_ts': source_snapshot_ts,
         }
 
 
@@ -4899,8 +5019,10 @@ def create_app() -> FastAPI:
         market_open = _is_market_hours_central(datetime.now(timezone.utc))
         for r in rows:
             pid = int(r['id'])
-            # Always update last poll timestamp
+            # load last source marker
             with _connect(db_path) as con:
+                rr = con.execute("SELECT COALESCE(signal_last_source_ts,'') AS signal_last_source_ts FROM portfolio_defs WHERE id=?", (pid,)).fetchone()
+                last_src = str(rr['signal_last_source_ts'] or '') if rr else ''
                 con.execute("UPDATE portfolio_defs SET signal_last_poll_utc=? WHERE id=?", (now, pid))
                 con.commit()
 
@@ -4908,15 +5030,32 @@ def create_app() -> FastAPI:
                 continue
 
             try:
-                out = portfolios_emit_signals(pid, {'source': 'engine'})
-                if int(out.get('inserted') or 0) > 0:
-                    with _connect(db_path) as con:
-                        con.execute("UPDATE portfolio_defs SET signal_last_emit_utc=?, signal_last_error=NULL WHERE id=?", (now, pid))
-                        con.commit()
-                else:
+                snaps = _engine_new_snapshots_since(last_src or None, max_n=20)
+                if not snaps:
                     with _connect(db_path) as con:
                         con.execute("UPDATE portfolio_defs SET signal_last_error=NULL WHERE id=?", (pid,))
                         con.commit()
+                    continue
+
+                inserted_total = 0
+                newest = last_src
+                for ss in snaps:
+                    out = portfolios_emit_signals(pid, {'source': 'engine', 'snapshot_ts': ss})
+                    inserted_total += int(out.get('inserted') or 0)
+                    newest = ss
+
+                with _connect(db_path) as con:
+                    if inserted_total > 0:
+                        con.execute(
+                            "UPDATE portfolio_defs SET signal_last_source_ts=?, signal_last_error=?, signal_last_emit_utc=? WHERE id=?",
+                            (newest or last_src, None, now, pid),
+                        )
+                    else:
+                        con.execute(
+                            "UPDATE portfolio_defs SET signal_last_source_ts=?, signal_last_error=? WHERE id=?",
+                            (newest or last_src, None, pid),
+                        )
+                    con.commit()
             except Exception as e:
                 msg = str(getattr(e, 'detail', None) or str(e))[:240]
                 with _connect(db_path) as con:

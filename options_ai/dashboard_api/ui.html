@@ -3838,7 +3838,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <span class="hint" id="pfCardNote-${pid}"></span>
             </div>
             <div class="hint" style="margin-top:4px;">Run-time window overrides line-level start/end for consistency across this group.</div>
-            <div class="hint" style="margin-top:2px;">Signal engine: ${it.signal_engine_enabled ? 'ON' : 'OFF'} | last poll: ${esc(String(it.signal_last_poll_utc || '—'))} | last emit: ${esc(String(it.signal_last_emit_utc || '—'))}${it.signal_last_error ? ' | error: ' + esc(String(it.signal_last_error)) : ''}</div>
+            <div class="hint" style="margin-top:2px;">Signal engine: ${it.signal_engine_enabled ? 'ON' : 'OFF'} | last source: ${esc(String(it.signal_last_source_ts || '—'))} | last poll: ${esc(String(it.signal_last_poll_utc || '—'))} | last emit: ${esc(String(it.signal_last_emit_utc || '—'))}${it.signal_last_error ? ' | error: ' + esc(String(it.signal_last_error)) : ''}</div>
             <div style="margin-top:8px;">
               <div style="height:8px; border-radius:999px; background:rgba(148,163,184,.25); overflow:hidden;">
                 <div id="pfCardProgBar-${pid}" style="height:100%; width:0%; background:linear-gradient(90deg,#60a5fa,#3b82f6);"></div>

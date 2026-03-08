@@ -195,6 +195,7 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
           signal_last_poll_utc TEXT NULL,
           signal_last_emit_utc TEXT NULL,
           signal_last_error TEXT NULL,
+          signal_last_source_ts TEXT NULL,
           created_at_utc TEXT NOT NULL,
           updated_at_utc TEXT NOT NULL
         );
@@ -243,6 +244,10 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
         con.commit()
     if not _has_column(con, "portfolio_defs", "signal_last_error"):
         con.execute("ALTER TABLE portfolio_defs ADD COLUMN signal_last_error TEXT NULL")
+        con.commit()
+
+    if not _has_column(con, "portfolio_defs", "signal_last_source_ts"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN signal_last_source_ts TEXT NULL")
         con.commit()
 
 
