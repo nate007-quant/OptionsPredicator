@@ -1355,6 +1355,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <span class="hint" id="pfNote"></span>
               </div>
 
+
+              <fieldset class="fs" style="margin-top:12px;">
+                <legend>Group Manager</legend>
+                <div class="hint">Manage logical groups (Live, Sandbox-0DTE, Sandbox-30DTE, etc.). Each group is evaluated independently below.</div>
+              </fieldset>
+
+              <div id="pfWorkbench" style="margin-top:12px;"></div>
+
               <div class="row" style="margin-top:10px;">
                 <button class="btn-primary" id="pfRun">Run Portfolio Backtest</button>
                 <button id="pfStop">Stop</button>
@@ -1368,7 +1376,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               </div>
 
               <div class="row" style="margin-top:10px;">
-                <button id="pfGotoBacktest">Go to Backtest Runs</button>
+                <button id="pfGotoBacktest">Go to Parameter Testing</button>
                 <button class="btn-danger" id="pfRemoveSelectedLegs">Remove selected groups</button>
                 <label>Move selected to
                   <select id="pfMoveTarget" style="min-width:220px;"></select>
@@ -1773,6 +1781,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfGroupPoll = null;
     let pfGroupSelected = new Set();
     let pfSelectedLegIdx = new Set();
+    let pfCardCharts = {}; // portfolio_id -> Chart
+    let pfCardSessions = {}; // portfolio_id -> session_id
+    let pfCardPollers = {}; // portfolio_id -> timer id
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -2957,6 +2968,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       // Render group portfolio table when portfolio list changes (not on health refresh).
       pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
+      pfRenderWorkbench();
       pfRefreshMoveTargets();
 
       const sel = document.getElementById('pfPortfolioSelect');
@@ -3245,6 +3257,185 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const note = document.getElementById('pfNote');
       if (note) note.textContent = legs.length ? `legs: ${legs.length}` : 'no legs yet (select runs and click Add selected to Portfolio)';
+    }
+
+    function pfDestroyCardChart(pid) {
+      const k = String(pid);
+      if (pfCardCharts[k]) {
+        try { pfCardCharts[k].destroy(); } catch {}
+        delete pfCardCharts[k];
+      }
+    }
+
+    function pfRenderCardEquity(pid, eq) {
+      const canvas = document.getElementById(`pfCardEq-${pid}`);
+      if (!canvas || !chartsAvailable()) return;
+      const pts = Array.isArray(eq) ? eq : [];
+      const labels = pts.map(p => (p.ts || p.exit_ts || ''));
+      const data = pts.map(p => Number(p.cum_pnl_dollars || 0));
+      const key = String(pid);
+      if (pfCardCharts[key]) {
+        pfCardCharts[key].data.labels = labels;
+        pfCardCharts[key].data.datasets[0].data = data;
+        pfCardCharts[key].update();
+        return;
+      }
+      pfCardCharts[key] = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'cum_pnl_dollars', data, borderWidth: 2, pointRadius: 0, tension: 0.2 }] },
+        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 8 } } } }
+      });
+    }
+
+    async function pfRunSingleGroup(pid) {
+      const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
+      if (!it) throw new Error('group not found');
+      const legs = Array.isArray(it.legs) ? it.legs : [];
+      if (!legs.length) throw new Error('group has no parameter lines');
+      const note = document.getElementById(`pfCardNote-${pid}`);
+      if (note) note.textContent = 'running…';
+      const resp = await jpost('/api/portfolio_backtest/start', {
+        legs: legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
+      });
+      pfCardSessions[String(pid)] = resp.session_id;
+      if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
+      pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
+      await pfPollSingleGroup(pid);
+    }
+
+    async function pfStopSingleGroup(pid) {
+      const sid = pfCardSessions[String(pid)];
+      if (!sid) return;
+      await jpost('/api/portfolio_backtest/stop', { session_id: sid });
+      const note = document.getElementById(`pfCardNote-${pid}`);
+      if (note) note.textContent = 'stop requested';
+    }
+
+    async function pfPollSingleGroup(pid) {
+      const sid = pfCardSessions[String(pid)];
+      if (!sid) return;
+      const st = await jget(`/api/portfolio_backtest/status?session_id=${encodeURIComponent(String(sid))}`);
+      const note = document.getElementById(`pfCardNote-${pid}`);
+      if (note && st && st.status) {
+        note.textContent = `status: ${st.status} legs: ${st.legs_completed||0}/${st.legs_total||0}`;
+      }
+      if (st && st.combined_equity_curve) pfRenderCardEquity(pid, st.combined_equity_curve || []);
+      const sum = document.getElementById(`pfCardSummary-${pid}`);
+      if (sum && st && st.combined_summary) sum.textContent = JSON.stringify(st.combined_summary, null, 2);
+      if (st && (st.status === 'stopped' || st.status === 'failed')) {
+        if (pfCardPollers[String(pid)]) { clearInterval(pfCardPollers[String(pid)]); delete pfCardPollers[String(pid)]; }
+      }
+    }
+
+    async function pfSaveGroupLine(pid, ix, srcVal, paramsText) {
+      const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
+      if (!it) throw new Error('group not found');
+      const legs = Array.isArray(it.legs) ? it.legs.slice() : [];
+      if (!(ix >= 0 && ix < legs.length)) throw new Error('line out of range');
+      let parsed = {};
+      try { parsed = JSON.parse(paramsText || '{}'); } catch { throw new Error('params must be valid JSON'); }
+      legs[ix] = { ...(legs[ix] || {}), source: String(srcVal || ''), params: parsed };
+      await jput(`/api/portfolios/${pid}`, { legs });
+      await pfReloadPortfolios();
+      toast('line saved', 'success');
+    }
+
+    async function pfDeleteGroupLine(pid, ix) {
+      const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
+      if (!it) throw new Error('group not found');
+      const legs = Array.isArray(it.legs) ? it.legs.slice() : [];
+      if (!(ix >= 0 && ix < legs.length)) return;
+      legs.splice(ix, 1);
+      await jput(`/api/portfolios/${pid}`, { legs });
+      await pfReloadPortfolios();
+      toast('line deleted', 'warn');
+    }
+
+    async function pfAddGroupLine(pid) {
+      const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
+      if (!it) throw new Error('group not found');
+      const legs = Array.isArray(it.legs) ? it.legs.slice() : [];
+      legs.push({ strategy_id: 'debit_spreads', source: 'manual', params: {} });
+      await jput(`/api/portfolios/${pid}`, { legs });
+      await pfReloadPortfolios();
+      toast('line added', 'success');
+    }
+
+    function pfRenderWorkbench() {
+      const host = document.getElementById('pfWorkbench');
+      if (!host) return;
+      host.innerHTML = '';
+      const items = Array.isArray(pfPortfolios) ? pfPortfolios : [];
+      if (!items.length) {
+        host.innerHTML = '<div class="hint">No groups yet. Create one above.</div>';
+        return;
+      }
+
+      for (const it of items) {
+        const pid = Number(it.id);
+        const legs = Array.isArray(it.legs) ? it.legs : [];
+
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.style.marginTop = '12px';
+        card.innerHTML = `
+          <div class="card-h"><h2>${esc(it.name || ('Group ' + pid))}</h2><div class="hint">lines: ${legs.length}</div></div>
+          <div class="card-b">
+            <div class="row">
+              <button class="btn-primary" id="pfCardRun-${pid}">Run this group</button>
+              <button id="pfCardStop-${pid}">Stop</button>
+              <button id="pfCardAdd-${pid}">Add line</button>
+              <span class="hint" id="pfCardNote-${pid}"></span>
+            </div>
+            <div class="grid2" style="margin-top:10px;">
+              <div>
+                <div class="hint">Equity Curve</div>
+                <div style="height:180px;"><canvas id="pfCardEq-${pid}"></canvas></div>
+              </div>
+              <div>
+                <div class="hint">Summary</div>
+                <pre id="pfCardSummary-${pid}" class="mono" style="max-height:180px; overflow:auto;"></pre>
+              </div>
+            </div>
+            <div style="margin-top:10px; overflow:auto;">
+              <table>
+                <thead><tr><th>#</th><th>source</th><th>params (JSON)</th><th>actions</th></tr></thead>
+                <tbody id="pfCardLines-${pid}"></tbody>
+              </table>
+            </div>
+          </div>
+        `;
+        host.appendChild(card);
+
+        const tb = card.querySelector(`#pfCardLines-${pid}`);
+        for (let i = 0; i < legs.length; i++) {
+          const leg = legs[i] || {};
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${i + 1}</td>
+            <td><input id="pfLineSrc-${pid}-${i}" value="${esc(String(leg.source || ''))}" style="width:140px;" /></td>
+            <td><textarea id="pfLineParams-${pid}-${i}" style="width:100%; min-width:360px; height:84px; font-family:var(--mono); font-size:11px;">${esc(JSON.stringify(leg.params || {}, null, 2))}</textarea></td>
+            <td>
+              <button id="pfLineSave-${pid}-${i}" class="btn-primary" style="padding:4px 8px;">Save</button>
+              <button id="pfLineDel-${pid}-${i}" class="btn-danger" style="padding:4px 8px; margin-left:6px;">Delete</button>
+            </td>
+          `;
+          tb.appendChild(tr);
+        }
+
+        document.getElementById(`pfCardRun-${pid}`)?.addEventListener('click', () => safe(`pf_card_run_${pid}`, () => pfRunSingleGroup(pid)));
+        document.getElementById(`pfCardStop-${pid}`)?.addEventListener('click', () => safe(`pf_card_stop_${pid}`, () => pfStopSingleGroup(pid)));
+        document.getElementById(`pfCardAdd-${pid}`)?.addEventListener('click', () => safe(`pf_card_add_${pid}`, () => pfAddGroupLine(pid)));
+
+        for (let i = 0; i < legs.length; i++) {
+          document.getElementById(`pfLineSave-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_save_${pid}_${i}`, async () => {
+            const src = document.getElementById(`pfLineSrc-${pid}-${i}`)?.value || '';
+            const txt = document.getElementById(`pfLineParams-${pid}-${i}`)?.value || '{}';
+            await pfSaveGroupLine(pid, i, src, txt);
+          }));
+          document.getElementById(`pfLineDel-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_del_${pid}_${i}`, () => pfDeleteGroupLine(pid, i)));
+        }
+      }
     }
 
     function pfStrategyIdFromStrategyKey(sk) {
