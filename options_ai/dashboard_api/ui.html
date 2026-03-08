@@ -4363,6 +4363,19 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
     }
 
+    function opsColorHex(c) {
+      const x = String(c || 'yellow').toLowerCase();
+      if (x === 'green') return '#22c55e';
+      if (x === 'red') return '#ef4444';
+      if (x === 'gray') return '#94a3b8';
+      return '#f59e0b';
+    }
+
+    function opsBadgeHtml(color, text) {
+      const bg = opsColorHex(color);
+      return `<span style="display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; color:#fff; background:${bg};">${esc(String(text||'—'))}</span>`;
+    }
+
     async function refreshProcessing() {
       try {
       const opsLoading = document.getElementById('opsLoading');
