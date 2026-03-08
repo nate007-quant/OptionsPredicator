@@ -2858,9 +2858,32 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
 
+    function pfHydratePortfoliosFromCache() {
+      const cached = pfLoadPortfoliosCache();
+      if (!cached || !Array.isArray(cached) || !cached.length) return false;
+      pfPortfolios = cached;
+      pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
+      pfRenderWorkbench();
+      pfRefreshMoveTargets();
+      const sel = document.getElementById('pfPortfolioSelect');
+      if (sel) {
+        const cur = sel.value;
+        sel.innerHTML = '';
+        for (const it of pfPortfolios) {
+          const opt = document.createElement('option');
+          opt.value = String(it.id);
+          opt.textContent = it.name;
+          sel.appendChild(opt);
+        }
+        if (cur && Array.from(sel.options).some(o => o.value === cur)) sel.value = cur;
+      }
+      return true;
+    }
+
     async function pfReloadPortfolios() {
       const data = await jget('/api/portfolios');
       pfPortfolios = (data && data.items) ? data.items : []
+      pfSavePortfoliosCache(pfPortfolios);
 
       // If none exist, create a default portfolio so the screen is usable out-of-the-box.
       if ((!pfPortfolios || pfPortfolios.length === 0) && !pfAutoCreatedDefault) {
@@ -3170,6 +3193,34 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function pfCacheKey(pid) {
       return `pf_card_cache_v1_${String(pid)}`;
     }
+    function pfPortfoliosCacheKey() {
+      return 'pf_portfolios_cache_v1';
+    }
+
+    function pfSavePortfoliosCache(items) {
+      try {
+        const payload = {
+          saved_at_ms: Date.now(),
+          items: Array.isArray(items) ? items : [],
+        };
+        localStorage.setItem(pfPortfoliosCacheKey(), JSON.stringify(payload));
+      } catch {}
+    }
+
+    function pfLoadPortfoliosCache() {
+      try {
+        const raw = localStorage.getItem(pfPortfoliosCacheKey());
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        if (!obj || typeof obj !== 'object' || !Array.isArray(obj.items)) return null;
+        const age = Date.now() - Number(obj.saved_at_ms || 0);
+        if (!Number.isFinite(age) || age < 0 || age > pfCacheTtlMs()) return null;
+        return obj.items;
+      } catch {
+        return null;
+      }
+    }
+
 
     function pfCacheTtlMs() {
       const d = parseInt(String(document.getElementById('pfCacheDays')?.value || '7'), 10);
@@ -4890,7 +4941,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('pfGotoBacktest')?.addEventListener('click', () => { window.location.hash = '#paramtest'; routeFromHash(); });
     document.getElementById('pfRemoveSelectedLegs')?.addEventListener('click', () => safe('pf_remove_selected', () => pfRemoveSelectedLegs()));
     document.getElementById('pfMoveSelectedLegs')?.addEventListener('click', () => safe('pf_move_selected', () => pfMoveSelectedLegs()));
-    document.getElementById('pfCacheClear')?.addEventListener('click', () => { const n = pfClearAllCardCache(); const note=document.getElementById('pfCacheNote'); if (note) note.textContent = `cleared ${n} cache item(s)`; toast(`cleared ${n} cache item(s)`, 'info'); });
+    document.getElementById('pfCacheClear')?.addEventListener('click', () => { const n = pfClearAllCardCache(); try { localStorage.removeItem(pfPortfoliosCacheKey()); } catch {} const note=document.getElementById('pfCacheNote'); if (note) note.textContent = `cleared ${n} cache item(s)`; toast(`cleared ${n} cache item(s)`, 'info'); });
 
     document.getElementById('pfRunGroup')?.addEventListener('click', () => safe('pf_group_run', () => pfRunGroup()));
     document.getElementById('pfStopGroup')?.addEventListener('click', () => safe('pf_group_stop', () => pfStopGroup()));
@@ -5027,6 +5078,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       // Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
       await safe('sampler', () => samplerPollOnce());
       await safe('bt_presets', () => btReloadPresets());
+      // fast first paint from local cache, then refresh from server
+      pfHydratePortfoliosFromCache();
       await safe('pf_portfolios', () => pfReloadPortfolios());
       await safe('bt_runs', () => btRefreshRuns());
 
