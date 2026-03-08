@@ -1300,8 +1300,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                   <button id="btRunsResetFilters">Reset filters</button>
                   <button id="btRunsSelectFailing">Select failing</button>
                   <button class="btn-danger" id="btRunsDeleteSelected">Delete selected</button>
-                  <button id="btRunsAddToPortfolio">Add selected to Portfolio</button>
-                  <label style="margin-left:10px;"><input id="btRunsSelectAllVisible" type="checkbox" /> Select all visible</label>
+                                    <label style="margin-left:10px;"><input id="btRunsSelectAllVisible" type="checkbox" /> Select all visible</label>
                   <button class="btn-danger" id="btRunsDeleteFailing">Delete failing</button>
                   <span class="hint" id="btRunsSelNote"></span>
                 </div>
@@ -4617,7 +4616,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       btRunsRenderTable(btRunsRaw);
     }));
 
-    document.getElementById('btRunsAddToPortfolio')?.addEventListener('click', () => safe('portfolio_add', () => pfAddSelectedRunsToPortfolio()));
 
     document.getElementById('pfRun')?.addEventListener('click', () => safe('portfolio_run', () => pfRun()));
     document.getElementById('pfStop')?.addEventListener('click', () => safe('portfolio_stop', () => pfStop()));
