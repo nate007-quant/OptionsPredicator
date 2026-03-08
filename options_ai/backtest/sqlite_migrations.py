@@ -186,6 +186,9 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL UNIQUE,
           legs_json TEXT NOT NULL,
+          execution_mode TEXT NOT NULL DEFAULT 'independent',
+          group_start_day TEXT NULL,
+          group_end_day TEXT NULL,
           created_at_utc TEXT NOT NULL,
           updated_at_utc TEXT NOT NULL
         );
@@ -203,6 +206,14 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
     # Portfolio definitions: execution mode toggle (independent|merged)
     if not _has_column(con, "portfolio_defs", "execution_mode"):
         con.execute("ALTER TABLE portfolio_defs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'independent'")
+        con.commit()
+
+    # Portfolio definitions: optional group-level date window overrides
+    if not _has_column(con, "portfolio_defs", "group_start_day"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN group_start_day TEXT NULL")
+        con.commit()
+    if not _has_column(con, "portfolio_defs", "group_end_day"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN group_end_day TEXT NULL")
         con.commit()
 
 

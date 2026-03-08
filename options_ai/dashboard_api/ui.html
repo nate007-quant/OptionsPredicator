@@ -3438,6 +3438,60 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
     }
 
+    function pfLastTradingDayIso() {
+      const d = new Date();
+      // Use UTC date basis for consistency in display.
+      let wd = d.getUTCDay(); // 0 Sun .. 6 Sat
+      if (wd === 0) d.setUTCDate(d.getUTCDate() - 2); // Sun -> Fri
+      else if (wd === 6) d.setUTCDate(d.getUTCDate() - 1); // Sat -> Fri
+      return d.toISOString().slice(0, 10);
+    }
+
+    function pfInferGroupStartDefault(legs) {
+      try {
+        const vals = [];
+        for (const l of (legs || [])) {
+          const p = (l && l.params) || {};
+          const a = String(p.start_day || '').trim();
+          const b = String(p.end_day || '').trim();
+          if (/^\d{4}-\d{2}-\d{2}$/.test(a)) vals.push(a);
+          if (/^\d{4}-\d{2}-\d{2}$/.test(b)) vals.push(b);
+        }
+        if (!vals.length) return '';
+        vals.sort();
+        return vals[0];
+      } catch {
+        return '';
+      }
+    }
+
+    function pfEffectiveGroupWindow(it, legs) {
+      const start = String((it && it.group_start_day) || '').trim() || pfInferGroupStartDefault(legs);
+      const end = String((it && it.group_end_day) || '').trim() || pfLastTradingDayIso();
+      return { start, end };
+    }
+
+    function pfApplyGroupWindowToLegs(it, legs) {
+      const w = pfEffectiveGroupWindow(it, legs);
+      const out = (legs || []).map(l => {
+        const p = { ...((l && l.params) || {}) };
+        if (w.start) p.start_day = w.start;
+        if (w.end) p.end_day = w.end;
+        return { ...(l || {}), params: p };
+      });
+      return { window: w, legs: out };
+    }
+
+    async function pfSaveGroupDateWindow(pid, startDay, endDay) {
+      const sday = String(startDay || '').trim();
+      const eday = String(endDay || '').trim();
+      const isIso = (x) => (!x) || /^\d{4}-\d{2}-\d{2}$/.test(x);
+      if (!isIso(sday) || !isIso(eday)) throw new Error('dates must be YYYY-MM-DD');
+      await jput(`/api/portfolios/${pid}`, { group_start_day: sday, group_end_day: eday });
+      await pfReloadPortfolios();
+      toast('group date window saved', 'success');
+    }
+
     async function pfRunSingleGroup(pid) {
       const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
       if (!it) throw new Error('group not found');
@@ -3448,11 +3502,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       pfRenderCardProgress(pid, 0, (legs || []).length);
 
       const mode = String(it.execution_mode || 'independent');
+      const applied = pfApplyGroupWindowToLegs(it, legs);
+      pfCardRanges[String(pid)] = { start: applied.window.start || '', end: applied.window.end || '' };
       let resp;
       try {
         resp = await jpost('/api/portfolio_backtest/start', {
           merge_mode: mode,
-          legs: legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
+          legs: applied.legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
         });
       } catch (e) {
         const raw = String(e?.message || e || '');
@@ -3592,9 +3648,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const legs = Array.isArray(it.legs) ? it.legs : [];
         pfCardModes[String(pid)] = String(it.execution_mode || 'independent');
         try {
-          const starts = legs.map(x => String((x&&x.params&&x.params.start_day)||'')).filter(Boolean).sort();
-          const ends = legs.map(x => String((x&&x.params&&x.params.end_day)||'')).filter(Boolean).sort();
-          pfCardRanges[String(pid)] = { start: starts[0] || '', end: ends[ends.length-1] || '' };
+          const w = pfEffectiveGroupWindow(it, legs);
+          pfCardRanges[String(pid)] = { start: w.start || '', end: w.end || '' };
         } catch { pfCardRanges[String(pid)] = { start:'', end:'' }; }
 
         const card = document.createElement('div');
@@ -3613,8 +3668,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                   <option value="merged" ${(String(it.execution_mode||'independent')==='merged')?'selected':''}>Merged (shared)</option>
                 </select>
               </label>
+              <label>Group start <input id="pfCardStart-${pid}" type="date" value="${esc(String(it.group_start_day || pfInferGroupStartDefault(legs) || ''))}" /></label>
+              <label>Group end <input id="pfCardEnd-${pid}" type="date" value="${esc(String(it.group_end_day || pfLastTradingDayIso()))}" /></label>
+              <button id="pfCardDateSave-${pid}">Save dates</button>
+              <button id="pfCardDateAuto-${pid}">Auto dates</button>
               <span class="hint" id="pfCardNote-${pid}"></span>
             </div>
+            <div class="hint" style="margin-top:4px;">Run-time window overrides line-level start/end for consistency across this group.</div>
             <div style="margin-top:8px;">
               <div style="height:8px; border-radius:999px; background:rgba(148,163,184,.25); overflow:hidden;">
                 <div id="pfCardProgBar-${pid}" style="height:100%; width:0%; background:linear-gradient(90deg,#60a5fa,#3b82f6);"></div>
@@ -3683,6 +3743,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         document.getElementById(`pfCardStop-${pid}`)?.addEventListener('click', () => safe(`pf_card_stop_${pid}`, () => pfStopSingleGroup(pid)));
         document.getElementById(`pfCardAdd-${pid}`)?.addEventListener('click', () => safe(`pf_card_add_${pid}`, () => pfAddGroupLine(pid)));
         document.getElementById(`pfCardMode-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_mode_${pid}`, () => pfSetGroupExecutionMode(pid, ev.target.value)));
+        document.getElementById(`pfCardDateSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_date_save_${pid}`, async () => {
+          const s0 = document.getElementById(`pfCardStart-${pid}`)?.value || '';
+          const e0 = document.getElementById(`pfCardEnd-${pid}`)?.value || '';
+          await pfSaveGroupDateWindow(pid, s0, e0);
+        }));
+        document.getElementById(`pfCardDateAuto-${pid}`)?.addEventListener('click', () => safe(`pf_card_date_auto_${pid}`, async () => {
+          await pfSaveGroupDateWindow(pid, '', '');
+        }));
 
         for (let i = 0; i < legs.length; i++) {
           document.getElementById(`pfLineSave-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_save_${pid}_${i}`, async () => {
