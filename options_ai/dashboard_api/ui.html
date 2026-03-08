@@ -543,7 +543,7 @@
                 <div>Open orders: <span id="exReconOrders" class="pill">—</span></div>
                 <div>Open positions: <span id="exReconPositions" class="pill">—</span></div>
               </div>
-              <pre id="exReconDiff" class="mono" style="margin-top:10px; white-space:pre-wrap; max-height:120px; overflow:auto;"></pre>
+              <div id="exReconDiff" style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px;"></div>
               <div style="margin-top:10px; overflow:auto; max-height:180px;">
                 <table>
                   <thead><tr><th>time</th><th>action</th><th>entity</th></tr></thead>
@@ -746,11 +746,11 @@
             <div class="grid2" style="margin-top:10px;">
               <div>
                 <h3 style="margin-top:0">State Counts</h3>
-                <pre id="sfStateCounts" class="mono" style="white-space:pre-wrap; max-height:180px; overflow:auto;"></pre>
+                <div id="sfStateCounts" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px;"></div>
               </div>
               <div>
                 <h3 style="margin-top:0">Weekly Digest</h3>
-                <pre id="sfWeeklyDigest" class="mono" style="white-space:pre-wrap; max-height:180px; overflow:auto;"></pre>
+                <div id="sfWeeklyDigest" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px;"></div>
               </div>
             </div>
             <h3>Strategies</h3>
@@ -4376,6 +4376,51 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return `<span style="display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; color:#fff; background:${bg};">${esc(String(text||'—'))}</span>`;
     }
 
+    function renderMetricTiles(hostId, kv, opts={}) {
+      const host = document.getElementById(hostId);
+      if (!host) return;
+      const entries = Object.entries(kv || {});
+      if (!entries.length) {
+        host.innerHTML = '<span class="hint">No data.</span>';
+        return;
+      }
+      host.innerHTML = entries.map(([k,v]) => {
+        const n = Number(v);
+        const isNum = Number.isFinite(n);
+        const val = isNum ? (Math.abs(n) >= 1000 ? n.toLocaleString() : String(n)) : String(v);
+        let color = 'green';
+        if (opts.colorByKey && typeof opts.colorByKey === 'function') color = opts.colorByKey(k, v);
+        return `<div style="border:1px solid var(--border); border-radius:10px; padding:8px; background:var(--surface-elev);">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <div style="font-size:11px; opacity:.8;">${esc(String(k))}</div>
+            ${opsBadgeHtml(color, color.toUpperCase())}
+          </div>
+          <div style="font-size:16px; font-weight:700; margin-top:4px;">${esc(val)}</div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderReconDiffWidgets(d) {
+      const diff = (d && d.diff && typeof d.diff === 'object') ? d.diff : {};
+      const summary = {
+        open_orders: Array.isArray((d.open_orders||{}).items) ? d.open_orders.items.length : 0,
+        open_positions: Array.isArray((d.open_positions||{}).items) ? d.open_positions.items.length : 0,
+        diff_keys: Object.keys(diff || {}).length,
+      };
+      // include first-level numeric fields from diff
+      for (const [k,v] of Object.entries(diff || {})) {
+        if (typeof v === 'number') summary[`diff.${k}`] = v;
+      }
+      renderMetricTiles('exReconDiff', summary, {
+        colorByKey: (k,v) => {
+          const n = Number(v);
+          if (!Number.isFinite(n)) return 'yellow';
+          if (k.includes('open_') || k.includes('diff.')) return n === 0 ? 'green' : (n <= 2 ? 'yellow' : 'red');
+          return 'green';
+        }
+      });
+    }
+
     async function refreshProcessing() {
       try {
       const opsLoading = document.getElementById('opsLoading');
@@ -4957,7 +5002,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const op = Array.isArray((d.open_positions || {}).items) ? d.open_positions.items.length : 0;
       document.getElementById('exReconOrders').textContent = String(oo);
       document.getElementById('exReconPositions').textContent = String(op);
-      document.getElementById('exReconDiff').textContent = JSON.stringify(d.diff || {}, null, 2);
+      renderReconDiffWidgets(d);
       return d;
     }
 
@@ -5024,7 +5069,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       if (!latest) {
         if (meta) meta.textContent = 'No runs found';
-        if (statePre) statePre.textContent = '{}';
+        if (statePre) statePre.innerHTML = '<span class="hint">No state data.</span>';
         if (stratTb) stratTb.innerHTML = '';
         if (auditPre) auditPre.textContent = '';
         return d;
@@ -5040,7 +5085,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const st = r.state || 'UNKNOWN';
         counts[st] = (counts[st] || 0) + 1;
       }
-      if (statePre) statePre.textContent = JSON.stringify(counts, null, 2);
+      renderMetricTiles('sfStateCounts', counts, { colorByKey: (k,v) => { const st=String(k).toUpperCase(); if (['APPROVED','PROMOTED','ACTIVE'].includes(st)) return 'green'; if (['FAILED','REJECTED','ERROR'].includes(st)) return 'red'; return 'yellow'; } });
 
       if (stratTb) {
         stratTb.innerHTML = '';
@@ -5067,7 +5112,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     async function sfRefreshWeeklyDigest() {
       const d = await jget('/api/strategy_factory/weekly_digest');
       const el = document.getElementById('sfWeeklyDigest');
-      if (el) el.textContent = JSON.stringify((d.weekly_digest || {}), null, 2);
+      if (el) { const wd = d.weekly_digest || {}; renderMetricTiles('sfWeeklyDigest', wd, { colorByKey: (k,v) => { const n=Number(v); if (Number.isFinite(n)) return n===0?'green':'yellow'; return 'green'; } }); }
       return d;
     }
 
