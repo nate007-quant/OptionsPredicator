@@ -3694,6 +3694,34 @@ def create_app() -> FastAPI:
             'resolutions_supported': ['1m', '5m', '15m', '30m', '1h'],
         }
 
+    def _load_processing_summary(window: str) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN result='wrong_direction' THEN 1 ELSE 0 END) AS failed,
+                  AVG(COALESCE(runtime_ms, 0.0)) AS runtime_ms_avg
+                FROM predictions
+                WHERE COALESCE(observed_ts_utc, timestamp) >= ?
+                """,
+                (cutoff,),
+            ).fetchone()
+        n = int((r['n'] or 0) if r else 0)
+        failed = int((r['failed'] or 0) if r else 0)
+        runtime_ms_avg = float((r['runtime_ms_avg'] or 0.0) if r else 0.0)
+        return {
+            'window': window,
+            'generated_at': _now_central_iso(),
+            'processed': n,
+            'failed': failed,
+            'error_rate': (float(failed) / float(n)) if n > 0 else 0.0,
+            'runtime_ms_avg': runtime_ms_avg,
+            'throughput_items_per_min': float(n) / max(1.0, ws / 60.0),
+        }
+
     @app.get('/api/metrics/processing/summary')
     def metrics_processing_summary(window: str = Query('15m')) -> dict[str, Any]:
         return _load_processing_summary(window)
