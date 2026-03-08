@@ -429,6 +429,7 @@
         <a href="#overview" data-view="overview" class="active">Overview</a>
         <a href="#debit" data-view="debit">Debit Spreads</a>
         <a href="#paramtest" data-view="paramtest">Parameter Testing</a>
+        <a href="#paramgroup" data-view="paramgroup">Parameter Group Testing</a>
         <a href="#execution" data-view="execution">Execution</a>
         <a href="#factory" data-view="factory">Strategy Factory</a>
         <a href="#processing" data-view="processing">Processing</a>
@@ -976,10 +977,10 @@ Filter candidates by ML p(bigwin) (if ML score exists for the selected horizon).
 
 
       <!-- BACKTEST -->
-      <section class="view" id="view-backtest">
+      <section class="view" id="view-paramtest">
         <div class="grid1">
           <div class="card">
-            <div class="card-h"><h2>Parameter Testing — Backtester (Debit Spreads)</h2><div class="hint">0DTE uses ML scores; target-DTE mode builds candidates on-the-fly.</div></div>
+            <div class="card-h"><h2>Parameter Testing — Single Parameter Backtester (Debit Spreads)</h2><div class="hint">0DTE uses ML scores; target-DTE mode builds candidates on-the-fly.</div></div>
             <div class="card-b">
 
               <fieldset class="fs" style="margin-top:6px;">
@@ -1323,10 +1324,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       </section>
 
       <!-- PORTFOLIO BACKTEST -->
-      <section class="view" id="view-portfolio">
+      <section class="view" id="view-paramgroup">
         <div class="grid1">
           <div class="card">
-            <div class="card-h"><h2>Parameter Testing — Portfolio Backtest</h2><div class="hint">Combine multiple parameter groups (equal weight) into one equity curve.</div></div>
+            <div class="card-h"><h2>Parameter Group Testing — Portfolio Backtest</h2><div class="hint">Combine multiple parameter groups (equal weight) into one equity curve.</div></div>
             <div class="card-b">
 
               <div class="row">
@@ -1661,30 +1662,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     function setActiveView(view) {
-      // Force-hide all views, then show one (or both for combined Parameter Testing tab).
+      // Force-hide all views, then show exactly one.
       const views = Array.from(document.querySelectorAll('main.content > section.view'));
       views.forEach(el => {
         el.classList.remove('active');
         el.style.display = 'none';
       });
 
-      if (view === 'paramtest') {
-        const vb = document.getElementById('view-backtest');
-        const vp = document.getElementById('view-portfolio');
-        if (vb) {
-          vb.classList.add('active');
-          vb.style.display = 'block';
-        }
-        if (vp) {
-          vp.classList.add('active');
-          vp.style.display = 'block';
-        }
-      } else {
-        const v = document.getElementById(`view-${view}`);
-        if (v) {
-          v.classList.add('active');
-          v.style.display = 'block';
-        }
+      const v = document.getElementById(`view-${view}`);
+      if (v) {
+        v.classList.add('active');
+        v.style.display = 'block';
       }
 
       document.querySelectorAll('#nav a').forEach(a => a.classList.remove('active'));
@@ -1705,8 +1693,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function routeFromHash() {
 
       const h0 = (window.location.hash || '#overview').replace('#','');
-      const h = (h0 === 'backtest' || h0 === 'portfolio') ? 'paramtest' : h0;
-      const allowed = new Set(['overview','debit','paramtest','execution','factory','processing','logs','controls']);
+      const h = (h0 === 'backtest') ? 'paramtest' : ((h0 === 'portfolio') ? 'paramgroup' : h0);
+      const allowed = new Set(['overview','debit','paramtest','paramgroup','execution','factory','processing','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
@@ -4516,7 +4504,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('pfPortfolioRename')?.addEventListener('click', () => safe('pf_rename', () => pfRenamePortfolio()));
     document.getElementById('pfPortfolioDelete')?.addEventListener('click', () => safe('pf_delete', () => pfDeletePortfolio()));
     document.getElementById('pfPortfolioSave')?.addEventListener('click', () => safe('pf_save', () => pfSavePortfolio()));
-    document.getElementById('pfGotoBacktest')?.addEventListener('click', () => { window.location.hash = '#backtest'; routeFromHash(); });
+    document.getElementById('pfGotoBacktest')?.addEventListener('click', () => { window.location.hash = '#paramtest'; routeFromHash(); });
     document.getElementById('pfRemoveSelectedLegs')?.addEventListener('click', () => safe('pf_remove_selected', () => pfRemoveSelectedLegs()));
     document.getElementById('pfMoveSelectedLegs')?.addEventListener('click', () => safe('pf_move_selected', () => pfMoveSelectedLegs()));
 
