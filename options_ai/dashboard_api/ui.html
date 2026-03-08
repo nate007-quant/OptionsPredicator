@@ -428,8 +428,7 @@
       <nav class="nav" id="nav">
         <a href="#overview" data-view="overview" class="active">Overview</a>
         <a href="#debit" data-view="debit">Debit Spreads</a>
-        <a href="#backtest" data-view="backtest">Backtest</a>
-        <a href="#portfolio" data-view="portfolio">Portfolio Backtest</a>
+        <a href="#paramtest" data-view="paramtest">Parameter Testing</a>
         <a href="#execution" data-view="execution">Execution</a>
         <a href="#factory" data-view="factory">Strategy Factory</a>
         <a href="#processing" data-view="processing">Processing</a>
@@ -822,9 +821,8 @@
                 </label>
                 <label>Auto-refresh
                   <select id="opsRefreshSec">
-                    <option value="0" selected>Off</option>
                     <option value="5">5s</option>
-                    <option value="10">10s</option>
+                    <option value="10" selected>10s</option>
                     <option value="15">15s</option>
                     <option value="30">30s</option>
                   </select>
@@ -981,7 +979,7 @@ Filter candidates by ML p(bigwin) (if ML score exists for the selected horizon).
       <section class="view" id="view-backtest">
         <div class="grid1">
           <div class="card">
-            <div class="card-h"><h2>Backtester — Debit Spreads</h2><div class="hint">0DTE uses ML scores; target-DTE mode builds candidates on-the-fly.</div></div>
+            <div class="card-h"><h2>Parameter Testing — Backtester (Debit Spreads)</h2><div class="hint">0DTE uses ML scores; target-DTE mode builds candidates on-the-fly.</div></div>
             <div class="card-b">
 
               <fieldset class="fs" style="margin-top:6px;">
@@ -1328,7 +1326,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       <section class="view" id="view-portfolio">
         <div class="grid1">
           <div class="card">
-            <div class="card-h"><h2>Portfolio Backtest</h2><div class="hint">Combine multiple backtest parameter sets (equal weight) into one equity curve.</div></div>
+            <div class="card-h"><h2>Parameter Testing — Portfolio Backtest</h2><div class="hint">Combine multiple parameter groups (equal weight) into one equity curve.</div></div>
             <div class="card-b">
 
               <div class="row">
@@ -1663,17 +1661,30 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     function setActiveView(view) {
-      // Force-hide all views, then show exactly one.
+      // Force-hide all views, then show one (or both for combined Parameter Testing tab).
       const views = Array.from(document.querySelectorAll('main.content > section.view'));
       views.forEach(el => {
         el.classList.remove('active');
         el.style.display = 'none';
       });
 
-      const v = document.getElementById(`view-${view}`);
-      if (v) {
-        v.classList.add('active');
-        v.style.display = 'block';
+      if (view === 'paramtest') {
+        const vb = document.getElementById('view-backtest');
+        const vp = document.getElementById('view-portfolio');
+        if (vb) {
+          vb.classList.add('active');
+          vb.style.display = 'block';
+        }
+        if (vp) {
+          vp.classList.add('active');
+          vp.style.display = 'block';
+        }
+      } else {
+        const v = document.getElementById(`view-${view}`);
+        if (v) {
+          v.classList.add('active');
+          v.style.display = 'block';
+        }
       }
 
       document.querySelectorAll('#nav a').forEach(a => a.classList.remove('active'));
@@ -1693,8 +1704,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     function routeFromHash() {
 
-      const h = (window.location.hash || '#overview').replace('#','');
-      const allowed = new Set(['overview','debit','backtest','portfolio','execution','factory','processing','logs','controls']);
+      const h0 = (window.location.hash || '#overview').replace('#','');
+      const h = (h0 === 'backtest' || h0 === 'portfolio') ? 'paramtest' : h0;
+      const allowed = new Set(['overview','debit','paramtest','execution','factory','processing','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
@@ -4394,18 +4406,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     let processingTimer = null;
     function setupProcessingRefreshTimer() {
-      if (processingTimer) {
-        clearInterval(processingTimer);
-        processingTimer = null;
-      }
-      const sec = parseInt(document.getElementById('opsRefreshSec')?.value || '0', 10);
-      const meta = document.getElementById('opsFreshnessMeta');
-      if (!Number.isFinite(sec) || sec <= 0) {
-        if (meta && !String(meta.textContent || '').includes('Auto-refresh: Off')) {
-          meta.textContent = `${meta.textContent || ''} · Auto-refresh: Off`;
-        }
-        return;
-      }
+      if (processingTimer) clearInterval(processingTimer);
+      const sec = parseInt(document.getElementById('opsRefreshSec')?.value || '10', 10);
       const ms = Math.max(3000, sec * 1000);
       processingTimer = setInterval(() => safe('processing', () => refreshProcessing()), ms);
     }
