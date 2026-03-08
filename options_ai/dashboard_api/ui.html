@@ -1325,6 +1325,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                       <th class="sortable" data-sort="avg_pnl_dollars">avg_pnl</th>
                       <th class="sortable" data-sort="max_drawdown_dollars">max_dd</th>
                       <th>group_membership</th>
+                      <th>add_to_portfolio</th>
                       <th>actions</th>
                     </tr>
                   </thead>
@@ -2611,6 +2612,56 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         if (gnames.length) parts.push('ParamGroup: ' + gnames.join(', '));
         tdGroups.textContent = parts.length ? parts.join(' | ') : '—';
 
+        const tdAddPf = document.createElement('td');
+        const pfSel = document.createElement('select');
+        pfSel.style.minWidth = '150px';
+        const portfolios = Array.isArray(pfPortfolios) ? pfPortfolios : [];
+        if (!portfolios.length) {
+          const o = document.createElement('option');
+          o.value = '';
+          o.textContent = '(no portfolios)';
+          pfSel.appendChild(o);
+          pfSel.disabled = true;
+        } else {
+          for (const pf of portfolios) {
+            const o = document.createElement('option');
+            o.value = String(pf.id);
+            o.textContent = String(pf.name || `Portfolio ${pf.id}`);
+            pfSel.appendChild(o);
+          }
+        }
+
+        const saveBtn = document.createElement('button');
+        saveBtn.textContent = 'Save';
+        saveBtn.className = 'btn-primary';
+        saveBtn.style.padding = '4px 8px';
+        saveBtn.style.marginLeft = '6px';
+        saveBtn.disabled = !portfolios.length;
+        saveBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          try {
+            saveBtn.disabled = true;
+            const pid = parseInt(String(pfSel.value || ''), 10);
+            const res = await btAddRunToPortfolio(it, pid);
+            await safe('pf_portfolios', () => pfReloadPortfolios());
+            await safe('bt_runs', () => btRefreshRuns());
+            if (res && res.added === false && res.reason === 'already_present') {
+              toast('Already in selected portfolio', 'info');
+            } else {
+              const name = (pfPortfolios || []).find(x => String(x.id) === String(pid))?.name || `#${pid}`;
+              toast(`Saved to portfolio: ${name}`, 'success');
+            }
+          } catch (e) {
+            console.error('bt_row_add_to_portfolio', e);
+            toast('Save failed', 'error');
+          } finally {
+            saveBtn.disabled = !portfolios.length;
+          }
+        });
+
+        tdAddPf.appendChild(pfSel);
+        tdAddPf.appendChild(saveBtn);
+
         const tdAct = document.createElement('td');
         const delBtn = document.createElement('button');
         delBtn.textContent = 'Delete';
@@ -2625,32 +2676,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           btRunsUpdateSelNote();
           toast('run deleted', 'warn');
           await safe('bt_runs', () => btRefreshRuns());
-      await safe('pf_portfolios', () => pfReloadPortfolios());
+          await safe('pf_portfolios', () => pfReloadPortfolios());
         });
         tdAct.appendChild(delBtn);
-
-        const addBtn = document.createElement('button');
-        addBtn.textContent = 'Add to Portfolio';
-        addBtn.className = 'btn-primary';
-        addBtn.style.padding = '4px 8px';
-        addBtn.style.marginLeft = '6px';
-        addBtn.addEventListener('click', async (ev) => {
-          ev.stopPropagation();
-          try {
-            const params = it.params || {};
-            const sid = pfStrategyIdFromStrategyKey(it.strategy_key);
-            pfAddLeg(sid, params, `run:${it.id}`);
-            await pfPersistLegs();
-            // jump user to Portfolio tab so the action is obvious
-            window.location.hash = '#portfolio';
-            routeFromHash();
-          } catch (e) {
-            console.error('add_to_portfolio', e);
-            toast('Add to Portfolio failed (see console)', 'error');
-          }
-        });
-        tdAct.appendChild(addBtn);
-
 
         tr.appendChild(tdSel);
         tr.appendChild(tdStrategy);
@@ -2666,6 +2694,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tr.appendChild(tdAvg);
         tr.appendChild(tdDd);
         tr.appendChild(tdGroups);
+        tr.appendChild(tdAddPf);
         tr.appendChild(tdAct);
 
         tr.addEventListener('click', () => {
@@ -2732,6 +2761,30 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         if (!pass) failing.push(it.id);
       }
       return failing;
+    }
+
+    async function btAddRunToPortfolio(runItem, targetPortfolioId) {
+      const rid = Number(runItem && runItem.id);
+      const pid = Number(targetPortfolioId);
+      if (!Number.isFinite(rid)) throw new Error('invalid run id');
+      if (!Number.isFinite(pid)) throw new Error('select a portfolio');
+
+      // Load current target portfolio
+      const tgt = await jget(`/api/portfolios/${pid}`);
+      const legs = Array.isArray(tgt.legs) ? tgt.legs.slice() : [];
+
+      // Avoid duplicate add for same run source
+      const src = `run:${rid}`;
+      if (legs.some(l => String((l && l.source) || '') === src)) {
+        return { added: false, reason: 'already_present' };
+      }
+
+      const params = (runItem && runItem.params) ? runItem.params : {};
+      const sid = pfStrategyIdFromStrategyKey(runItem?.strategy_key);
+      legs.push({ strategy_id: sid || 'debit_spreads', params: params, source: src });
+
+      await jput(`/api/portfolios/${pid}`, { legs });
+      return { added: true };
     }
 
     async function btRunsDeleteIds(ids) {
