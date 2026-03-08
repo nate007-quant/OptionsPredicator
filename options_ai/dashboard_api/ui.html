@@ -1692,6 +1692,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfCardCharts = {}; // portfolio_id -> Chart
     let pfCardSessions = {}; // portfolio_id -> session_id
     let pfCardPollers = {}; // portfolio_id -> timer id
+    let pfCardRanges = {}; // portfolio_id -> {start,end}
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -3383,14 +3384,30 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       ].join('');
     }
 
-    function pfRenderCardProgress(pid, completed, total) {
+    function pfRenderCardProgress(pid, completed, total, st=null) {
       const c = Number(completed || 0);
       const t = Number(total || 0);
       const pct = (t > 0) ? Math.max(0, Math.min(100, (100 * c / t))) : 0;
       const bar = document.getElementById(`pfCardProgBar-${pid}`);
       const txt = document.getElementById(`pfCardProgText-${pid}`);
       if (bar) bar.style.width = `${pct.toFixed(1)}%`;
-      if (txt) txt.textContent = `progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`;
+
+      const rg = pfCardRanges[String(pid)] || {};
+      const windowTxt = (rg.start || rg.end) ? `${rg.start || '—'} → ${rg.end || '—'}` : '—';
+
+      let elapsedTxt = '—';
+      const s0 = String((st && st.started_at_utc) || '').trim();
+      const s1 = String((st && (st.stopped_at_utc || st.last_activity_at_utc)) || '').trim();
+      const d0 = s0 ? new Date(s0) : null;
+      const d1 = s1 ? new Date(s1) : new Date();
+      if (d0 && !isNaN(d0.getTime()) && d1 && !isNaN(d1.getTime())) {
+        let sec = Math.max(0, Math.floor((d1.getTime() - d0.getTime()) / 1000));
+        const h = Math.floor(sec / 3600); sec -= h * 3600;
+        const m = Math.floor(sec / 60); sec -= m * 60;
+        elapsedTxt = `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+      }
+
+      if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`;
     }
 
     async function pfRunSingleGroup(pid) {
@@ -3450,7 +3467,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (note && st && st.status) {
         note.textContent = `status: ${st.status} legs: ${st.legs_completed||0}/${st.legs_total||0}`;
       }
-      if (st) pfRenderCardProgress(pid, st.legs_completed || 0, st.legs_total || 0);
+      if (st) pfRenderCardProgress(pid, st.legs_completed || 0, st.legs_total || 0, st);
       if (st && st.combined_equity_curve) pfRenderCardEquity(pid, st.combined_equity_curve || []);
       if (st && st.combined_summary) {
         pfRenderCardSummaryGraphics(pid, st.combined_summary);
@@ -3545,6 +3562,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       for (const it of items) {
         const pid = Number(it.id);
         const legs = Array.isArray(it.legs) ? it.legs : [];
+        try {
+          const starts = legs.map(x => String((x&&x.params&&x.params.start_day)||'')).filter(Boolean).sort();
+          const ends = legs.map(x => String((x&&x.params&&x.params.end_day)||'')).filter(Boolean).sort();
+          pfCardRanges[String(pid)] = { start: starts[0] || '', end: ends[ends.length-1] || '' };
+        } catch { pfCardRanges[String(pid)] = { start:'', end:'' }; }
 
         const card = document.createElement('div');
         card.className = 'card';

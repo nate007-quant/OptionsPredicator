@@ -283,7 +283,7 @@ class PortfolioBacktestService:
             if session_id is None:
                 r = con.execute(
                     """
-                    SELECT id,status,legs_total,legs_completed,legs_failed,cancel_requested,last_activity_at_utc,
+                    SELECT id,status,started_at_utc,stopped_at_utc,legs_total,legs_completed,legs_failed,cancel_requested,last_activity_at_utc,
                            combined_summary_json, combined_equity_json, legs_summaries_json
                     FROM portfolio_backtest_sessions
                     ORDER BY id DESC LIMIT 1
@@ -292,7 +292,7 @@ class PortfolioBacktestService:
             else:
                 r = con.execute(
                     """
-                    SELECT id,status,legs_total,legs_completed,legs_failed,cancel_requested,last_activity_at_utc,
+                    SELECT id,status,started_at_utc,stopped_at_utc,legs_total,legs_completed,legs_failed,cancel_requested,last_activity_at_utc,
                            combined_summary_json, combined_equity_json, legs_summaries_json
                     FROM portfolio_backtest_sessions
                     WHERE id=?
@@ -305,25 +305,27 @@ class PortfolioBacktestService:
             out: dict[str, Any] = {
                 "session_id": int(r[0]),
                 "status": str(r[1]),
-                "legs_total": int(r[2] or 0),
-                "legs_completed": int(r[3] or 0),
-                "legs_failed": int(r[4] or 0),
-                "cancel_requested": int(r[5] or 0),
-                "last_activity_at_utc": (str(r[6]) if r[6] is not None else None),
+                "started_at_utc": (str(r[2]) if r[2] is not None else None),
+                "stopped_at_utc": (str(r[3]) if r[3] is not None else None),
+                "legs_total": int(r[4] or 0),
+                "legs_completed": int(r[5] or 0),
+                "legs_failed": int(r[6] or 0),
+                "cancel_requested": int(r[7] or 0),
+                "last_activity_at_utc": (str(r[8]) if r[8] is not None else None),
             }
 
             # Attach results if finished
             if str(r[1]) in {"stopped", "failed"}:
                 try:
-                    out["combined_summary"] = json.loads(r[7]) if r[7] else None
+                    out["combined_summary"] = json.loads(r[9]) if r[9] else None
                 except Exception:
                     out["combined_summary"] = None
                 try:
-                    out["combined_equity_curve"] = json.loads(r[8]) if r[8] else []
+                    out["combined_equity_curve"] = json.loads(r[10]) if r[10] else []
                 except Exception:
                     out["combined_equity_curve"] = []
                 try:
-                    out["legs_summaries"] = json.loads(r[9]) if r[9] else []
+                    out["legs_summaries"] = json.loads(r[11]) if r[11] else []
                 except Exception:
                     out["legs_summaries"] = []
 
