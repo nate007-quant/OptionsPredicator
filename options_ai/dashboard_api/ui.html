@@ -3642,7 +3642,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       try {
         // Only clear pairing label; keep existing environment unchanged server-side.
         await jput(`/api/portfolios/${pid}`, { paired_account_label: '' });
+        // Force cross-group sync so released account immediately becomes available elsewhere.
         await pfReloadPortfolios();
+        await exRefreshAccounts();
+        pfRenderWorkbench();
         toast('group unpaired from account', 'warn');
         const note = document.getElementById(`pfCardNote-${pid}`);
         if (note) note.textContent = 'account unpaired';
@@ -3659,7 +3662,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const env = String(acct.environment || 'sandbox').toLowerCase();
       const label = String(acct.account_number || acct.label || '').trim();
       await jput(`/api/portfolios/${pid}`, { paired_environment: env, paired_account_label: label });
+      // Force cross-group sync so all dropdowns immediately reflect 1:1 pairing changes.
       await pfReloadPortfolios();
+      await exRefreshAccounts();
+      pfRenderWorkbench();
       toast(`account pair saved (${env}${label ? ' ' + label : ''})`, 'success');
     }
 
