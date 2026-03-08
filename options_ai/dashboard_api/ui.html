@@ -1152,7 +1152,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <div class="card">
             <div class="card-h"><h2>Summary</h2><div class="hint">PnL uses multiplier 100; mid-based; snapshot-level exits</div></div>
             <div class="card-b">
-              <pre id="btSummary" style="font-family:var(--mono); font-size:12px;">(run to see results)</pre>
+              <div id="btSummary" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px;"></div>
               <div style="margin-top:12px;">
                 <canvas id="btEquityChart" height="120"></canvas>
               </div>
@@ -1694,6 +1694,38 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         btEquityChart.data.datasets[0].data = vals;
         btEquityChart.update();
       }
+    }
+
+    function renderBtSummaryGraphics(summary) {
+      const host = document.getElementById('btSummary');
+      if (!host) return;
+      const s = (summary && typeof summary === 'object') ? summary : {};
+      const num = (v, d=2) => (v === null || v === undefined || Number.isNaN(Number(v))) ? '—' : Number(v).toFixed(d);
+      const pct = (v) => (v === null || v === undefined || Number.isNaN(Number(v))) ? '—' : (100 * Number(v)).toFixed(1) + '%';
+      const tile = (label, value, good=true) => `
+        <div style="border:1px solid var(--border); border-radius:10px; padding:8px; background: var(--surface-elev);">
+          <div style="font-size:11px; opacity:.8;">${label}</div>
+          <div style="font-size:16px; font-weight:700; margin-top:2px;">${value}</div>
+          <div style="margin-top:6px; height:5px; border-radius:999px; background: rgba(148,163,184,.25); overflow:hidden;">
+            <div style="height:100%; width:70%; background:${good ? 'linear-gradient(90deg,#22c55e,#16a34a)' : 'linear-gradient(90deg,#f59e0b,#ef4444)'};"></div>
+          </div>
+        </div>`;
+
+      const trades = s.trades ?? s.n_trades;
+      const pnl = s.cum_pnl_dollars;
+      const wr = s.win_rate;
+      const pf = s.profit_factor;
+      const avg = s.avg_pnl_dollars;
+      const dd = s.max_drawdown_dollars ?? s.max_dd;
+
+      host.innerHTML = [
+        tile('Trades', (trades == null ? '—' : String(trades)), true),
+        tile('Total PnL ($)', num(pnl,2), (Number(pnl||0) >= 0)),
+        tile('Win Rate', pct(wr), (Number(wr||0) >= 0.5)),
+        tile('Profit Factor', (pf === Infinity ? 'inf' : num(pf,2)), (Number(pf||0) >= 1.0)),
+        tile('Avg PnL / trade ($)', num(avg,2), (Number(avg||0) >= 0)),
+        tile('Max Drawdown ($)', num(dd,2), false),
+      ].join('');
     }
 
     function btHorizonChoices() {
@@ -3437,6 +3469,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!legs.length) throw new Error('group has no parameter lines');
       const note = document.getElementById(`pfCardNote-${pid}`);
       if (note) note.textContent = 'running…';
+      renderBtSummaryGraphics({});
       pfRenderCardProgress(pid, 0, (legs || []).length);
 
       const mode = String(it.execution_mode || 'independent');
@@ -4168,8 +4201,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
       const data = await resp.json();
 
-      const sum = document.getElementById('btSummary');
-      if (sum) sum.textContent = JSON.stringify(data.summary || {}, null, 2);
+      renderBtSummaryGraphics(data.summary || {});
 
       renderBtEquity(data.equity_curve || []);
 
