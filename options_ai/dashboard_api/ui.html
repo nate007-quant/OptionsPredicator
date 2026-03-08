@@ -1693,6 +1693,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfCardSessions = {}; // portfolio_id -> session_id
     let pfCardPollers = {}; // portfolio_id -> timer id
     let pfCardRanges = {}; // portfolio_id -> {start,end}
+    let pfCardModes = {}; // portfolio_id -> independent|merged
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -3394,6 +3395,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const rg = pfCardRanges[String(pid)] || {};
       const windowTxt = (rg.start || rg.end) ? `${rg.start || '—'} → ${rg.end || '—'}` : '—';
+      const mode = String(pfCardModes[String(pid)] || 'independent');
 
       let elapsedTxt = '—';
       const s0 = String((st && st.started_at_utc) || '').trim();
@@ -3407,7 +3409,20 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         elapsedTxt = `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
       }
 
-      if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`;
+      if (mode === 'merged') {
+        let totalDays = 0;
+        try {
+          const a = rg.start ? new Date(rg.start + 'T00:00:00Z') : null;
+          const b = rg.end ? new Date(rg.end + 'T00:00:00Z') : null;
+          if (a && b && !isNaN(a.getTime()) && !isNaN(b.getTime())) {
+            totalDays = Math.max(1, Math.floor((b.getTime() - a.getTime()) / 86400000) + 1);
+          }
+        } catch {}
+        const doneDays = totalDays > 0 ? Math.max(0, Math.min(totalDays, Math.round((pct / 100) * totalDays))) : 0;
+        if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | day progress: ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, estimated)`;
+      } else {
+        if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`;
+      }
     }
 
     async function pfRunSingleGroup(pid) {
@@ -3562,6 +3577,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       for (const it of items) {
         const pid = Number(it.id);
         const legs = Array.isArray(it.legs) ? it.legs : [];
+        pfCardModes[String(pid)] = String(it.execution_mode || 'independent');
         try {
           const starts = legs.map(x => String((x&&x.params&&x.params.start_day)||'')).filter(Boolean).sort();
           const ends = legs.map(x => String((x&&x.params&&x.params.end_day)||'')).filter(Boolean).sort();
