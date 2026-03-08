@@ -3383,6 +3383,16 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       ].join('');
     }
 
+    function pfRenderCardProgress(pid, completed, total) {
+      const c = Number(completed || 0);
+      const t = Number(total || 0);
+      const pct = (t > 0) ? Math.max(0, Math.min(100, (100 * c / t))) : 0;
+      const bar = document.getElementById(`pfCardProgBar-${pid}`);
+      const txt = document.getElementById(`pfCardProgText-${pid}`);
+      if (bar) bar.style.width = `${pct.toFixed(1)}%`;
+      if (txt) txt.textContent = `progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`;
+    }
+
     async function pfRunSingleGroup(pid) {
       const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
       if (!it) throw new Error('group not found');
@@ -3390,6 +3400,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!legs.length) throw new Error('group has no parameter lines');
       const note = document.getElementById(`pfCardNote-${pid}`);
       if (note) note.textContent = 'running…';
+      pfRenderCardProgress(pid, 0, (legs || []).length);
       const resp = await jpost('/api/portfolio_backtest/start', {
         legs: legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
       });
@@ -3415,6 +3426,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (note && st && st.status) {
         note.textContent = `status: ${st.status} legs: ${st.legs_completed||0}/${st.legs_total||0}`;
       }
+      if (st) pfRenderCardProgress(pid, st.legs_completed || 0, st.legs_total || 0);
       if (st && st.combined_equity_curve) pfRenderCardEquity(pid, st.combined_equity_curve || []);
       if (st && st.combined_summary) {
         pfRenderCardSummaryGraphics(pid, st.combined_summary);
@@ -3514,6 +3526,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <button id="pfCardAdd-${pid}">Add line</button>
               <span class="hint" id="pfCardNote-${pid}"></span>
             </div>
+            <div style="margin-top:8px;">
+              <div style="height:8px; border-radius:999px; background:rgba(148,163,184,.25); overflow:hidden;">
+                <div id="pfCardProgBar-${pid}" style="height:100%; width:0%; background:linear-gradient(90deg,#60a5fa,#3b82f6);"></div>
+              </div>
+              <div class="hint" id="pfCardProgText-${pid}" style="margin-top:4px;">progress: 0/0</div>
+            </div>
             <div style="margin-top:10px;">
               <div class="hint">Equity Curve</div>
               <div style="height:260px; width:100%;"><canvas id="pfCardEq-${pid}"></canvas></div>
@@ -3540,6 +3558,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         if (cached) {
           if (Array.isArray(cached.combined_equity_curve)) pfRenderCardEquity(pid, cached.combined_equity_curve);
           pfRenderCardSummaryGraphics(pid, cached.combined_summary || {});
+          const doneN = Array.isArray(legs) ? legs.length : 0;
+          pfRenderCardProgress(pid, doneN, doneN);
           const note = document.getElementById(`pfCardNote-${pid}`);
           if (note) {
             const dt = new Date(Number(cached.saved_at_ms || 0));
