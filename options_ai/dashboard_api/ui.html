@@ -1725,6 +1725,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfCardModes = {}; // portfolio_id -> independent|merged
     let exAccounts = []; // execution account catalog
     let exAccountsLoading = false;
+    let pfEmitArmed = {}; // portfolio_id -> bool (UI-persistent toggle)
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -3226,6 +3227,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function pfCacheKey(pid) {
       return `pf_card_cache_v1_${String(pid)}`;
     }
+    function pfEmitArmedLoad() {
+      try { return JSON.parse(localStorage.getItem('pf_emit_armed_v1') || '{}') || {}; } catch { return {}; }
+    }
+
+    function pfEmitArmedSave() {
+      try { localStorage.setItem('pf_emit_armed_v1', JSON.stringify(pfEmitArmed || {})); } catch {}
+    }
+
     function pfPortfoliosCacheKey() {
       return 'pf_portfolios_cache_v1';
     }
@@ -3692,9 +3701,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!ok) return;
       try {
         const res = await jpost(`/api/portfolios/${pid}/emit_signals`, { environment: env, account_label: label });
-        toast(`signals emitted (${res.mode||'independent'}): inserted ${res.inserted||0}, existing ${res.existing||0}`, 'success');
+        const ins = Number(res.inserted || 0);
+        const exi = Number(res.existing || 0);
+        if (ins > 0) toast(`signals emitted (${res.mode||'independent'}): inserted ${ins}, existing ${exi}`, 'success');
+        else toast(`no new signals emitted (${res.mode||'independent'}): already queued (${exi})`, 'info');
         const note = document.getElementById(`pfCardNote-${pid}`);
-        if (note) note.textContent = `signals emitted [${res.mode||'independent'}] → ${env}${label ? ' ('+label+')' : ''}`;
+        if (note) note.textContent = `signals emit [${res.mode||'independent'}] → ${env}${label ? ' ('+label+')' : ''} | inserted ${ins}, existing ${exi}`;
       } catch (e) {
         const msg = String(e?.message || e || 'emit failed');
         toast(`emit failed: ${msg}`, 'error');
@@ -3820,7 +3832,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <button class="btn-danger" id="pfCardAcctUnpair-${pid}">Unpair</button>
               <label style="display:inline-flex; align-items:center; gap:8px;">
                 <span>Emit signals</span>
-                <label class="switch"><input id="pfCardEmit-${pid}" type="checkbox" role="switch" /><span class="slider"></span></label>
+                <label class="switch"><input id="pfCardEmit-${pid}" type="checkbox" role="switch" ${pfEmitArmed[String(pid)] ? "checked" : ""} /><span class="slider"></span></label>
               </label>
               <label>Group start <input id="pfCardStart-${pid}" type="date" value="${esc(String(it.group_start_day || pfInferGroupStartDefault(legs) || ''))}" /></label>
               <label>Group end <input id="pfCardEnd-${pid}" type="date" value="${esc(String(it.group_end_day || pfLastTradingDayIso()))}" /></label>
@@ -3913,12 +3925,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         document.getElementById(`pfCardAcctUnpair-${pid}`)?.addEventListener('click', () => safe(`pf_card_unpair_${pid}`, () => pfUnpairGroupAccount(pid)));
         document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_emit_${pid}`, async () => {
           const cb = ev.target;
-          if (!cb?.checked) return;
-          try {
-            await pfEmitGroupSignals(pid);
-          } finally {
-            cb.checked = false; // one-shot action switch
-          }
+          const on = !!cb?.checked;
+          pfEmitArmed[String(pid)] = on;
+          pfEmitArmedSave();
+          if (!on) return;
+          await pfEmitGroupSignals(pid);
         }));
         document.getElementById(`pfCardDateSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_date_save_${pid}`, async () => {
           const s0 = document.getElementById(`pfCardStart-${pid}`)?.value || '';
@@ -5525,6 +5536,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     // initial load
     (async () => {
       initTheme();
+      pfEmitArmed = pfEmitArmedLoad();
       routeFromHash();
 
       await safe('health', () => refreshHealth());
