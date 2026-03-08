@@ -1786,11 +1786,17 @@ def create_app() -> FastAPI:
     @app.post('/api/portfolios/{portfolio_id}/emit_signals')
     def portfolios_emit_signals(portfolio_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
         import json as _json
+
+        # Operator expectation: when execution is OFF, do not enqueue intents.
+        if not bool(cfg.trading_enabled):
+            raise HTTPException(status_code=409, detail='execution is OFF (TRADING_ENABLED=false); signals were not emitted')
+
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
             r = con.execute(
                 """
-                SELECT id,name,legs_json,COALESCE(paired_environment,'sandbox') AS paired_environment,
+                SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
+                       COALESCE(paired_environment,'sandbox') AS paired_environment,
                        COALESCE(paired_account_label,'') AS paired_account_label
                 FROM portfolio_defs WHERE id=?
                 """,
@@ -1805,29 +1811,27 @@ def create_app() -> FastAPI:
             if not isinstance(legs, list) or not legs:
                 raise HTTPException(status_code=400, detail='portfolio has no parameter lines')
 
+            mode = str(r['execution_mode'] or 'independent').strip().lower()
+            if mode not in {'independent', 'merged'}:
+                mode = 'independent'
+
             env = str((body or {}).get('environment') or r['paired_environment'] or 'sandbox').strip().lower()
             if env not in {'sandbox','live'}:
                 raise HTTPException(status_code=400, detail='environment must be sandbox|live')
             account_label = str((body or {}).get('account_label') or r['paired_account_label'] or '').strip()
+            if not account_label:
+                raise HTTPException(status_code=400, detail='group is not paired to an account (account_label empty)')
             broker_name = str((body or {}).get('broker_name') or cfg.broker_name or 'tastytrade').strip()
 
             inserted = 0
             existing = 0
-            for i, leg in enumerate(legs):
-                sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
-                params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
-                payload = {
-                    'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name']), 'line_index': int(i)},
-                    'strategy_key': sid,
-                    'params': params,
-                    'summary': {},
-                    'paired_account': {'environment': env, 'account_label': account_label},
-                }
-                idem = str((body or {}).get('idempotency_prefix') or f"portfolio_group:{int(portfolio_id)}:{env}:{i}:{date.today().isoformat()}")
+
+            def _insert_one(*, strategy_key: str, candidate_ref: str, idem: str, payload: dict[str, Any]) -> None:
+                nonlocal inserted, existing
                 ex = con.execute("SELECT id FROM execution_intents WHERE idempotency_key=?", (idem,)).fetchone()
                 if ex is not None:
                     existing += 1
-                    continue
+                    return
                 con.execute(
                     """
                     INSERT INTO execution_intents(
@@ -1844,16 +1848,74 @@ def create_app() -> FastAPI:
                         env,
                         broker_name,
                         'pending',
-                        sid,
+                        strategy_key,
                         'SPX',
-                        f"portfolio_group:{int(portfolio_id)}:line:{int(i)}",
+                        candidate_ref,
                         idem,
                         _json.dumps(payload, separators=(',', ':'), sort_keys=True),
                     ),
                 )
                 inserted += 1
+
+            idem_prefix = str((body or {}).get('idempotency_prefix') or '').strip()
+
+            if mode == 'merged':
+                lines: list[dict[str, Any]] = []
+                strategy_keys: list[str] = []
+                for i, leg in enumerate(legs):
+                    sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
+                    strategy_keys.append(sid)
+                    params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
+                    lines.append({'line_index': int(i), 'strategy_key': sid, 'params': params})
+
+                strategy_key = strategy_keys[0] if strategy_keys else 'debit_spreads'
+                payload = {
+                    'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name'])},
+                    'strategy_key': strategy_key,
+                    'merge_mode': 'merged',
+                    'group_lines': lines,
+                    'params': {'group_lines': lines},
+                    'summary': {},
+                    'paired_account': {'environment': env, 'account_label': account_label},
+                }
+                idem = idem_prefix or f"portfolio_group:{int(portfolio_id)}:{env}:merged:{date.today().isoformat()}"
+                _insert_one(
+                    strategy_key=strategy_key,
+                    candidate_ref=f"portfolio_group:{int(portfolio_id)}:merged",
+                    idem=idem,
+                    payload=payload,
+                )
+            else:
+                for i, leg in enumerate(legs):
+                    sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
+                    params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
+                    payload = {
+                        'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name']), 'line_index': int(i)},
+                        'strategy_key': sid,
+                        'merge_mode': 'independent',
+                        'params': params,
+                        'summary': {},
+                        'paired_account': {'environment': env, 'account_label': account_label},
+                    }
+                    idem = idem_prefix or f"portfolio_group:{int(portfolio_id)}:{env}:line:{i}:{date.today().isoformat()}"
+                    _insert_one(
+                        strategy_key=sid,
+                        candidate_ref=f"portfolio_group:{int(portfolio_id)}:line:{int(i)}",
+                        idem=idem,
+                        payload=payload,
+                    )
+
             con.commit()
-        return {'ok': True, 'portfolio_id': int(portfolio_id), 'environment': env, 'account_label': account_label, 'inserted': inserted, 'existing': existing}
+        return {
+            'ok': True,
+            'portfolio_id': int(portfolio_id),
+            'mode': mode,
+            'environment': env,
+            'account_label': account_label,
+            'inserted': inserted,
+            'existing': existing,
+        }
+
 
     @app.delete('/api/portfolios/{portfolio_id}')
     def portfolios_delete(portfolio_id: int) -> dict[str, Any]:

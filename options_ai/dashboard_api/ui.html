@@ -3676,10 +3676,16 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const label = String(acct.account_number || acct.label || '').trim();
       const ok = confirm(`Emit signals for this group to ${env}${label ? ' ('+label+')' : ''}?`);
       if (!ok) return;
-      const res = await jpost(`/api/portfolios/${pid}/emit_signals`, { environment: env, account_label: label });
-      toast(`signals emitted: inserted ${res.inserted||0}, existing ${res.existing||0}`, 'success');
-      const note = document.getElementById(`pfCardNote-${pid}`);
-      if (note) note.textContent = `signals emitted → ${env}${label ? ' ('+label+')' : ''}`;
+      try {
+        const res = await jpost(`/api/portfolios/${pid}/emit_signals`, { environment: env, account_label: label });
+        toast(`signals emitted (${res.mode||'independent'}): inserted ${res.inserted||0}, existing ${res.existing||0}`, 'success');
+        const note = document.getElementById(`pfCardNote-${pid}`);
+        if (note) note.textContent = `signals emitted [${res.mode||'independent'}] → ${env}${label ? ' ('+label+')' : ''}`;
+      } catch (e) {
+        const msg = String(e?.message || e || 'emit failed');
+        toast(`emit failed: ${msg}`, 'error');
+        throw e;
+      }
     }
 
     async function pfSetGroupExecutionMode(pid, mode) {
