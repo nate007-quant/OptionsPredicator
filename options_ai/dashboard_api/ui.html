@@ -1359,6 +1359,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <fieldset class="fs" style="margin-top:12px;">
                 <legend>Group Manager</legend>
                 <div class="hint">Manage logical groups (Live, Sandbox-0DTE, Sandbox-30DTE, etc.). Each group is evaluated independently below.</div>
+                <div class="row" style="margin-top:8px;">
+                  <label>Cache TTL (days) <input id="pfCacheDays" type="number" min="1" max="90" value="7" style="width:80px;" /></label>
+                  <button id="pfCacheClear">Clear cached curves</button>
+                  <span class="hint" id="pfCacheNote"></span>
+                </div>
               </fieldset>
 
               <div id="pfWorkbench" style="margin-top:12px;"></div>
@@ -3162,6 +3167,58 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (note) note.textContent = legs.length ? `legs: ${legs.length}` : 'no legs yet (select runs and click Add selected to Portfolio)';
     }
 
+    function pfCacheKey(pid) {
+      return `pf_card_cache_v1_${String(pid)}`;
+    }
+
+    function pfCacheTtlMs() {
+      const d = parseInt(String(document.getElementById('pfCacheDays')?.value || '7'), 10);
+      const days = Number.isFinite(d) && d > 0 ? d : 7;
+      return days * 24 * 60 * 60 * 1000;
+    }
+
+    function pfSaveCardCache(pid, portfolioUpdatedAt, summary, equity) {
+      try {
+        const payload = {
+          saved_at_ms: Date.now(),
+          portfolio_updated_at_utc: String(portfolioUpdatedAt || ''),
+          combined_summary: summary || {},
+          combined_equity_curve: Array.isArray(equity) ? equity : [],
+        };
+        localStorage.setItem(pfCacheKey(pid), JSON.stringify(payload));
+      } catch {}
+    }
+
+    function pfLoadCardCache(pid, portfolioUpdatedAt) {
+      try {
+        const raw = localStorage.getItem(pfCacheKey(pid));
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        if (!obj || typeof obj !== 'object') return null;
+        const age = Date.now() - Number(obj.saved_at_ms || 0);
+        if (!Number.isFinite(age) || age < 0 || age > pfCacheTtlMs()) return null;
+        // Invalidate cache if group definition changed.
+        if (String(obj.portfolio_updated_at_utc || '') !== String(portfolioUpdatedAt || '')) return null;
+        return obj;
+      } catch {
+        return null;
+      }
+    }
+
+    function pfClearAllCardCache() {
+      try {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('pf_card_cache_v1_')) keys.push(k);
+        }
+        for (const k of keys) localStorage.removeItem(k);
+        return keys.length;
+      } catch {
+        return 0;
+      }
+    }
+
     function pfDestroyCardChart(pid) {
       const k = String(pid);
       if (pfCardCharts[k]) {
@@ -3275,6 +3332,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (st && st.combined_equity_curve) pfRenderCardEquity(pid, st.combined_equity_curve || []);
       if (st && st.combined_summary) {
         pfRenderCardSummaryGraphics(pid, st.combined_summary);
+        const cur = (pfPortfolios || []).find(x => String(x.id) === String(pid));
+        pfSaveCardCache(pid, cur?.updated_at_utc || '', st.combined_summary, st.combined_equity_curve || []);
       }
       if (st && (st.status === 'stopped' || st.status === 'failed')) {
         if (pfCardPollers[String(pid)]) { clearInterval(pfCardPollers[String(pid)]); delete pfCardPollers[String(pid)]; }
@@ -3382,6 +3441,19 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           </div>
         `;
         host.appendChild(card);
+
+        // Hydrate card from cache (if valid) for instant load.
+        const cached = pfLoadCardCache(pid, it.updated_at_utc || '');
+        if (cached) {
+          if (Array.isArray(cached.combined_equity_curve)) pfRenderCardEquity(pid, cached.combined_equity_curve);
+          pfRenderCardSummaryGraphics(pid, cached.combined_summary || {});
+          const note = document.getElementById(`pfCardNote-${pid}`);
+          if (note) {
+            const dt = new Date(Number(cached.saved_at_ms || 0));
+            const iso = isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0,10);
+            note.textContent = iso ? `cached: ${iso}` : 'cached';
+          }
+        }
 
         const tb = card.querySelector(`#pfCardLines-${pid}`);
         for (let i = 0; i < legs.length; i++) {
@@ -4802,6 +4874,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('pfGotoBacktest')?.addEventListener('click', () => { window.location.hash = '#paramtest'; routeFromHash(); });
     document.getElementById('pfRemoveSelectedLegs')?.addEventListener('click', () => safe('pf_remove_selected', () => pfRemoveSelectedLegs()));
     document.getElementById('pfMoveSelectedLegs')?.addEventListener('click', () => safe('pf_move_selected', () => pfMoveSelectedLegs()));
+    document.getElementById('pfCacheClear')?.addEventListener('click', () => { const n = pfClearAllCardCache(); const note=document.getElementById('pfCacheNote'); if (note) note.textContent = `cleared ${n} cache item(s)`; toast(`cleared ${n} cache item(s)`, 'info'); });
 
     document.getElementById('pfRunGroup')?.addEventListener('click', () => safe('pf_group_run', () => pfRunGroup()));
     document.getElementById('pfStopGroup')?.addEventListener('click', () => safe('pf_group_stop', () => pfStopGroup()));
