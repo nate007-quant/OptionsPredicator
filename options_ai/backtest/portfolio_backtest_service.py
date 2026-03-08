@@ -173,6 +173,23 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -
     sum_gain = sum(v for v in synth_pnls if v > 0)
     sum_loss = sum(v for v in synth_pnls if v < 0)
 
+    # Diagnostics to explain when merged ~= independent (e.g., little/no overlap).
+    candidates_total = int(len(recs))
+    selected_total = int(len(synth_pnls))
+    skipped_total = int(max(0, candidates_total - selected_total))
+
+    overlap_events = 0
+    if recs:
+        recs_by_entry = sorted(recs, key=lambda r: (r['entry'], r['exit']))
+        cur_end = recs_by_entry[0]['exit']
+        for rr in recs_by_entry[1:]:
+            if rr['entry'] < cur_end:
+                overlap_events += 1
+                if rr['exit'] > cur_end:
+                    cur_end = rr['exit']
+            else:
+                cur_end = rr['exit']
+
     summary = {
         "trades": int(len(synth_pnls)),
         "wins": int(wins),
@@ -183,6 +200,10 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -
         "max_drawdown_dollars": float(_max_drawdown(eq_points) if eq_points else 0.0),
         "profit_factor": float(sum_gain / abs(sum_loss)) if sum_loss < 0 else (float("inf") if sum_gain > 0 else 0.0),
         "mode": "merged",
+        "merge_candidates_total": candidates_total,
+        "merge_selected_trades": selected_total,
+        "merge_skipped_trades": skipped_total,
+        "merge_overlap_events": int(overlap_events),
     }
     return eq, summary
 
@@ -470,6 +491,10 @@ class PortfolioBacktestService:
                 combined_equity, combined_summary = combine_trades_to_equity(trades_by_leg)
                 if isinstance(combined_summary, dict):
                     combined_summary["mode"] = "independent"
+                    combined_summary.setdefault("merge_candidates_total", int(sum(len(x or []) for x in trades_by_leg)))
+                    combined_summary.setdefault("merge_selected_trades", int(sum(len(x or []) for x in trades_by_leg)))
+                    combined_summary.setdefault("merge_skipped_trades", 0)
+                    combined_summary.setdefault("merge_overlap_events", 0)
 
             # If cancelled, still mark stopped and return partial results
             status = "stopped" if self._cancel_requested(session_id) else "stopped"
