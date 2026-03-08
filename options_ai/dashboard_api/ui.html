@@ -3818,7 +3818,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               </label>
               <button id="pfCardAcctSave-${pid}">Pair</button>
               <button class="btn-danger" id="pfCardAcctUnpair-${pid}">Unpair</button>
-              <button id="pfCardEmit-${pid}" class="btn-primary">Emit signals</button>
+              <label style="display:inline-flex; align-items:center; gap:8px;">
+                <span>Emit signals</span>
+                <label class="switch"><input id="pfCardEmit-${pid}" type="checkbox" role="switch" /><span class="slider"></span></label>
+              </label>
               <label>Group start <input id="pfCardStart-${pid}" type="date" value="${esc(String(it.group_start_day || pfInferGroupStartDefault(legs) || ''))}" /></label>
               <label>Group end <input id="pfCardEnd-${pid}" type="date" value="${esc(String(it.group_end_day || pfLastTradingDayIso()))}" /></label>
               <button id="pfCardDateSave-${pid}">Save dates</button>
@@ -3908,7 +3911,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           await pfSaveGroupAccountPair(pid);
         }));
         document.getElementById(`pfCardAcctUnpair-${pid}`)?.addEventListener('click', () => safe(`pf_card_unpair_${pid}`, () => pfUnpairGroupAccount(pid)));
-        document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('click', () => safe(`pf_card_emit_${pid}`, () => pfEmitGroupSignals(pid)));
+        document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_emit_${pid}`, async () => {
+          const cb = ev.target;
+          if (!cb?.checked) return;
+          try {
+            await pfEmitGroupSignals(pid);
+          } finally {
+            cb.checked = false; // one-shot action switch
+          }
+        }));
         document.getElementById(`pfCardDateSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_date_save_${pid}`, async () => {
           const s0 = document.getElementById(`pfCardStart-${pid}`)?.value || '';
           const e0 = document.getElementById(`pfCardEnd-${pid}`)?.value || '';
