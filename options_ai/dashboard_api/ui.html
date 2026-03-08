@@ -822,8 +822,9 @@
                 </label>
                 <label>Auto-refresh
                   <select id="opsRefreshSec">
+                    <option value="0" selected>Off</option>
                     <option value="5">5s</option>
-                    <option value="10" selected>10s</option>
+                    <option value="10">10s</option>
                     <option value="15">15s</option>
                     <option value="30">30s</option>
                   </select>
@@ -4393,8 +4394,18 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     let processingTimer = null;
     function setupProcessingRefreshTimer() {
-      if (processingTimer) clearInterval(processingTimer);
-      const sec = parseInt(document.getElementById('opsRefreshSec')?.value || '10', 10);
+      if (processingTimer) {
+        clearInterval(processingTimer);
+        processingTimer = null;
+      }
+      const sec = parseInt(document.getElementById('opsRefreshSec')?.value || '0', 10);
+      const meta = document.getElementById('opsFreshnessMeta');
+      if (!Number.isFinite(sec) || sec <= 0) {
+        if (meta && !String(meta.textContent || '').includes('Auto-refresh: Off')) {
+          meta.textContent = `${meta.textContent || ''} · Auto-refresh: Off`;
+        }
+        return;
+      }
       const ms = Math.max(3000, sec * 1000);
       processingTimer = setInterval(() => safe('processing', () => refreshProcessing()), ms);
     }
