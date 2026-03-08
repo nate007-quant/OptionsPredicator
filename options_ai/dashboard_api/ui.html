@@ -3634,6 +3634,18 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return acct || null;
     }
 
+    async function pfUnpairGroupAccount(pid) {
+      const ok = confirm('Unpair this group from its execution account? You will need to re-pair before emitting signals.');
+      if (!ok) return;
+      const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
+      const env = String((it && it.paired_environment) || 'sandbox');
+      await jput(`/api/portfolios/${pid}`, { paired_environment: env, paired_account_label: '' });
+      await pfReloadPortfolios();
+      toast('group unpaired from account', 'warn');
+      const note = document.getElementById(`pfCardNote-${pid}`);
+      if (note) note.textContent = 'account unpaired';
+    }
+
     async function pfSaveGroupAccountPair(pid) {
       const acct = pfSelectedAccountByCard(pid);
       if (!acct) throw new Error('select an active account');
@@ -3769,6 +3781,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 </select>
               </label>
               <button id="pfCardAcctSave-${pid}">Save account</button>
+              <button class="btn-danger" id="pfCardAcctUnpair-${pid}">Unpair</button>
               <button id="pfCardEmit-${pid}" class="btn-primary">Emit signals</button>
               <label>Group start <input id="pfCardStart-${pid}" type="date" value="${esc(String(it.group_start_day || pfInferGroupStartDefault(legs) || ''))}" /></label>
               <label>Group end <input id="pfCardEnd-${pid}" type="date" value="${esc(String(it.group_end_day || pfLastTradingDayIso()))}" /></label>
@@ -3858,6 +3871,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         document.getElementById(`pfCardAcctSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_acct_${pid}`, async () => {
           await pfSaveGroupAccountPair(pid);
         }));
+        document.getElementById(`pfCardAcctUnpair-${pid}`)?.addEventListener('click', () => safe(`pf_card_unpair_${pid}`, () => pfUnpairGroupAccount(pid)));
         document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('click', () => safe(`pf_card_emit_${pid}`, () => pfEmitGroupSignals(pid)));
         document.getElementById(`pfCardDateSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_date_save_${pid}`, async () => {
           const s0 = document.getElementById(`pfCardStart-${pid}`)?.value || '';
