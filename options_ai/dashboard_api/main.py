@@ -1807,10 +1807,56 @@ def create_app() -> FastAPI:
             out_legs = []
         return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label, 'signal_engine_enabled': bool(int(new_sig))}
 
+    def _hhmm_to_minutes_local(x: str | None) -> int | None:
+        if not x:
+            return None
+        try:
+            hh, mm = str(x).split(':', 1)
+            return int(hh) * 60 + int(mm)
+        except Exception:
+            return None
+
+    def _entry_window_ct_from_params(params: dict[str, Any]) -> tuple[str | None, str | None]:
+        p = params or {}
+        mode = str(p.get('entry_mode') or 'time_range').strip().lower()
+        if mode == 'time_range':
+            a = str(p.get('entry_start_ct') or '').strip() or None
+            b = str(p.get('entry_end_ct') or '').strip() or None
+            return a, b
+        # fallback: first N minutes from session start
+        start = str(p.get('session_start_ct') or '08:30').strip() or '08:30'
+        try:
+            mins = int(p.get('entry_first_n_minutes') or 60)
+        except Exception:
+            mins = 60
+        lo = _hhmm_to_minutes_local(start)
+        if lo is None:
+            return None, None
+        hi = lo + max(1, mins)
+        return f"{lo // 60:02d}:{lo % 60:02d}", f"{hi // 60:02d}:{hi % 60:02d}"
+
+    def _is_now_in_entry_window_ct(params: dict[str, Any]) -> bool:
+        now_ct = datetime.now(timezone.utc).astimezone(CENTRAL_TZ)
+        cur = now_ct.hour * 60 + now_ct.minute
+        lo_s, hi_s = _entry_window_ct_from_params(params)
+        lo = _hhmm_to_minutes_local(lo_s)
+        hi = _hhmm_to_minutes_local(hi_s)
+        if lo is None and hi is None:
+            return True
+        if lo is not None and cur < lo:
+            return False
+        if hi is not None and cur > hi:
+            return False
+        return True
+
     def _engine_pick_candidate_for_line(*, snapshot_ts: str, params: dict[str, Any]) -> dict[str, Any] | None:
         dsn = _pg_dsn()
         if not dsn:
             return None
+        # Respect per-line entry windows (same intent semantics as strategy params/backtest design).
+        if not _is_now_in_entry_window_ct(params or {}):
+            return None
+
         try:
             hz = int((params or {}).get('horizon_minutes') or 30)
         except Exception:
