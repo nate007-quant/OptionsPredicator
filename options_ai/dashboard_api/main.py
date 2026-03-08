@@ -3703,7 +3703,7 @@ def create_app() -> FastAPI:
                 SELECT
                   COUNT(*) AS n,
                   SUM(CASE WHEN result='wrong_direction' THEN 1 ELSE 0 END) AS failed,
-                  AVG(COALESCE(runtime_ms, 0.0)) AS runtime_ms_avg
+                  0.0 AS runtime_ms_avg
                 FROM predictions
                 WHERE COALESCE(observed_ts_utc, timestamp) >= ?
                 """,
