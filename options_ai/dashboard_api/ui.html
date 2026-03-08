@@ -208,6 +208,12 @@
     .kpi-card .kpi-val { font-size: 24px; font-weight: 700; margin-top: 8px; }
     .ops-main { display:grid; grid-template-columns: 2fr 1fr; gap:16px; }
     .ops-bottom { display:grid; grid-template-columns: 2fr 1fr 1fr; gap:16px; }
+    .ops-stale-banner { display:none; margin-top:8px; padding:8px 10px; border-radius:10px; border:1px solid rgba(245,158,11,0.55); background: rgba(245,158,11,0.12); color:#fcd34d; font-size:12px; }
+    .ops-exec-summary { display:none; margin-top:12px; }
+    .ops-exec-summary .risk { font-size:13px; color: var(--muted); }
+    #view-processing.executive .ops-exec-summary { display:block; }
+    #view-processing.executive .ops-operator-only { display:none !important; }
+
     .pipeline-flow { display:flex; gap:10px; overflow:auto; padding-bottom:6px; }
     .pipe-node { min-width:152px; border:2px solid var(--border); border-radius:12px; padding:10px; background: var(--surface-2); }
     .pipe-node.green { border-color: rgba(34,197,94,0.8); }
@@ -813,6 +819,15 @@
               </div>
             </div>
             <div class="hint" id="opsFreshnessMeta" style="margin-top:8px;">Updated —</div>
+            <div class="ops-stale-banner" id="opsStaleBanner">Telemetry stale. Data may be delayed.</div>
+            <div class="ops-exec-summary card" id="opsExecutiveSummary">
+              <div class="card-b">
+                <div><strong>Executive Summary</strong></div>
+                <div class="risk" id="opsExecRisk">Top risk: —</div>
+                <div class="risk" id="opsExecBottleneck">Bottleneck: —</div>
+                <div class="risk" id="opsExecFlags">Flags: —</div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -829,7 +844,7 @@
             <div class="card-h"><h2>Pipeline Flow</h2><div class="hint" id="opsBottleneck">Bottleneck: —</div></div>
             <div class="card-b"><div class="pipeline-flow" id="pipelineFlow"></div></div>
           </div>
-          <div class="card">
+          <div class="card ops-operator-only">
             <div class="card-h"><h2>Service Control Panel</h2><div class="hint">viewer/operator/admin via X-Role header</div></div>
             <div class="card-b">
               <div class="row" style="margin-bottom:8px;">
@@ -852,17 +867,17 @@
             <div class="card-h"><h2>Dependencies / DB Health</h2><div class="hint">Data layer status</div></div>
             <div class="card-b"><div id="opsDepsBox" class="mono" style="font-size:12px;"></div></div>
           </div>
-          <div class="card">
+          <div class="card ops-operator-only">
             <div class="card-h"><h2>Long-running Queries</h2><div class="hint">advisory</div></div>
             <div class="card-b"><div id="opsLongQueries" class="mono" style="font-size:12px; max-height:240px; overflow:auto;"></div></div>
           </div>
-          <div class="card">
+          <div class="card ops-operator-only">
             <div class="card-h"><h2>Index Recommendations</h2><div class="hint">never auto-apply</div></div>
             <div class="card-b"><div id="opsIndexRecs" class="mono" style="font-size:12px; max-height:240px; overflow:auto;"></div></div>
           </div>
         </div>
 
-        <div class="card" style="margin-top: var(--space-4);">
+        <div class="card ops-operator-only" style="margin-top: var(--space-4);">
           <div class="card-h"><h2>Diagnostics</h2><div class="hint">24h trends + threshold bands + event annotations</div></div>
           <div class="card-b">
             <div class="grid2" style="margin-bottom:12px;">
@@ -3597,10 +3612,31 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const events = (audit.items || []).slice(0, 20).concat((incidents.items || []).slice(0, 20));
       renderOpsTrendCharts(timeseries.series || [], catalog.thresholds || {}, events);
 
-      if (mode === 'executive') {
-        document.querySelector('.ops-main .card:nth-child(2)')?.style.setProperty('display', 'none');
-      } else {
-        document.querySelector('.ops-main .card:nth-child(2)')?.style.setProperty('display', 'block');
+      const procView = document.getElementById('view-processing');
+      if (procView) {
+        if (mode === 'executive') procView.classList.add('executive');
+        else procView.classList.remove('executive');
+      }
+
+      const staleBanner = document.getElementById('opsStaleBanner');
+      if (staleBanner) {
+        const isStale = !!(summary.freshness && summary.freshness.stale_data);
+        staleBanner.style.display = isStale ? 'block' : 'none';
+        if (isStale) staleBanner.textContent = `Telemetry stale (${fmtSec(summary.freshness.last_update_age_sec)} since last update).`;
+      }
+
+      const riskEl = document.getElementById('opsExecRisk');
+      const bottEl = document.getElementById('opsExecBottleneck');
+      const flagsEl = document.getElementById('opsExecFlags');
+      if (riskEl) riskEl.textContent = `Top risk: ${summary.likely_cause || 'None detected'}`;
+      if (bottEl) bottEl.textContent = `Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
+      if (flagsEl) {
+        const flags = [];
+        const kk = summary.kpis || {};
+        if (kk.freshness_lag_color && kk.freshness_lag_color !== 'green') flags.push(`Lag ${kk.freshness_lag_color}`);
+        if (kk.error_rate_color && kk.error_rate_color !== 'green') flags.push(`Errors ${kk.error_rate_color}`);
+        if (kk.oldest_inflight_color && kk.oldest_inflight_color !== 'green') flags.push(`Inflight age ${kk.oldest_inflight_color}`);
+        flagsEl.textContent = `Flags: ${flags.length ? flags.join(', ') : 'All primary signals green'}`;
       }
 
       return {summary, pipeline, services};
