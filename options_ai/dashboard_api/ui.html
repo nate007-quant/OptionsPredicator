@@ -1701,6 +1701,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       try { document.title = `Nate's Option Dashboard — ${view}`; } catch {}
       if (view === 'processing') { safe('processing', () => refreshProcessing()); }
+      if (view === 'paramtest' && !btRunsEverLoaded) { safe('bt_runs', () => btRefreshRuns()); }
     }
 
     function routeFromHash() {
@@ -1784,6 +1785,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let btRunsSelected = new Set();
     let btRunsVisibleIds = []; // ids currently rendered after filters
     let btRunsPage = 1;
+    let btRunsEverLoaded = false;
     let btRunsPageSize = 50;
 
 
@@ -2841,6 +2843,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const data = await btRunsRefreshRunsData();
       btRunsRenderTable(btRunsRaw);
+      btRunsEverLoaded = true;
       return data;
     }
 
