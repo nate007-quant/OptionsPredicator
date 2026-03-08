@@ -662,7 +662,7 @@
         </div>
 
         <div class="card" style="margin-top: var(--space-4);">
-          <div class="card-h"><h2>Trade History (Sandbox vs Live)</h2><div class="hint">Most recent trade runs by environment</div></div>
+          <div class="card-h"><h2>Trade History (Broker Source of Truth)</h2><div class="hint">Direct Tastytrade API pull (sandbox + live)</div></div>
           <div class="card-b">
             <div class="row">
               <label>Limit <input id="exHistLimit" type="number" min="1" max="2000" value="200" style="width:90px;" /></label>
@@ -675,7 +675,7 @@
                 <div class="hint" style="margin-bottom:6px;">Sandbox</div>
                 <div style="overflow:auto; max-height:320px;">
                   <table>
-                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>opened</th><th>closed</th><th>realized</th></tr></thead>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>size</th><th>received</th><th>terminal</th><th>price</th></tr></thead>
                     <tbody id="exHistSandboxTable"></tbody>
                   </table>
                 </div>
@@ -684,7 +684,7 @@
                 <div class="hint" style="margin-bottom:6px;">Live</div>
                 <div style="overflow:auto; max-height:320px;">
                   <table>
-                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>opened</th><th>closed</th><th>realized</th></tr></thead>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>size</th><th>received</th><th>terminal</th><th>price</th></tr></thead>
                     <tbody id="exHistLiveTable"></tbody>
                   </table>
                 </div>
@@ -3551,11 +3551,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exRefreshTrades: 'Refresh currently open/opening/closing trades table.',
         exTradesTable: 'Open trades view including protection status and P&L fields.',
         exHistLimit: 'Rows per environment for trade history panels.',
-        exRefreshHistory: 'Refresh sandbox/live trade history tables.',
+        exRefreshHistory: 'Refresh direct broker order history for sandbox/live.',
         exHistSandboxCount: 'Number of sandbox trade history rows currently shown.',
         exHistLiveCount: 'Number of live trade history rows currently shown.',
-        exHistSandboxTable: 'Recent sandbox trade runs (all statuses).',
-        exHistLiveTable: 'Recent live trade runs (all statuses).',
+        exHistSandboxTable: 'Recent sandbox orders pulled from Tastytrade API.',
+        exHistLiveTable: 'Recent live orders pulled from Tastytrade API.',
 
         exIntentStatus: 'Optional filter for execution intent status.',
         exRefreshIntents: 'Refresh execution intents list.',
@@ -3699,14 +3699,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       tb.innerHTML = '';
       for (const it of (items || [])) {
         const tr = document.createElement('tr');
+        const px = (it.price === null || it.price === undefined || it.price === '') ? '—' : `${it.price} ${it.price_effect || ''}`.trim();
         tr.innerHTML = `
           <td>${it.id ?? ''}</td>
           <td>${it.status ?? ''}</td>
           <td>${it.underlying ?? ''}</td>
-          <td>${it.qty ?? ''}</td>
-          <td>${it.opened_at_utc ?? ''}</td>
-          <td>${it.closed_at_utc ?? ''}</td>
-          <td>${exFmtMoney(it.pnl_realized_usd)}</td>
+          <td>${it.size ?? ''}</td>
+          <td>${it.received_at ?? ''}</td>
+          <td>${it.terminal_at ?? ''}</td>
+          <td>${px}</td>
         `;
         tb.appendChild(tr);
       }
@@ -3714,10 +3715,16 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     async function exRefreshTradeHistory() {
       const limit = Number(document.getElementById('exHistLimit')?.value || 200);
-      const [sb, lv] = await Promise.all([
-        jget(`/api/execution/trades/history?environment=sandbox&limit=${encodeURIComponent(limit)}`),
-        jget(`/api/execution/trades/history?environment=live&limit=${encodeURIComponent(limit)}`),
-      ]);
+
+      async function fetchEnv(env) {
+        try {
+          return await jget(`/api/execution/broker/orders?environment=${encodeURIComponent(env)}&limit=${encodeURIComponent(limit)}`);
+        } catch (e) {
+          return { environment: env, items: [], error: String(e && e.message ? e.message : e) };
+        }
+      }
+
+      const [sb, lv] = await Promise.all([fetchEnv('sandbox'), fetchEnv('live')]);
       exRenderTradeHistoryTable('exHistSandboxTable', sb.items || []);
       exRenderTradeHistoryTable('exHistLiveTable', lv.items || []);
       const sbc = document.getElementById('exHistSandboxCount');

@@ -1839,6 +1839,98 @@ def create_app() -> FastAPI:
             })
         return {'items': items}
 
+    @app.get('/api/execution/broker/orders')
+    def execution_broker_orders(
+        environment: str | None = Query(None, pattern='^(sandbox|live)$'),
+        status: str | None = Query(None),
+        limit: int = Query(200, ge=1, le=2000),
+    ) -> dict[str, Any]:
+        from options_ai.brokers.tastytrade.client import TastytradeClient
+
+        env = str((environment or cfg.broker_env) or cfg.broker_env).strip().lower()
+        if env not in {'sandbox', 'live'}:
+            raise HTTPException(status_code=400, detail='environment must be sandbox|live')
+
+        if env == 'sandbox':
+            base_url = str(cfg.tasty_sandbox_base_url or cfg.tasty_base_url).strip()
+            account_number = str(cfg.tasty_sandbox_account_number or os.getenv('TASTY_ACCOUNT_NUMBER', '') or '').strip()
+        else:
+            base_url = str(cfg.tasty_live_base_url or cfg.tasty_base_url).strip()
+            account_number = str(cfg.tasty_live_account_number or os.getenv('TASTY_ACCOUNT_NUMBER', '') or '').strip()
+
+        if not account_number:
+            raise HTTPException(status_code=400, detail=f'missing account number for environment={env}')
+
+        client = TastytradeClient(
+            base_url=base_url,
+            environment=env,
+            account_number=account_number,
+            dry_run=False,
+            target_api_version=cfg.target_api_version,
+        )
+
+        try:
+            client.authenticate()
+
+            per_page = min(100, int(limit))
+            page_offset = 0
+            all_items: list[dict[str, Any]] = []
+            while len(all_items) < int(limit):
+                params: dict[str, Any] = {'per-page': per_page, 'page-offset': page_offset}
+                if status:
+                    params['status'] = str(status)
+                resp = client._request('GET', f"/accounts/{account_number}/orders", params=params)
+                data = resp.get('data') if isinstance(resp, dict) else None
+                items = (data.get('items') if isinstance(data, dict) else None) or []
+                if not isinstance(items, list):
+                    items = []
+                all_items.extend([it for it in items if isinstance(it, dict)])
+
+                pg = resp.get('pagination') if isinstance(resp, dict) else None
+                total_pages = int(pg.get('total-pages') or 0) if isinstance(pg, dict) else 0
+
+                if total_pages > 0:
+                    if page_offset + 1 < total_pages:
+                        page_offset += 1
+                        continue
+                    break
+
+                if len(items) == per_page and len(items) > 0:
+                    page_offset += 1
+                    continue
+                break
+
+            trimmed = all_items[: int(limit)]
+            out_items = []
+            for it in trimmed:
+                out_items.append({
+                    'id': it.get('id') or it.get('order-id'),
+                    'status': it.get('status'),
+                    'underlying': it.get('underlying-symbol') or it.get('underlying_symbol'),
+                    'size': it.get('size'),
+                    'order_type': it.get('order-type') or it.get('order_type'),
+                    'price': it.get('price'),
+                    'price_effect': it.get('price-effect') or it.get('price_effect'),
+                    'time_in_force': it.get('time-in-force') or it.get('time_in_force'),
+                    'received_at': it.get('received-at') or it.get('received_at'),
+                    'terminal_at': it.get('terminal-at') or it.get('terminal_at'),
+                    'cancelled_at': it.get('cancelled-at') or it.get('cancelled_at'),
+                    'client_order_id': it.get('client-order-id') or it.get('client_order_id'),
+                })
+
+            return {
+                'environment': env,
+                'source': 'tastytrade_api',
+                'base_url': base_url,
+                'account_number': account_number,
+                'count': len(out_items),
+                'items': out_items,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f'broker fetch failed: {e}')
+
     @app.get('/api/execution/trades/history')
     def execution_trades_history(
         environment: str | None = Query(None, pattern='^(sandbox|live)$'),

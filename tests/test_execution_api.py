@@ -80,3 +80,8 @@ def test_execution_endpoints_smoke(tmp_path: Path, monkeypatch):
     r15 = client.get("/api/execution/trades/history?environment=live&limit=10")
     assert r15.status_code == 200
     assert r15.json()["environment"] == "live"
+
+
+    r16 = client.get("/api/execution/broker/orders?environment=sandbox&limit=10")
+    assert r16.status_code == 400
+    assert "missing account number" in r16.text
