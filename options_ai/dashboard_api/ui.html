@@ -1630,7 +1630,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       try { document.title = `Nate's Option Dashboard — ${view}`; } catch {}
       if (view === 'processing') { safe('processing', () => refreshProcessing()); }
-      if (view === 'paramgroup') { safe('ex_accounts', () => exRefreshAccounts()); }
+      if (view === 'paramgroup' || view === 'execution') { safe('ex_accounts', () => exRefreshAccounts()); }
       if (view === 'paramtest' && !btRunsEverLoaded) { safe('bt_runs', () => btRefreshRuns()); }
     }
 
@@ -5437,6 +5437,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       exApplyTooltips();
       await safe('ex_risk', () => exRefreshRiskSession());
       await safe('ex_kpis', () => exRefreshKpis());
+      await safe('ex_accounts', () => exRefreshAccounts());
       await safe('ex_reprice', () => exLoadRepricePolicy());
       await safe('ex_trades', () => exRefreshOpenTrades());
       await safe('ex_trade_history', () => exRefreshTradeHistory());
