@@ -3639,13 +3639,18 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     async function pfUnpairGroupAccount(pid) {
       const ok = confirm('Unpair this group from its execution account? You will need to re-pair before emitting signals.');
       if (!ok) return;
-      const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
-      const env = String((it && it.paired_environment) || 'sandbox');
-      await jput(`/api/portfolios/${pid}`, { paired_environment: env, paired_account_label: '' });
-      await pfReloadPortfolios();
-      toast('group unpaired from account', 'warn');
-      const note = document.getElementById(`pfCardNote-${pid}`);
-      if (note) note.textContent = 'account unpaired';
+      try {
+        // Only clear pairing label; keep existing environment unchanged server-side.
+        await jput(`/api/portfolios/${pid}`, { paired_account_label: '' });
+        await pfReloadPortfolios();
+        toast('group unpaired from account', 'warn');
+        const note = document.getElementById(`pfCardNote-${pid}`);
+        if (note) note.textContent = 'account unpaired';
+      } catch (e) {
+        const msg = String(e?.message || e || 'unpair failed');
+        toast(`unpair failed: ${msg}`, 'error');
+        throw e;
+      }
     }
 
     async function pfSaveGroupAccountPair(pid) {
