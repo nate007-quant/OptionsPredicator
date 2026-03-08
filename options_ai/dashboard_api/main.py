@@ -3,6 +3,9 @@ from __future__ import annotations
 import os
 import json as _json
 import logging
+import subprocess
+import threading
+import uuid
 import sqlite3
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
@@ -15,7 +18,7 @@ try:
 except Exception:  # pragma: no cover
     psycopg = None  # type: ignore
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Header
 from fastapi.responses import HTMLResponse
 from fastapi import Response
 from fastapi.staticfiles import StaticFiles
@@ -3287,6 +3290,871 @@ def create_app() -> FastAPI:
                         "p_bigwin": float(r[11]) if r[11] is not None else None,
                     })
         return {"items": items, "tz": "America/Chicago", "anchor_policy": anchor_policy}
+
+
+    _service_ops: dict[str, dict[str, Any]] = {}
+    _service_ops_lock = threading.Lock()
+    _health_gate: dict[str, dict[str, Any]] = {}
+
+    def _now_utc() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _parse_window_seconds(window: str | None) -> int:
+        w = (window or '15m').strip().lower()
+        m = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '24h': 86400, '7d': 604800}
+        if w in m:
+            return m[w]
+        try:
+            if w.endswith('m'):
+                return max(60, int(float(w[:-1]) * 60))
+            if w.endswith('h'):
+                return max(60, int(float(w[:-1]) * 3600))
+            if w.endswith('d'):
+                return max(60, int(float(w[:-1]) * 86400))
+        except Exception:
+            pass
+        return 900
+
+    def _read_thresholds() -> dict[str, Any]:
+        defaults = {
+            'lag_minutes': {'green_max': 5, 'yellow_max': 15},
+            'error_rate_pct': {'green_max': 1, 'yellow_max': 3},
+            'oldest_inflight_multiple': {'green_max': 2, 'yellow_max': 4},
+            'cpu_pct': {'yellow_min': 85, 'red_min': 95},
+            'memory_pct': {'yellow_min': 80, 'red_min': 90},
+            'restart_24h': {'yellow_min': 2, 'red_min': 5},
+            'heartbeat_age_sec': {'yellow_min': 30, 'red_min': 90},
+            'query_runtime_sec': {'green_max': 5, 'yellow_max': 30},
+            'query_blocked_sec_red': 10,
+        }
+        raw = os.getenv('PROCESSING_THRESHOLDS_JSON', '').strip()
+        if not raw:
+            return defaults
+        try:
+            obj = _json.loads(raw)
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k in defaults and isinstance(v, dict) and isinstance(defaults[k], dict):
+                        defaults[k].update(v)
+                    else:
+                        defaults[k] = v
+        except Exception:
+            pass
+        return defaults
+
+    def _color_from_max(value: float | None, green_max: float, yellow_max: float) -> str:
+        if value is None:
+            return 'yellow'
+        if value <= green_max:
+            return 'green'
+        if value <= yellow_max:
+            return 'yellow'
+        return 'red'
+
+    def _color_from_min(value: float | None, yellow_min: float, red_min: float) -> str:
+        if value is None:
+            return 'yellow'
+        if value >= red_min:
+            return 'red'
+        if value >= yellow_min:
+            return 'yellow'
+        return 'green'
+
+    def _apply_antiflap(key: str, next_state: str) -> str:
+        st = _health_gate.get(key) or {'state': 'green', 'healthy_streak': 0}
+        curr = str(st.get('state') or 'green')
+        if next_state in {'red', 'yellow'}:
+            st['state'] = next_state
+            st['healthy_streak'] = 0
+            _health_gate[key] = st
+            return next_state
+        if curr == 'green':
+            st['healthy_streak'] = min(3, int(st.get('healthy_streak') or 0) + 1)
+            _health_gate[key] = st
+            return 'green'
+        streak = int(st.get('healthy_streak') or 0) + 1
+        if streak >= 3:
+            st['state'] = 'green'
+            st['healthy_streak'] = 3
+            _health_gate[key] = st
+            return 'green'
+        st['healthy_streak'] = streak
+        _health_gate[key] = st
+        return curr
+
+    def _overall_health(colors: list[str]) -> str:
+        if any(c == 'red' for c in colors):
+            return 'red'
+        if any(c == 'yellow' for c in colors):
+            return 'yellow'
+        return 'green'
+
+    def _iso_or_none(dt: datetime | None) -> str | None:
+        if dt is None:
+            return None
+        return dt.replace(microsecond=0).isoformat()
+
+    def _load_seen_state() -> dict[str, Any]:
+        pth = data_root / 'state' / 'seen_files.json'
+        if not pth.exists():
+            return {}
+        try:
+            return _json.loads(pth.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+
+    def _load_processing_summary(window: str = '15m') -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        now = _now_utc()
+        th = _read_thresholds()
+
+        incoming_dir = data_root / 'incoming' / 'SPX'
+        queue_files = []
+        if incoming_dir.exists():
+            try:
+                queue_files = [p for p in incoming_dir.glob('*.json') if p.is_file()]
+            except Exception:
+                queue_files = []
+        queue_depth_total = len(queue_files)
+        newest_incoming_ts = None
+        if queue_files:
+            try:
+                newest_incoming_ts = datetime.fromtimestamp(max(p.stat().st_mtime for p in queue_files), tz=timezone.utc)
+            except Exception:
+                newest_incoming_ts = None
+
+        processing_items = []
+        current_task_path = data_root / 'state' / 'current_task.json'
+        if current_task_path.exists():
+            try:
+                obj = _json.loads(current_task_path.read_text(encoding='utf-8'))
+                if isinstance(obj, dict) and obj.get('file'):
+                    processing_items.append(obj)
+            except Exception:
+                pass
+
+        inflight_count = len(processing_items)
+        oldest_inflight_age_sec = None
+        if processing_items:
+            ages = []
+            for it in processing_items:
+                try:
+                    dt = datetime.fromisoformat(str(it.get('started_at')).replace('Z', '+00:00'))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    ages.append(max(0.0, (now - dt.astimezone(timezone.utc)).total_seconds()))
+                except Exception:
+                    continue
+            if ages:
+                oldest_inflight_age_sec = max(ages)
+
+        cutoff = (now - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        processed_total = 0
+        success_total = 0
+        failed_total = 0
+        retried_total = 0
+        total_predictions = 0
+        total_scored = 0
+        unscored = 0
+        with _connect(db_path) as con:
+            try:
+                r = con.execute(
+                    """
+                    SELECT
+                      COUNT(*) AS processed_total,
+                      SUM(CASE WHEN result='correct' THEN 1 ELSE 0 END) AS success_total,
+                      SUM(CASE WHEN result='wrong_direction' THEN 1 ELSE 0 END) AS failed_total,
+                      SUM(CASE WHEN outcome_notes LIKE '%retry%' THEN 1 ELSE 0 END) AS retried_total
+                    FROM predictions
+                    WHERE COALESCE(scored_at, observed_ts_utc, timestamp) >= ?
+                    """,
+                    (cutoff,),
+                ).fetchone()
+                processed_total = int(r['processed_total'] or 0)
+                success_total = int(r['success_total'] or 0)
+                failed_total = int(r['failed_total'] or 0)
+                retried_total = int(r['retried_total'] or 0)
+            except Exception:
+                pass
+            try:
+                r = con.execute("SELECT COUNT(*) n FROM predictions").fetchone()
+                total_predictions = int(r['n'] or 0)
+                r = con.execute("SELECT COUNT(*) n FROM predictions WHERE result IS NOT NULL").fetchone()
+                total_scored = int(r['n'] or 0)
+                unscored = max(0, total_predictions - total_scored)
+            except Exception:
+                pass
+
+        throughput_items_per_min = float(processed_total) / max(1.0, ws / 60.0)
+        error_rate = float(failed_total) / max(float(processed_total), 1.0)
+
+        seen = _load_seen_state()
+        newest_processed = None
+        try:
+            keys = list((seen.get('snapshot_index') or {}).keys())
+            if keys:
+                newest_processed = datetime.fromisoformat(str(max(keys)).replace('Z', '+00:00'))
+                if newest_processed.tzinfo is None:
+                    newest_processed = newest_processed.replace(tzinfo=timezone.utc)
+        except Exception:
+            newest_processed = None
+
+        freshness_lag_sec = 0.0
+        if newest_incoming_ts and newest_processed:
+            freshness_lag_sec = max(0.0, (newest_incoming_ts - newest_processed.astimezone(timezone.utc)).total_seconds())
+        elif newest_incoming_ts and not newest_processed:
+            freshness_lag_sec = max(0.0, (now - newest_incoming_ts).total_seconds())
+
+        expected_p95_sec = float(os.getenv('PROCESSING_EXPECTED_P95_SEC', '30') or '30')
+        inflight_multiple = None
+        if oldest_inflight_age_sec is not None:
+            inflight_multiple = oldest_inflight_age_sec / max(expected_p95_sec, 1.0)
+
+        lag_color = _color_from_max(freshness_lag_sec / 60.0, th['lag_minutes']['green_max'], th['lag_minutes']['yellow_max'])
+        err_color = _color_from_max(error_rate * 100.0, th['error_rate_pct']['green_max'], th['error_rate_pct']['yellow_max'])
+        inflight_color = _color_from_max(inflight_multiple, th['oldest_inflight_multiple']['green_max'], th['oldest_inflight_multiple']['yellow_max'])
+
+        likely_cause = None
+        if lag_color != 'green' and queue_depth_total > max(20, int(throughput_items_per_min * 2)):
+            likely_cause = 'Backlog rising at ingest stage'
+        elif err_color != 'green':
+            likely_cause = 'Error rate spike in scoring pipeline'
+        elif inflight_color == 'red':
+            likely_cause = 'Potential stuck inflight work'
+
+        overall = _overall_health([lag_color, err_color, inflight_color])
+        overall = _apply_antiflap('processing_overall', overall)
+
+        last_update_age = 0.0
+        if newest_processed:
+            last_update_age = max(0.0, (now - newest_processed.astimezone(timezone.utc)).total_seconds())
+
+        return {
+            'window': window,
+            'window_seconds': ws,
+            'generated_at': _now_central_iso(),
+            'thresholds': th,
+            'overall_health': overall,
+            'likely_cause': likely_cause,
+            'kpis': {
+                'freshness_lag_sec': freshness_lag_sec,
+                'freshness_lag_color': lag_color,
+                'inflight_count': inflight_count,
+                'oldest_inflight_age_sec': oldest_inflight_age_sec,
+                'oldest_inflight_color': inflight_color,
+                'queue_depth_total': queue_depth_total,
+                'throughput_items_per_min': throughput_items_per_min,
+                'processed_total': processed_total,
+                'success_total': success_total,
+                'failed_total': failed_total,
+                'retried_total': retried_total,
+                'error_rate': error_rate,
+                'error_rate_color': err_color,
+                'success_rate': float(success_total) / max(float(processed_total), 1.0),
+                'total_predictions': total_predictions,
+                'total_scored': total_scored,
+                'unscored': unscored,
+            },
+            'freshness': {
+                'newest_incoming_ts': _to_central_iso(_iso_or_none(newest_incoming_ts)),
+                'processed_watermark_ts': _to_central_iso(_iso_or_none(newest_processed)),
+                'last_update_age_sec': last_update_age,
+                'stale_data': last_update_age > 45,
+            },
+            'inflight': {'count': inflight_count, 'items': processing_items},
+        }
+
+    def _resolution_seconds(value: str | None) -> int:
+        v = (value or '5m').strip().lower()
+        m = {'1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600}
+        return m.get(v, 300)
+
+    @app.get('/api/metrics')
+    def metrics_catalog() -> dict[str, Any]:
+        return {
+            'ok': True,
+            'generated_at': _now_central_iso(),
+            'thresholds': _read_thresholds(),
+            'windows_supported': ['1m', '5m', '15m', '1h', '24h', '7d'],
+            'resolutions_supported': ['1m', '5m', '15m', '30m', '1h'],
+        }
+
+    @app.get('/api/metrics/processing/summary')
+    def metrics_processing_summary(window: str = Query('15m')) -> dict[str, Any]:
+        return _load_processing_summary(window)
+
+    @app.get('/api/metrics/processing/timeseries')
+    def metrics_processing_timeseries(window: str = Query('24h'), resolution: str = Query('5m')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        rs = _resolution_seconds(resolution)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        rows: list[dict[str, Any]] = []
+        with _connect(db_path) as con:
+            q = con.execute(
+                """
+                SELECT
+                  datetime((strftime('%s', COALESCE(observed_ts_utc, timestamp)) / ?) * ?, 'unixepoch') AS bucket_start_utc,
+                  COUNT(*) AS processed,
+                  SUM(CASE WHEN result='wrong_direction' THEN 1 ELSE 0 END) AS failed
+                FROM predictions
+                WHERE COALESCE(observed_ts_utc, timestamp) >= ?
+                GROUP BY bucket_start_utc
+                ORDER BY bucket_start_utc ASC
+                """,
+                (int(rs), int(rs), cutoff),
+            ).fetchall()
+            for r in q:
+                processed = int(r['processed'] or 0)
+                failed = int(r['failed'] or 0)
+                rows.append({
+                    'bucket_start': _to_central_iso(str(r['bucket_start_utc']) + '+00:00'),
+                    'lag_sec': None,
+                    'throughput_items_per_min': float(processed) / max(1.0, rs / 60.0),
+                    'error_rate': float(failed) / max(float(processed), 1.0),
+                })
+        return {'window': window, 'resolution': resolution, 'series': rows}
+
+    @app.get('/api/metrics/processing/pipeline')
+    def metrics_processing_pipeline(window: str = Query('15m')) -> dict[str, Any]:
+        pp = status_pipelines(window=max(50, min(5000, int(_parse_window_seconds(window) / 3))))
+        stage_names = [
+            ('option_chain', 'Ingest'),
+            ('chain_features_0dte', 'Validate'),
+            ('chain_labels_0dte', 'Transform'),
+            ('debit_candidates_0dte', 'Strategy Build'),
+            ('debit_labels_0dte', 'Backtest Queue'),
+            ('debit_scores_0dte', 'Complete'),
+        ]
+        stages = []
+        worst = ('green', None)
+        for key, label in stage_names:
+            lag_min = (pp.get('lags_minutes') or {}).get(key)
+            color = _color_from_max(float(lag_min) if lag_min is not None else None, 5.0, 15.0)
+            if color == 'red':
+                worst = ('red', label)
+            elif color == 'yellow' and worst[0] != 'red':
+                worst = ('yellow', label)
+            stages.append({
+                'key': key,
+                'label': label,
+                'lag_minutes': lag_min,
+                'status_color': color,
+                'inflight': None,
+                'success': None,
+                'fail': None,
+                'retry': None,
+                'p95_latency_ms': None,
+                'likely_cause': 'Backlog at stage' if color != 'green' else None,
+            })
+        return {
+            'window': window,
+            'generated_at': _now_central_iso(),
+            'stages': stages,
+            'bottleneck_stage': worst[1],
+            'bottleneck_status': worst[0],
+            'raw': pp,
+        }
+
+    @app.get('/api/metrics/processing/stages')
+    def metrics_processing_stages(window: str = Query('15m')) -> dict[str, Any]:
+        p = metrics_processing_pipeline(window=window)
+        return {'window': window, 'stages': p.get('stages') or []}
+
+    @app.get('/api/metrics/processing/errors/top')
+    def metrics_processing_errors_top(window: str = Query('24h')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT event, component, COUNT(*) AS n
+                FROM system_events
+                WHERE timestamp >= ? AND upper(level) IN ('ERROR','CRITICAL')
+                GROUP BY event, component
+                ORDER BY n DESC
+                LIMIT 20
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {'window': window, 'items': [{'event': r['event'], 'component': r['component'], 'count': int(r['n'] or 0)} for r in rows]}
+
+    def _default_services() -> list[dict[str, Any]]:
+        return [
+            {'id': 'options_ai_watcher', 'name': 'options_ai_watcher', 'stage': 'Ingest', 'group': 'pipeline', 'critical': True, 'log_name': 'watcher'},
+            {'id': 'options_ai_scorer', 'name': 'options_ai_scorer', 'stage': 'Transform', 'group': 'pipeline', 'critical': True, 'log_name': 'scoring'},
+            {'id': 'options_ai_dashboard_api', 'name': 'options_ai_dashboard_api', 'stage': 'Control', 'group': 'control', 'critical': True, 'log_name': 'dashboard_api'},
+            {'id': 'options_ai_backtester', 'name': 'options_ai_backtester', 'stage': 'Backtest Queue', 'group': 'backtest', 'critical': False, 'log_name': 'backtest'},
+        ]
+
+    def _load_services_registry() -> list[dict[str, Any]]:
+        raw = os.getenv('PROCESSING_SERVICES_JSON', '').strip()
+        if not raw:
+            return _default_services()
+        try:
+            obj = _json.loads(raw)
+            if isinstance(obj, list):
+                out = []
+                for it in obj:
+                    if not isinstance(it, dict):
+                        continue
+                    sid = str(it.get('id') or it.get('name') or '').strip()
+                    if not sid:
+                        continue
+                    out.append({
+                        'id': sid,
+                        'name': str(it.get('name') or sid),
+                        'stage': str(it.get('stage') or 'Unknown'),
+                        'group': str(it.get('group') or 'misc'),
+                        'critical': bool(it.get('critical', False)),
+                        'log_name': str(it.get('log_name') or sid),
+                    })
+                if out:
+                    return out
+        except Exception:
+            pass
+        return _default_services()
+
+    def _service_show(service: str) -> dict[str, Any]:
+        out = {
+            'active_state': 'unknown',
+            'sub_state': 'unknown',
+            'main_pid': None,
+            'memory_current': None,
+            'cpu_usage_nsec': None,
+            'n_restarts': 0,
+            'active_enter_ts': None,
+            'exec_main_start_ts': None,
+        }
+        try:
+            p = subprocess.run(
+                ['systemctl', 'show', service, '--property=ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec,NRestarts,ActiveEnterTimestamp,ExecMainStartTimestamp'],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if p.returncode != 0:
+                return out
+            for line in p.stdout.splitlines():
+                if '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                v = v.strip()
+                if k == 'ActiveState':
+                    out['active_state'] = v or 'unknown'
+                elif k == 'SubState':
+                    out['sub_state'] = v or 'unknown'
+                elif k == 'MainPID':
+                    out['main_pid'] = int(v) if v.isdigit() else None
+                elif k == 'MemoryCurrent':
+                    out['memory_current'] = int(v) if v.isdigit() else None
+                elif k == 'CPUUsageNSec':
+                    out['cpu_usage_nsec'] = int(v) if v.isdigit() else None
+                elif k == 'NRestarts':
+                    out['n_restarts'] = int(v) if v.isdigit() else 0
+                elif k == 'ActiveEnterTimestamp':
+                    out['active_enter_ts'] = v or None
+                elif k == 'ExecMainStartTimestamp':
+                    out['exec_main_start_ts'] = v or None
+        except Exception:
+            pass
+        return out
+
+    def _service_color(active_state: str, heartbeat_age_sec: float | None, restarts_24h: int, oom_events_24h: int) -> str:
+        th = _read_thresholds()
+        if oom_events_24h > 0:
+            return 'red'
+        if active_state not in {'active', 'activating'}:
+            return 'red'
+        hb = _color_from_min(heartbeat_age_sec, th['heartbeat_age_sec']['yellow_min'], th['heartbeat_age_sec']['red_min'])
+        rr = _color_from_min(float(restarts_24h), th['restart_24h']['yellow_min'], th['restart_24h']['red_min'])
+        return _overall_health([hb, rr])
+
+    def _collect_services() -> list[dict[str, Any]]:
+        services = _load_services_registry()
+        now = _now_utc()
+        out = []
+        for it in services:
+            show = _service_show(it['name'])
+            hb_age = None
+            uptime_sec = None
+            if show.get('active_enter_ts'):
+                try:
+                    dt = datetime.strptime(str(show['active_enter_ts']), '%a %Y-%m-%d %H:%M:%S %Z')
+                    dt = dt.replace(tzinfo=timezone.utc)
+                    hb_age = max(0.0, (now - dt).total_seconds())
+                    uptime_sec = hb_age
+                except Exception:
+                    pass
+            restarts = int(show.get('n_restarts') or 0)
+            oom = 0
+            color = _service_color(str(show.get('active_state') or 'unknown'), hb_age, restarts, oom)
+            out.append({
+                **it,
+                'status': str(show.get('active_state') or 'unknown'),
+                'status_color': color,
+                'heartbeat_age_sec': hb_age,
+                'uptime_sec': uptime_sec,
+                'version': os.getenv('OPTIONS_AI_VERSION', 'unknown'),
+                'instance_count': 1,
+                'cpu_util_pct': None,
+                'memory_util_pct': None,
+                'memory_bytes': show.get('memory_current'),
+                'restart_count_24h': restarts,
+                'oom_events_24h': oom,
+                'crash_loop_flag': restarts >= 3,
+            })
+        return out
+
+    def _require_role(role: str, needed: set[str]) -> None:
+        if role not in needed:
+            raise HTTPException(status_code=403, detail=f'role {role} not allowed')
+
+    def _run_service_action(op_id: str, service_name: str, action: str) -> None:
+        final_status = 'failed'
+        message = ''
+        try:
+            cmd = ['systemctl', action, service_name]
+            p = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=20)
+            if p.returncode == 0:
+                final_status = 'succeeded'
+                message = (p.stdout or '').strip() or 'ok'
+            else:
+                message = ((p.stderr or '').strip() or (p.stdout or '').strip() or f'rc={p.returncode}')
+        except Exception as e:
+            message = str(e)
+        with _service_ops_lock:
+            item = _service_ops.get(op_id) or {}
+            item['status'] = final_status
+            item['finished_at'] = _now_utc_iso()
+            item['message'] = message
+            _service_ops[op_id] = item
+
+    @app.get('/api/services')
+    def services_list(window: str = Query('15m')) -> dict[str, Any]:
+        return {'window': window, 'generated_at': _now_central_iso(), 'items': _collect_services()}
+
+    @app.get('/api/services/{service_id}/logs')
+    def services_logs(service_id: str, tail: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+        svc = next((x for x in _load_services_registry() if x['id'] == service_id), None)
+        if not svc:
+            raise HTTPException(status_code=404, detail='service not found')
+        name = str(svc.get('log_name') or svc.get('name'))
+        path = logs_root / f'{name}.log'
+        if not path.exists():
+            return {'service_id': service_id, 'tail': []}
+        try:
+            lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()[-int(tail):]
+        except Exception:
+            lines = []
+        return {'service_id': service_id, 'tail': lines}
+
+    @app.get('/api/services/operations/{operation_id}')
+    def services_operation(operation_id: str) -> dict[str, Any]:
+        with _service_ops_lock:
+            it = _service_ops.get(operation_id)
+        if not it:
+            raise HTTPException(status_code=404, detail='operation not found')
+        return {'operation_id': operation_id, **it}
+
+
+    def _service_action(service_id: str, action: str, role: str, body: dict[str, Any] | None) -> dict[str, Any]:
+        _require_role(role, {'operator', 'admin'})
+        svc = next((x for x in _load_services_registry() if x['id'] == service_id), None)
+        if not svc:
+            raise HTTPException(status_code=404, detail='service not found')
+        if action in {'stop', 'restart'} and svc.get('critical'):
+            if role != 'admin':
+                raise HTTPException(status_code=403, detail='critical service action requires admin role')
+            chk = str((body or {}).get('confirm_critical') or '')
+            if chk != str(svc.get('name')):
+                raise HTTPException(status_code=400, detail='confirm_critical must match service name for critical actions')
+        confirm = str((body or {}).get('confirm') or '').upper()
+        if confirm != 'YES':
+            raise HTTPException(status_code=400, detail='confirmation required: confirm=YES')
+
+        op_id = str(uuid.uuid4())
+        item = {
+            'service_id': service_id,
+            'service_name': svc['name'],
+            'action': action,
+            'status': 'running',
+            'started_at': _now_utc_iso(),
+            'requested_by_role': role,
+        }
+        with _service_ops_lock:
+            _service_ops[op_id] = item
+
+        _audit_execution(actor=f'dashboard_api:{role}', action=f'service_{action}', entity_type='service', entity_id=str(service_id), details={'service_name': svc['name'], 'operation_id': op_id})
+
+        t = threading.Thread(target=_run_service_action, args=(op_id, svc['name'], action), daemon=True)
+        t.start()
+        return {'operation_id': op_id, 'status': 'accepted'}
+
+    def _service_global_action(action: str, role: str, body: dict[str, Any] | None) -> dict[str, Any]:
+        _require_role(role, {'operator', 'admin'})
+        items = _collect_services()
+
+        if action == 'restart-unhealthy':
+            targets = [x for x in items if str(x.get('status_color')) in {'red', 'yellow'}]
+            svc_action = 'restart'
+        elif action == 'start-safe':
+            targets = [x for x in items if str(x.get('status')) not in {'active', 'activating'} and not bool(x.get('critical'))]
+            svc_action = 'start'
+        elif action == 'stop-non-critical':
+            targets = [x for x in items if str(x.get('status')) in {'active', 'activating'} and not bool(x.get('critical'))]
+            svc_action = 'stop'
+        else:
+            raise HTTPException(status_code=404, detail='unknown global action')
+
+        out = []
+        for svc in targets:
+            op = _service_action(str(svc.get('id')), svc_action, role, body)
+            out.append({'service_id': svc.get('id'), 'operation_id': op.get('operation_id')})
+
+        _audit_execution(
+            actor=f'dashboard_api:{role}',
+            action=f'service_global_{action}',
+            entity_type='service_group',
+            entity_id=action,
+            details={'count': len(out), 'service_ids': [x.get('service_id') for x in out]},
+        )
+        return {'status': 'accepted', 'count': len(out), 'operations': out}
+
+    @app.post('/api/services/{service_id}/start')
+    def services_start(service_id: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        return _service_action(service_id, 'start', str(x_role or 'viewer').lower(), body)
+
+    @app.post('/api/services/{service_id}/stop')
+    def services_stop(service_id: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        return _service_action(service_id, 'stop', str(x_role or 'viewer').lower(), body)
+
+    @app.post('/api/services/{service_id}/restart')
+    def services_restart(service_id: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        return _service_action(service_id, 'restart', str(x_role or 'viewer').lower(), body)
+
+    @app.post('/api/services/{service_id}/drain')
+    def services_drain(service_id: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        _require_role(str(x_role or 'viewer').lower(), {'operator', 'admin'})
+        _audit_execution(actor=f'dashboard_api:{x_role}', action='service_drain', entity_type='service', entity_id=service_id, details=body or {})
+        return {'operation_id': str(uuid.uuid4()), 'status': 'accepted', 'note': 'drain requested (no-op in v1)'}
+
+    @app.post('/api/services/actions/{action}')
+    def services_global_action(action: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        return _service_global_action(str(action), str(x_role or 'viewer').lower(), body)
+
+    @app.get('/api/metrics/dependencies')
+    def metrics_dependencies(window: str = Query('15m')) -> dict[str, Any]:
+        db_ok = True
+        db_error = None
+        try:
+            with _connect(db_path) as con:
+                con.execute('SELECT 1').fetchone()
+        except Exception as e:
+            db_ok = False
+            db_error = str(e)
+        deps = [
+            {'name': 'database', 'type': 'db', 'status_color': ('green' if db_ok else 'red'), 'metrics': {'latency_p95_ms': None, 'error_rate': 0.0 if db_ok else 1.0}, 'error': db_error},
+            {'name': 'broker', 'type': 'broker', 'status_color': 'green', 'metrics': {'consumer_lag': None}},
+            {'name': 'storage', 'type': 'storage', 'status_color': 'green', 'metrics': {'read_p95_ms': None, 'write_p95_ms': None}},
+            {'name': 'external_api', 'type': 'api', 'status_color': 'yellow', 'metrics': {'timeout_rate': None, 'error_rate': None}},
+        ]
+        return {'window': window, 'generated_at': _now_central_iso(), 'items': deps}
+
+    @app.get('/api/metrics/database/summary')
+    def metrics_database_summary(window: str = Query('15m')) -> dict[str, Any]:
+        dsn = _pg_dsn()
+        if not dsn:
+            return {
+                'window': window,
+                'engine': 'sqlite',
+                'availability': True,
+                'connections_active': None,
+                'connections_max': None,
+                'query_latency_p50_ms': None,
+                'query_latency_p95_ms': None,
+                'slow_queries_per_min': None,
+                'lock_wait_p95_ms': None,
+                'deadlocks': None,
+                'replication_lag_sec': None,
+                'disk_usage_pct': None,
+                'read_iops': None,
+                'write_iops': None,
+                'cache_hit_ratio': None,
+            }
+        try:
+            with _pg_connect(dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute('SELECT count(*) FROM pg_stat_activity')
+                    active = int(cur.fetchone()[0] or 0)
+                    cur.execute('SHOW max_connections')
+                    maxc = int(cur.fetchone()[0] or 0)
+            return {
+                'window': window,
+                'engine': 'postgres',
+                'availability': True,
+                'connections_active': active,
+                'connections_max': maxc,
+                'query_latency_p50_ms': None,
+                'query_latency_p95_ms': None,
+                'slow_queries_per_min': None,
+                'lock_wait_p95_ms': None,
+                'deadlocks': None,
+                'replication_lag_sec': None,
+                'disk_usage_pct': None,
+                'read_iops': None,
+                'write_iops': None,
+                'cache_hit_ratio': None,
+            }
+        except Exception as e:
+            return {'window': window, 'engine': 'postgres', 'availability': False, 'error': str(e)}
+
+    @app.get('/api/metrics/database/queries/long-running')
+    def metrics_database_long_running(window: str = Query('15m')) -> dict[str, Any]:
+        dsn = _pg_dsn()
+        items: list[dict[str, Any]] = []
+        if dsn:
+            try:
+                th = _read_thresholds()
+                with _pg_connect(dsn) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT
+                              left(regexp_replace(query, '\s+', ' ', 'g'), 200) AS query_fingerprint,
+                              extract(epoch from (now() - query_start)) AS runtime_sec,
+                              usename,
+                              state,
+                              wait_event_type,
+                              wait_event
+                            FROM pg_stat_activity
+                            WHERE query_start IS NOT NULL
+                              AND state <> 'idle'
+                            ORDER BY runtime_sec DESC
+                            LIMIT 50
+                            """
+                        )
+                        for r in cur.fetchall():
+                            runtime = float(r[1] or 0.0)
+                            blocked = (str(r[4] or '').lower() == 'lock')
+                            color = _color_from_max(runtime, th['query_runtime_sec']['green_max'], th['query_runtime_sec']['yellow_max'])
+                            if blocked and runtime > float(th.get('query_blocked_sec_red', 10)):
+                                color = 'red'
+                            items.append({
+                                'query_fingerprint': r[0],
+                                'current_runtime_sec': runtime,
+                                'total_executions': None,
+                                'avg_latency_ms': None,
+                                'p95_latency_ms': None,
+                                'rows_scanned': None,
+                                'rows_returned': None,
+                                'lock_wait_sec': runtime if blocked else 0.0,
+                                'blocked_by': None,
+                                'blocking_count': None,
+                                'source_service_user': r[2],
+                                'status': 'blocked' if blocked else str(r[3] or 'running'),
+                                'status_color': color,
+                            })
+            except Exception:
+                items = []
+        return {'window': window, 'items': items}
+
+    @app.get('/api/metrics/database/queries/blocked')
+    def metrics_database_blocked(window: str = Query('15m')) -> dict[str, Any]:
+        lr = metrics_database_long_running(window=window)
+        blocked = [x for x in (lr.get('items') or []) if str(x.get('status')) in {'blocked', 'waiting'}]
+        return {'window': window, 'items': blocked}
+
+    @app.get('/api/metrics/database/index-recommendations')
+    def metrics_database_index_recommendations(window: str = Query('24h')) -> dict[str, Any]:
+        dsn = _pg_dsn()
+        items: list[dict[str, Any]] = []
+        if dsn:
+            try:
+                with _pg_connect(dsn) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT schemaname, relname, seq_scan, idx_scan
+                            FROM pg_stat_user_tables
+                            WHERE seq_scan > 50 AND (idx_scan = 0 OR seq_scan > idx_scan * 5)
+                            ORDER BY seq_scan DESC
+                            LIMIT 25
+                            """
+                        )
+                        for r in cur.fetchall():
+                            tbl = f"{r[0]}.{r[1]}"
+                            items.append({
+                                'table_columns': tbl,
+                                'recommended_index_type': 'btree',
+                                'reason': f'high seq_scan={int(r[2] or 0)} vs idx_scan={int(r[3] or 0)}',
+                                'estimated_benefit': 'medium',
+                                'estimated_write_overhead': 'low-medium',
+                                'confidence_score': 0.62,
+                                'status': 'new',
+                            })
+            except Exception:
+                items = []
+        return {'window': window, 'items': items, 'advisory_only': True}
+
+    @app.get('/api/audit/actions')
+    def audit_actions(window: str = Query('24h')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT created_at_utc, actor, action, entity_type, entity_id, details_json
+                FROM audit_log
+                WHERE created_at_utc >= ?
+                ORDER BY created_at_utc DESC
+                LIMIT 200
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {
+            'window': window,
+            'items': [
+                {
+                    'timestamp': _to_central_iso(r['created_at_utc']),
+                    'actor': r['actor'],
+                    'action': r['action'],
+                    'entity_type': r['entity_type'],
+                    'entity_id': r['entity_id'],
+                    'details': (_json.loads(r['details_json']) if r['details_json'] else {}),
+                }
+                for r in rows
+            ],
+        }
+
+    @app.get('/api/audit/incidents')
+    def audit_incidents(window: str = Query('24h')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT timestamp, level, component, event, message
+                FROM system_events
+                WHERE timestamp >= ? AND upper(level) IN ('WARN','WARNING','ERROR','CRITICAL')
+                ORDER BY timestamp DESC
+                LIMIT 200
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {
+            'window': window,
+            'items': [
+                {
+                    'timestamp': _to_central_iso(r['timestamp']),
+                    'level': r['level'],
+                    'component': r['component'],
+                    'event': r['event'],
+                    'message': r['message'],
+                }
+                for r in rows
+            ],
+        }
 
 
 
