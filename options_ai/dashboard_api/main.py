@@ -1605,6 +1605,12 @@ def create_app() -> FastAPI:
     @app.get('/api/portfolios')
     def portfolios_list() -> dict[str, Any]:
         import json as _json
+        groups = _load_parameter_groups()
+        pid_to_groups: dict[int, list[int]] = {}
+        for g in groups:
+            for pid in (g.get('portfolio_ids') or []):
+                pid_to_groups.setdefault(int(pid), []).append(int(g['id']))
+
         with _connect(db_path) as con:
             rows = con.execute(
                 """SELECT id,name,legs_json,created_at_utc,updated_at_utc
