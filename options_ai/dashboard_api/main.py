@@ -1866,7 +1866,7 @@ def create_app() -> FastAPI:
             environment=env,
             account_number=account_number,
             dry_run=False,
-            target_api_version=cfg.target_api_version,
+            target_api_version=None,
         )
 
         try:
