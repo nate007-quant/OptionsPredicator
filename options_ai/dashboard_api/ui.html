@@ -613,7 +613,7 @@
               <div>Enabled: <span id="exAccountsEnabled" class="pill">—</span></div>
               <label style="display:inline-flex; align-items:center; gap:8px; margin-left:10px;">
                 <span>Trading Enabled</span>
-                <span class="switch"><input id="exTradingEnabled" type="checkbox" role="switch" /><span class="slider"></span></span>
+                <label class="switch"><input id="exTradingEnabled" type="checkbox" role="switch" /><span class="slider"></span></label>
                 <span id="exTradingEnabledText" class="pill">—</span>
               </label>
             </div>
@@ -4899,10 +4899,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <td>${esc(String(a.account_number || ''))}</td>
             <td>${a.active ? 'YES' : 'NO'}</td>
             <td>
-              <span class="switch">
+              <label class="switch">
                 <input type="checkbox" data-acct-id="${esc(String(a.id || ''))}" ${a.enabled ? 'checked' : ''} ${dis ? 'disabled' : ''} />
                 <span class="slider"></span>
-              </span>
+              </label>
             </td>
           `;
           tb.appendChild(tr);
