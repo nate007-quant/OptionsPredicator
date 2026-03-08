@@ -3845,15 +3845,46 @@ def create_app() -> FastAPI:
             pass
         return out
 
-    def _service_color(active_state: str, heartbeat_age_sec: float | None, restarts_24h: int, oom_events_24h: int) -> str:
-        th = _read_thresholds()
+    def _pid_usage(pid: int | None) -> dict[str, Any]:
+        out = {'cpu_pct': None, 'mem_pct': None, 'rss_bytes': None}
+        if not pid or pid <= 0:
+            return out
+        try:
+            p = subprocess.run(
+                ['ps', '-p', str(pid), '-o', '%cpu=,%mem=,rss='],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            line = (p.stdout or '').strip()
+            if not line:
+                return out
+            parts = line.split()
+            if len(parts) >= 1:
+                out['cpu_pct'] = float(parts[0])
+            if len(parts) >= 2:
+                out['mem_pct'] = float(parts[1])
+            if len(parts) >= 3 and parts[2].isdigit():
+                out['rss_bytes'] = int(parts[2]) * 1024
+        except Exception:
+            return out
+        return out
+
+    def _service_color(active_state: str, sub_state: str | None, heartbeat_age_sec: float | None, restarts_24h: int, oom_events_24h: int) -> str:
         if oom_events_24h > 0:
             return 'red'
-        if active_state not in {'active', 'activating'}:
+        st = str(active_state or '').lower()
+        sub = str(sub_state or '').lower()
+        if st == 'failed' or sub == 'failed':
             return 'red'
-        hb = _color_from_min(heartbeat_age_sec, th['heartbeat_age_sec']['yellow_min'], th['heartbeat_age_sec']['red_min'])
-        rr = _color_from_min(float(restarts_24h), th['restart_24h']['yellow_min'], th['restart_24h']['red_min'])
-        return _overall_health([hb, rr])
+        if st in {'inactive', 'deactivating'} or sub in {'dead', 'exited'}:
+            return 'gray'
+        if st in {'activating', 'reloading'}:
+            return 'yellow'
+        if st == 'active':
+            return 'green'
+        return 'gray'
 
     def _collect_services() -> list[dict[str, Any]]:
         services = _load_services_registry()
@@ -3873,18 +3904,21 @@ def create_app() -> FastAPI:
                     pass
             restarts = int(show.get('n_restarts') or 0)
             oom = 0
-            color = _service_color(str(show.get('active_state') or 'unknown'), hb_age, restarts, oom)
+            color = _service_color(str(show.get('active_state') or 'unknown'), str(show.get('sub_state') or 'unknown'), hb_age, restarts, oom)
+            usage = _pid_usage(show.get('main_pid'))
+            memory_bytes = usage.get('rss_bytes') or show.get('memory_current')
             out.append({
                 **it,
                 'status': str(show.get('active_state') or 'unknown'),
+                'sub_status': str(show.get('sub_state') or 'unknown'),
                 'status_color': color,
                 'heartbeat_age_sec': hb_age,
                 'uptime_sec': uptime_sec,
                 'version': os.getenv('OPTIONS_AI_VERSION', 'unknown'),
                 'instance_count': 1,
-                'cpu_util_pct': None,
-                'memory_util_pct': None,
-                'memory_bytes': show.get('memory_current'),
+                'cpu_util_pct': usage.get('cpu_pct'),
+                'memory_util_pct': usage.get('mem_pct'),
+                'memory_bytes': memory_bytes,
                 'restart_count_24h': restarts,
                 'oom_events_24h': oom,
                 'crash_loop_flag': restarts >= 3,
