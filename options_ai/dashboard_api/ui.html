@@ -3401,9 +3401,38 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const note = document.getElementById(`pfCardNote-${pid}`);
       if (note) note.textContent = 'running…';
       pfRenderCardProgress(pid, 0, (legs || []).length);
-      const resp = await jpost('/api/portfolio_backtest/start', {
-        legs: legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
-      });
+
+      let resp;
+      try {
+        resp = await jpost('/api/portfolio_backtest/start', {
+          legs: legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
+        });
+      } catch (e) {
+        const raw = String(e?.message || e || '');
+        let detail = raw;
+        try {
+          const obj = JSON.parse(raw);
+          if (obj && typeof obj === 'object' && obj.detail) detail = String(obj.detail);
+        } catch {}
+
+        // Friendly handling for "already active" conflict.
+        const m = detail.match(/already active:\s*(\d+)/i);
+        if (m) {
+          const sid = parseInt(String(m[1] || ''), 10);
+          if (Number.isFinite(sid)) {
+            pfCardSessions[String(pid)] = sid;
+            if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
+            pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
+            await pfPollSingleGroup(pid);
+          }
+          if (note) note.textContent = `already running (session ${m[1]}) — attached to live run`;
+          toast('This group backtest is already running. Attached to current run.', 'info');
+          return;
+        }
+
+        throw e;
+      }
+
       pfCardSessions[String(pid)] = resp.session_id;
       if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
       pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
