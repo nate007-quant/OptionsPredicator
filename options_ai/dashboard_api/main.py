@@ -1630,7 +1630,6 @@ def create_app() -> FastAPI:
                     'legs': legs,
                     'created_at_utc': str(r['created_at_utc']),
                     'updated_at_utc': str(r['updated_at_utc']),
-            'execution_mode': str(r['execution_mode'] or 'independent'),
                     'execution_mode': str(r['execution_mode'] or 'independent'),
                     'link_counts': {'groups': len(pid_to_groups.get(int(r['id']), []))},
                     'upstream_refs': [{'type':'group','id':x} for x in pid_to_groups.get(int(r['id']), [])],
@@ -1648,7 +1647,6 @@ def create_app() -> FastAPI:
         if not name:
             raise HTTPException(status_code=400, detail='name required')
         legs = (body or {}).get('legs')
-        execution_mode = (body or {}).get('execution_mode')
         execution_mode = str((body or {}).get('execution_mode') or 'independent').strip().lower()
         if execution_mode not in {'independent','merged'}:
             raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
@@ -1688,6 +1686,7 @@ def create_app() -> FastAPI:
             'legs': legs,
             'created_at_utc': str(r['created_at_utc']),
             'updated_at_utc': str(r['updated_at_utc']),
+            'execution_mode': str(r['execution_mode'] or 'independent'),
         }
 
     @app.put('/api/portfolios/{portfolio_id}')
@@ -1695,19 +1694,18 @@ def create_app() -> FastAPI:
         import json as _json
         name = (body or {}).get('name')
         legs = (body or {}).get('legs')
-        execution_mode = str((body or {}).get('execution_mode') or 'independent').strip().lower()
-        if execution_mode not in {'independent','merged'}:
-            raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
+        execution_mode_raw = (body or {}).get('execution_mode')
+        execution_mode: str | None = None
+        if execution_mode_raw is not None:
+            execution_mode = str(execution_mode_raw).strip().lower()
+            if execution_mode not in {'independent','merged'}:
+                raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
         if name is not None:
             name = str(name).strip()
             if not name:
                 raise HTTPException(status_code=400, detail='name cannot be blank')
         if legs is not None and not isinstance(legs, list):
             raise HTTPException(status_code=400, detail='legs must be a list')
-        if execution_mode is not None:
-            execution_mode = str(execution_mode).strip().lower()
-            if execution_mode not in {'independent','merged'}:
-                raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
@@ -1754,12 +1752,12 @@ def create_app() -> FastAPI:
     @app.post('/api/portfolio_backtest/start')
     def portfolio_backtest_start(body: dict[str, Any]) -> dict[str, Any]:
         legs = (body or {}).get('legs')
-        execution_mode = str((body or {}).get('execution_mode') or 'independent').strip().lower()
-        if execution_mode not in {'independent','merged'}:
-            raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
+        merge_mode = str((body or {}).get('merge_mode') or (body or {}).get('execution_mode') or 'independent').strip().lower()
+        if merge_mode not in {'independent','merged'}:
+            raise HTTPException(status_code=400, detail='merge_mode must be independent|merged')
         if not isinstance(legs, list) or not legs:
             raise HTTPException(status_code=400, detail='legs must be a non-empty list')
-        return portfolio_service.start(legs=legs)
+        return portfolio_service.start(legs=legs, merge_mode=merge_mode)
 
     @app.get('/api/portfolio_backtest/status')
     def portfolio_backtest_status(session_id: int | None = Query(None)) -> dict[str, Any]:
