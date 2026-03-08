@@ -40,21 +40,46 @@
       --btn-border: rgba(255,255,255,0.14);
     }
 
-    html[data-theme="light"] {
-      --bg: #f7f8fc;
-      --surface: #ffffff;
-      --surface-2: #f1f5ff;
-      --text: #0b1020;
-      --muted: #41507a;
-      --border: rgba(15, 23, 42, 0.14);
-      --divider: rgba(15, 23, 42, 0.08);
+    html[data-theme="midnight"] {
+      --bg: #060b18;
+      --surface: #0c142a;
+      --surface-2: #0a1124;
+      --text: #eaf0ff;
+      --muted: #9fb0d9;
+      --border: rgba(255,255,255,0.10);
+      --divider: rgba(255,255,255,0.06);
+      --btn-bg: rgba(255,255,255,0.08);
+      --btn-bg-hover: rgba(255,255,255,0.13);
+      --btn-border: rgba(255,255,255,0.15);
+    }
 
-      --btn-bg: rgba(15, 23, 42, 0.06);
-      --btn-bg-hover: rgba(15, 23, 42, 0.10);
-      --btn-border: rgba(15, 23, 42, 0.16);
+    html[data-theme="graphite"] {
+      --bg: #0b0d12;
+      --surface: #151922;
+      --surface-2: #121621;
+      --text: #e8edf7;
+      --muted: #a9b2c5;
+      --border: rgba(255,255,255,0.11);
+      --divider: rgba(255,255,255,0.06);
+      --btn-bg: rgba(255,255,255,0.07);
+      --btn-bg-hover: rgba(255,255,255,0.12);
+      --btn-border: rgba(255,255,255,0.14);
+    }
 
-      --shadow: 0 10px 30px rgba(15,23,42,0.10);
-      --shadow-sm: 0 6px 18px rgba(15,23,42,0.08);
+    html[data-theme="aurora"] {
+      --bg: #08131a;
+      --surface: #0f2024;
+      --surface-2: #0c1b1f;
+      --text: #e6fff7;
+      --muted: #9ad3c6;
+      --border: rgba(154,211,198,0.18);
+      --divider: rgba(154,211,198,0.10);
+      --btn-bg: rgba(154,211,198,0.10);
+      --btn-bg-hover: rgba(154,211,198,0.18);
+      --btn-border: rgba(154,211,198,0.22);
+      --primary: #34d399;
+      --primary-2: #10b981;
+      --info: #2dd4bf;
     }
 
     * { box-sizing: border-box; }
@@ -1409,10 +1434,27 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     // Support both root deployment and reverse-proxy path prefixes (e.g. /dashboard).
     const api = computeApiBase();
 
+    const THEME_ORDER = ['dark', 'midnight', 'graphite', 'aurora'];
+    const THEME_LABEL = {
+      dark: 'Dark',
+      midnight: 'Midnight',
+      graphite: 'Graphite',
+      aurora: 'Aurora',
+    };
+
+    function updateThemeToggleLabel(theme) {
+      const b = document.getElementById('themeToggle');
+      if (!b) return;
+      b.textContent = `Theme: ${THEME_LABEL[theme] || theme}`;
+    }
+
     function setTheme(theme) {
-      const t = theme === 'light' ? 'light' : 'dark';
+      let t = String(theme || 'dark').toLowerCase();
+      if (t === 'light') t = 'dark'; // migrate old setting
+      if (!THEME_ORDER.includes(t)) t = 'dark';
       document.documentElement.setAttribute('data-theme', t);
       localStorage.setItem('theme', t);
+      updateThemeToggleLabel(t);
     }
 
     function initTheme() {
@@ -5246,7 +5288,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     // wiring
     document.getElementById('themeToggle')?.addEventListener('click', () => {
       const cur = document.documentElement.getAttribute('data-theme') || 'dark';
-      setTheme(cur === 'dark' ? 'light' : 'dark');
+      const i = THEME_ORDER.indexOf(cur);
+      const nxt = THEME_ORDER[(i >= 0 ? i + 1 : 1) % THEME_ORDER.length];
+      setTheme(nxt);
     });
 
     document.getElementById('refreshMetrics')?.addEventListener('click', () => safe('refreshMetrics', () => refreshMetrics()));
