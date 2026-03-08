@@ -1630,6 +1630,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       try { document.title = `Nate's Option Dashboard — ${view}`; } catch {}
       if (view === 'processing') { safe('processing', () => refreshProcessing()); }
+      if (view === 'paramgroup') { safe('ex_accounts', () => exRefreshAccounts()); }
       if (view === 'paramtest' && !btRunsEverLoaded) { safe('bt_runs', () => btRefreshRuns()); }
     }
 
@@ -1709,6 +1710,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfCardRanges = {}; // portfolio_id -> {start,end}
     let pfCardModes = {}; // portfolio_id -> independent|merged
     let exAccounts = []; // execution account catalog
+    let exAccountsLoading = false;
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -3720,6 +3722,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       } catch {}
       host.innerHTML = '';
       const items = Array.isArray(pfPortfolios) ? pfPortfolios : [];
+      if ((!Array.isArray(exAccounts) || exAccounts.length === 0) && !exAccountsLoading) {
+        safe('ex_accounts', async () => { await exRefreshAccounts(); try { pfRenderWorkbench(); } catch {} });
+      }
       if (!items.length) {
         host.innerHTML = '<div class="hint">No groups yet. Create one above.</div>';
         return;
@@ -4800,7 +4805,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
 
     async function exRefreshAccounts() {
-      const d = await jget('/api/execution/accounts');
+      if (exAccountsLoading) return { items: exAccounts || [] };
+      exAccountsLoading = true;
+      let d;
+      try {
+        d = await jget('/api/execution/accounts');
+      } finally {
+        exAccountsLoading = false;
+      }
       exAccounts = Array.isArray(d.items) ? d.items : [];
 
       const active = document.getElementById('exAccountsActive');
