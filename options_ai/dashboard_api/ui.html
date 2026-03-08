@@ -3574,6 +3574,32 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       toast('line saved', 'success');
     }
 
+    async function pfCopyGroupLineToGroup(pid, ix, targetPid) {
+      const srcPid = Number(pid);
+      const dstPid = Number(targetPid);
+      if (!Number.isFinite(srcPid) || !Number.isFinite(dstPid)) throw new Error('select a target group');
+      if (srcPid === dstPid) throw new Error('target group must be different');
+
+      const src = (pfPortfolios || []).find(x => String(x.id) === String(srcPid));
+      const dst = (pfPortfolios || []).find(x => String(x.id) === String(dstPid));
+      if (!src || !dst) throw new Error('group not found');
+
+      const srcLegs = Array.isArray(src.legs) ? src.legs : [];
+      if (!(ix >= 0 && ix < srcLegs.length)) throw new Error('line out of range');
+      const leg = srcLegs[ix] || {};
+
+      const dstLegs = Array.isArray(dst.legs) ? dst.legs.slice() : [];
+      const cloned = {
+        strategy_id: leg.strategy_id || 'debit_spreads',
+        source: `copied_from:${srcPid}:${ix+1}`,
+        params: { ...((leg && leg.params) || {}) },
+      };
+      dstLegs.push(cloned);
+      await jput(`/api/portfolios/${dstPid}`, { legs: dstLegs });
+      await pfReloadPortfolios();
+      toast(`line copied to ${dst.name || ('Group ' + dstPid)}`, 'success');
+    }
+
     async function pfDeleteGroupLine(pid, ix) {
       const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
       if (!it) throw new Error('group not found');
@@ -3732,6 +3758,16 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <td>
               <button id="pfLineSave-${pid}-${i}" class="btn-primary" style="padding:4px 8px;">Save</button>
               <button id="pfLineDel-${pid}-${i}" class="btn-danger" style="padding:4px 8px; margin-left:6px;">Delete</button>
+              <div style="margin-top:6px;">
+                <select id="pfLineCopyTarget-${pid}-${i}" style="min-width:160px;">
+                  ${(() => {
+                    const opts = (pfPortfolios || []).filter(g => String(g.id) !== String(pid));
+                    if (!opts.length) return '<option value="">(no other groups)</option>';
+                    return opts.map(g => `<option value="${esc(String(g.id))}">${esc(String(g.name || ('Group ' + g.id)))}</option>`).join('');
+                  })()}
+                </select>
+                <button id="pfLineCopy-${pid}-${i}" style="margin-left:6px;">Copy</button>
+              </div>
             </td>
           `;
           tb.appendChild(tr);
@@ -3757,6 +3793,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             await pfSaveGroupLine(pid, i, src, txt);
           }));
           document.getElementById(`pfLineDel-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_del_${pid}_${i}`, () => pfDeleteGroupLine(pid, i)));
+          document.getElementById(`pfLineCopy-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_copy_${pid}_${i}`, async () => {
+            const t = document.getElementById(`pfLineCopyTarget-${pid}-${i}`)?.value || '';
+            await pfCopyGroupLineToGroup(pid, i, t);
+          }));
         }
       }
     }
