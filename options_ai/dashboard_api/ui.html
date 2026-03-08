@@ -2619,7 +2619,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         if (!portfolios.length) {
           const o = document.createElement('option');
           o.value = '';
-          o.textContent = '(no portfolios)';
+          o.textContent = '(no portfolios available)';
           pfSel.appendChild(o);
           pfSel.disabled = true;
         } else {
@@ -2834,6 +2834,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const note = document.getElementById('btRunsNote');
       if (note) note.textContent = 'loading…';
 
+      // Ensure portfolio list is loaded so per-row portfolio dropdowns are populated.
+      if (!Array.isArray(pfPortfolios) || pfPortfolios.length === 0) {
+        try { await pfReloadPortfolios(); } catch {}
+      }
+
       const data = await btRunsRefreshRunsData();
       btRunsRenderTable(btRunsRaw);
       return data;
@@ -2978,6 +2983,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         pfLegs = pfPortfolios[0].legs || [];
         pfRenderLegs();
       }
+
+      // If backtest runs are already on screen, refresh row controls that depend on portfolios.
+      try {
+        if (Array.isArray(btRunsRaw) && btRunsRaw.length) btRunsRenderTable(btRunsRaw);
+      } catch {}
+
       return data;
     }
 
@@ -4753,8 +4764,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       // Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
       await safe('sampler', () => samplerPollOnce());
       await safe('bt_presets', () => btReloadPresets());
-      await safe('bt_runs', () => btRefreshRuns());
       await safe('pf_portfolios', () => pfReloadPortfolios());
+      await safe('bt_runs', () => btRefreshRuns());
 
       // intervals
       setInterval(() => safe('health', () => refreshHealth()), 5000);
