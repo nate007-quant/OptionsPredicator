@@ -3271,7 +3271,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const canvas = document.getElementById(`pfCardEq-${pid}`);
       if (!canvas || !chartsAvailable()) return;
       const pts = Array.isArray(eq) ? eq : [];
-      const labels = pts.map(p => (p.ts || p.exit_ts || ''));
+      const labels = pts.map(p => {
+        const raw = String(p.ts || p.exit_ts || '');
+        // keep only YYYY-MM-DD for compact x-axis labels
+        const m = raw.match(/(\d{4}-\d{2}-\d{2})/);
+        return m ? m[1] : raw.slice(0, 10);
+      });
       const data = pts.map(p => Number(p.cum_pnl_dollars || 0));
       const key = String(pid);
       if (pfCardCharts[key]) {
