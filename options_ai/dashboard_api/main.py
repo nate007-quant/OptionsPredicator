@@ -2967,14 +2967,49 @@ def create_app() -> FastAPI:
             gref = {'id': int(g['id']), 'name': str(g.get('name') or f"Group {int(g['id'])}")}
             for rid in (g.get('run_ids') or []):
                 run_to_groups.setdefault(int(rid), []).append(gref)
+
+        # Portfolio memberships (Parameter Group Testing tab uses portfolio_defs as groups)
+        run_to_portfolios: dict[int, list[dict[str, Any]]] = {}
+        with _connect(db_path) as con:
+            p_rows = con.execute('SELECT id, name, legs_json FROM portfolio_defs').fetchall()
+        for pr in p_rows:
+            pid = int(pr['id'])
+            pname = str(pr['name'])
+            try:
+                legs = _json.loads(pr['legs_json'] or '[]') or []
+            except Exception:
+                legs = []
+            seen: set[int] = set()
+            for leg in legs:
+                if not isinstance(leg, dict):
+                    continue
+                src = str(leg.get('source') or '')
+                if not src.startswith('run:'):
+                    continue
+                try:
+                    rid = int(src.split(':', 1)[1])
+                except Exception:
+                    continue
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                run_to_portfolios.setdefault(rid, []).append({'id': pid, 'name': pname})
+
         for it in items:
-            grefs = run_to_groups.get(int(it['id']), [])
+            rid = int(it['id'])
+            grefs = run_to_groups.get(rid, [])
+            prefs = run_to_portfolios.get(rid, [])
             gids = [int(x.get('id')) for x in grefs if x.get('id') is not None]
+            pids = [int(x.get('id')) for x in prefs if x.get('id') is not None]
             it['group_memberships'] = grefs
-            it['link_counts'] = {'groups': len(gids)}
+            it['portfolio_memberships'] = prefs
+            it['link_counts'] = {'groups': len(gids), 'portfolios': len(pids)}
             it['upstream_refs'] = []
-            it['downstream_refs'] = [{'type':'group','id':int(x.get('id')),'name':str(x.get('name') or '')} for x in grefs]
-            it['in_use'] = len(gids) > 0
+            it['downstream_refs'] = [
+                *([{'type':'group','id':int(x.get('id')),'name':str(x.get('name') or '')} for x in grefs]),
+                *([{'type':'portfolio','id':int(x.get('id')),'name':str(x.get('name') or '')} for x in prefs]),
+            ]
+            it['in_use'] = (len(gids) > 0 or len(pids) > 0)
             it['eligible_next_stage'] = True
             it['ineligible_reason'] = None
 

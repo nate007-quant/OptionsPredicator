@@ -1324,7 +1324,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                       <th class="sortable" data-sort="profit_factor">profit_factor</th>
                       <th class="sortable" data-sort="avg_pnl_dollars">avg_pnl</th>
                       <th class="sortable" data-sort="max_drawdown_dollars">max_dd</th>
-                      <th>parameter_groups</th>
+                      <th>group_membership</th>
                       <th>actions</th>
                     </tr>
                   </thead>
@@ -2602,12 +2602,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tdDd.textContent = (maxdd === null || maxdd === undefined) ? '—' : fmtNum(maxdd, 2);
 
         const tdGroups = document.createElement('td');
-        const grefs = Array.isArray(it.group_memberships) ? it.group_memberships : (Array.isArray(it.downstream_refs) ? it.downstream_refs : []);
-        const gnames = grefs
-          .filter(x => x && ((x.type === undefined) || x.type === 'group'))
-          .map(x => String(x.name || (x.id != null ? `#${x.id}` : '')).trim())
-          .filter(Boolean);
-        tdGroups.textContent = gnames.length ? gnames.join(', ') : '—';
+        const prefs = Array.isArray(it.portfolio_memberships) ? it.portfolio_memberships : [];
+        const pnames = prefs.map(x => String(x?.name || (x?.id != null ? `#${x.id}` : '')).trim()).filter(Boolean);
+        const grefs = Array.isArray(it.group_memberships) ? it.group_memberships : [];
+        const gnames = grefs.map(x => String(x?.name || (x?.id != null ? `#${x.id}` : '')).trim()).filter(Boolean);
+        const parts = [];
+        if (pnames.length) parts.push('Portfolio: ' + pnames.join(', '));
+        if (gnames.length) parts.push('ParamGroup: ' + gnames.join(', '));
+        tdGroups.textContent = parts.length ? parts.join(' | ') : '—';
 
         const tdAct = document.createElement('td');
         const delBtn = document.createElement('button');
