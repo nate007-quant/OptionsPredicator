@@ -3863,8 +3863,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       }
 
-      if (auditPre) auditPre.textContent = (latest.audit_tail || []).join('
-');
+      if (auditPre) auditPre.textContent = (latest.audit_tail || []).join('\n');
       return d;
     }
 
