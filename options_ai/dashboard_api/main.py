@@ -327,6 +327,22 @@ def create_app() -> FastAPI:
                 ON backtest_runs(preset_id, created_at_utc DESC);
                 """
             )
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS parameter_groups (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL,
+                  status TEXT NOT NULL DEFAULT 'Draft',
+                  tags_json TEXT NOT NULL DEFAULT '[]',
+                  comment TEXT,
+                  run_ids_json TEXT NOT NULL DEFAULT '[]',
+                  portfolio_ids_json TEXT NOT NULL DEFAULT '[]',
+                  created_at_utc TEXT NOT NULL,
+                  updated_at_utc TEXT NOT NULL,
+                  archived INTEGER NOT NULL DEFAULT 0
+                );
+                """
+            )
             # Migrations: add dedupe/hash + refinement latch + sampler sessions
             migrate_backtest_schema(con)
             # Backfill params_hash for old rows (params_json already canonical in this app)
@@ -1198,6 +1214,11 @@ def create_app() -> FastAPI:
             ).fetchall()
 
         items = []
+        groups = _load_parameter_groups()
+        pid_to_groups: dict[int, list[int]] = {}
+        for g in groups:
+            for pid in (g.get('portfolio_ids') or []):
+                pid_to_groups.setdefault(int(pid), []).append(int(g['id']))
         for r in rows:
             d = dict(r)
             d["timestamp"] = _to_central_iso(d.get("timestamp"))
@@ -1602,6 +1623,11 @@ def create_app() -> FastAPI:
                     'legs': legs,
                     'created_at_utc': str(r['created_at_utc']),
                     'updated_at_utc': str(r['updated_at_utc']),
+                    'link_counts': {'groups': len(pid_to_groups.get(int(r['id']), []))},
+                    'upstream_refs': [{'type':'group','id':x} for x in pid_to_groups.get(int(r['id']), [])],
+                    'downstream_refs': [],
+                    'in_use': len(pid_to_groups.get(int(r['id']), [])) > 0,
+                    'eligible_next_stage': True,
                 }
             )
         return {'items': items}
@@ -1688,6 +1714,10 @@ def create_app() -> FastAPI:
 
     @app.delete('/api/portfolios/{portfolio_id}')
     def portfolios_delete(portfolio_id: int) -> dict[str, Any]:
+        groups = _load_parameter_groups()
+        linked = [g['id'] for g in groups if int(portfolio_id) in (g.get('portfolio_ids') or [])]
+        if linked:
+            raise HTTPException(status_code=409, detail=f'portfolio in use by groups: {linked}')
         with _connect(db_path) as con:
             r = con.execute('SELECT id FROM portfolio_defs WHERE id=?', (int(portfolio_id),)).fetchone()
             if not r:
@@ -2703,6 +2733,165 @@ def create_app() -> FastAPI:
         }
 
 
+
+    def _load_parameter_groups() -> list[dict[str, Any]]:
+        import json as _json
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """SELECT id,name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived
+                   FROM parameter_groups WHERE archived=0 ORDER BY updated_at_utc DESC, id DESC"""
+            ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                run_ids = [int(x) for x in (_json.loads(r['run_ids_json'] or '[]') or []) if str(x).isdigit()]
+            except Exception:
+                run_ids = []
+            try:
+                pids = [int(x) for x in (_json.loads(r['portfolio_ids_json'] or '[]') or []) if str(x).isdigit()]
+            except Exception:
+                pids = []
+            try:
+                tags = _json.loads(r['tags_json'] or '[]') or []
+            except Exception:
+                tags = []
+            out.append({'id': int(r['id']), 'name': str(r['name']), 'status': str(r['status'] or 'Draft'),
+                        'tags': tags, 'comment': r['comment'], 'run_ids': run_ids, 'portfolio_ids': pids,
+                        'created_at_utc': str(r['created_at_utc']), 'updated_at_utc': str(r['updated_at_utc'])})
+        return out
+
+    @app.get('/api/parameter-groups')
+    def parameter_groups_list(link_state: str | None = Query(None)) -> dict[str, Any]:
+        items = _load_parameter_groups()
+        if link_state == 'linked':
+            items = [x for x in items if x.get('run_ids') or x.get('portfolio_ids')]
+        elif link_state == 'unlinked':
+            items = [x for x in items if not x.get('run_ids') and not x.get('portfolio_ids')]
+        for x in items:
+            x['link_counts'] = {'backtests': len(x.get('run_ids') or []), 'portfolios': len(x.get('portfolio_ids') or [])}
+            x['in_use'] = len(x.get('portfolio_ids') or []) > 0
+            x['upstream_refs'] = [{'type':'backtest','id':rid} for rid in (x.get('run_ids') or [])]
+            x['downstream_refs'] = [{'type':'portfolio','id':pid} for pid in (x.get('portfolio_ids') or [])]
+            x['eligible_next_stage'] = True
+        return {'items': items}
+
+    @app.post('/api/backtest/runs/{run_id}/send-to-groups')
+    def send_run_to_groups(run_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        gid = (body or {}).get('group_id')
+        create_name = str((body or {}).get('create_group_name') or '').strip()
+        tag = str((body or {}).get('tag') or '').strip()
+        comment = str((body or {}).get('comment') or '').strip()
+        with _connect(db_path) as con:
+            rr = con.execute('SELECT id FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
+            if not rr:
+                raise HTTPException(status_code=404, detail='run not found')
+            now = _now_utc_iso()
+            if gid is None and not create_name:
+                raise HTTPException(status_code=400, detail='group_id or create_group_name required')
+            if gid is None:
+                cur = con.execute("INSERT INTO parameter_groups(name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived) VALUES(?,?,?,?,?,?,?,?,0)",
+                                  (create_name, 'Draft', _json.dumps([tag] if tag else []), comment or None, _json.dumps([int(run_id)]), _json.dumps([]), now, now))
+                gid = int(cur.lastrowid)
+            r = con.execute('SELECT run_ids_json,tags_json,comment FROM parameter_groups WHERE id=? AND archived=0', (int(gid),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='group not found')
+            run_ids = [int(x) for x in (_json.loads(r['run_ids_json'] or '[]') or []) if str(x).isdigit()]
+            if int(run_id) not in run_ids:
+                run_ids.append(int(run_id))
+            tags = _json.loads(r['tags_json'] or '[]') or []
+            if tag and tag not in tags:
+                tags.append(tag)
+            new_comment = (comment if comment else (r['comment'] or None))
+            con.execute('UPDATE parameter_groups SET run_ids_json=?, tags_json=?, comment=?, status=?, updated_at_utc=? WHERE id=?',
+                        (_json.dumps(sorted(set(run_ids))), _json.dumps(tags), new_comment, 'Sent', now, int(gid)))
+            con.commit()
+        return {'ok': True, 'run_id': int(run_id), 'group_id': int(gid)}
+
+    @app.post('/api/parameter-groups/{group_id}/send-to-portfolio')
+    def send_group_to_portfolio(group_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        pid = (body or {}).get('portfolio_id')
+        create_name = str((body or {}).get('create_portfolio_name') or '').strip()
+        with _connect(db_path) as con:
+            gr = con.execute('SELECT name,run_ids_json,portfolio_ids_json FROM parameter_groups WHERE id=? AND archived=0', (int(group_id),)).fetchone()
+            if not gr:
+                raise HTTPException(status_code=404, detail='group not found')
+            run_ids = [int(x) for x in (_json.loads(gr['run_ids_json'] or '[]') or []) if str(x).isdigit()]
+            if pid is None and not create_name:
+                raise HTTPException(status_code=400, detail='portfolio_id or create_portfolio_name required')
+            if pid is None:
+                legs = []
+                for rid in run_ids:
+                    rr = con.execute('SELECT params_json FROM backtest_runs WHERE id=?', (rid,)).fetchone()
+                    if not rr:
+                        continue
+                    try:
+                        params = _json.loads(rr['params_json'] or '{}')
+                    except Exception:
+                        params = {}
+                    legs.append({'strategy_id': 'debit_spreads', 'params': params, 'source': f'group:{group_id}:run:{rid}'})
+                now = _now_utc_iso()
+                cur = con.execute('INSERT INTO portfolio_defs(name, legs_json, created_at_utc, updated_at_utc) VALUES(?,?,?,?)',
+                                  (create_name, _json.dumps(legs, separators=(",", ":"), sort_keys=True), now, now))
+                pid = int(cur.lastrowid)
+            pids = [int(x) for x in (_json.loads(gr['portfolio_ids_json'] or '[]') or []) if str(x).isdigit()]
+            if int(pid) not in pids:
+                pids.append(int(pid))
+            now = _now_utc_iso()
+            con.execute('UPDATE parameter_groups SET portfolio_ids_json=?, status=?, updated_at_utc=? WHERE id=?',
+                        (_json.dumps(sorted(set(pids))), 'In Use', now, int(group_id)))
+            con.commit()
+        return {'ok': True, 'group_id': int(group_id), 'portfolio_id': int(pid)}
+
+    @app.get('/api/links/panel')
+    def links_panel(entity_type: str = Query(...), entity_id: int = Query(...)) -> dict[str, Any]:
+        et = str(entity_type)
+        eid = int(entity_id)
+        groups = _load_parameter_groups()
+        if et == 'backtest':
+            g = [x for x in groups if eid in (x.get('run_ids') or [])]
+            return {'entity_type': et, 'entity_id': eid, 'upstream': [], 'downstream': [{'type':'group','id':x['id'],'name':x['name']} for x in g]}
+        if et == 'group':
+            g = next((x for x in groups if x['id'] == eid), None)
+            if not g:
+                raise HTTPException(status_code=404, detail='group not found')
+            return {'entity_type': et, 'entity_id': eid, 'upstream': [{'type':'backtest','id':rid} for rid in (g.get('run_ids') or [])], 'downstream': [{'type':'portfolio','id':pid} for pid in (g.get('portfolio_ids') or [])]}
+        if et == 'portfolio':
+            g = [x for x in groups if eid in (x.get('portfolio_ids') or [])]
+            return {'entity_type': et, 'entity_id': eid, 'upstream': [{'type':'group','id':x['id'],'name':x['name']} for x in g], 'downstream': []}
+        raise HTTPException(status_code=400, detail='unsupported entity_type')
+
+
+    @app.post('/api/parameter-groups')
+    def parameter_groups_create(body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        name = str((body or {}).get('name') or '').strip()
+        if not name:
+            raise HTTPException(status_code=400, detail='name required')
+        status = str((body or {}).get('status') or 'Draft')
+        run_ids = [int(x) for x in ((body or {}).get('run_ids') or []) if str(x).isdigit()]
+        now = _now_utc_iso()
+        with _connect(db_path) as con:
+            cur = con.execute("INSERT INTO parameter_groups(name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived) VALUES(?,?,?,?,?,?,?,?,0)",
+                              (name, status, _json.dumps([]), None, _json.dumps(run_ids), _json.dumps([]), now, now))
+            gid = int(cur.lastrowid)
+            con.commit()
+        return {'id': gid, 'name': name, 'status': status, 'run_ids': run_ids}
+
+    @app.delete('/api/parameter-groups/{group_id}')
+    def parameter_groups_delete(group_id: int) -> dict[str, Any]:
+        import json as _json
+        with _connect(db_path) as con:
+            r = con.execute('SELECT portfolio_ids_json FROM parameter_groups WHERE id=? AND archived=0', (int(group_id),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='group not found')
+            if (_json.loads(r['portfolio_ids_json'] or '[]') or []):
+                raise HTTPException(status_code=409, detail='group in use; detach downstream portfolios first')
+            con.execute('UPDATE parameter_groups SET archived=1, updated_at_utc=? WHERE id=?', (_now_utc_iso(), int(group_id)))
+            con.commit()
+        return {'ok': True, 'deleted_id': int(group_id)}
+
 # ---- Backtest Runs (history grid) ----
 
     @app.get('/api/backtest/runs')
@@ -2765,10 +2954,28 @@ def create_app() -> FastAPI:
                 'refinement_sampler_id': (int(r['refinement_sampler_id']) if r['refinement_sampler_id'] is not None else None),
             })
 
+        groups = _load_parameter_groups()
+        run_to_groups: dict[int, list[int]] = {}
+        for g in groups:
+            for rid in (g.get('run_ids') or []):
+                run_to_groups.setdefault(int(rid), []).append(int(g['id']))
+        for it in items:
+            gids = run_to_groups.get(int(it['id']), [])
+            it['link_counts'] = {'groups': len(gids)}
+            it['upstream_refs'] = []
+            it['downstream_refs'] = [{'type':'group','id':x} for x in gids]
+            it['in_use'] = len(gids) > 0
+            it['eligible_next_stage'] = True
+            it['ineligible_reason'] = None
+
         return {'strategy_key': strategy_key, 'preset_id': preset_id, 'limit': int(limit), 'items': items}
 
     @app.delete('/api/backtest/runs/{run_id}')
     def backtest_runs_delete(run_id: int) -> dict[str, Any]:
+        groups = _load_parameter_groups()
+        linked = [g['id'] for g in groups if int(run_id) in (g.get('run_ids') or [])]
+        if linked:
+            raise HTTPException(status_code=409, detail=f'run in use by groups: {linked}')
         with _connect(db_path) as con:
             r = con.execute('SELECT strategy_key FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
             if not r:
