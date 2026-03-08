@@ -3792,7 +3792,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             const txt = document.getElementById(`pfLineParams-${pid}-${i}`)?.value || '{}';
             await pfSaveGroupLine(pid, i, src, txt);
           }));
-          document.getElementById(`pfLineDel-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_del_${pid}_${i}`, () => pfDeleteGroupLine(pid, i)));
+          document.getElementById(`pfLineDel-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_del_${pid}_${i}`, async () => {
+            const ok = confirm(`Delete line ${i+1} from this group?`);
+            if (!ok) return;
+            await pfDeleteGroupLine(pid, i);
+          }));
           document.getElementById(`pfLineCopy-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_copy_${pid}_${i}`, async () => {
             const t = document.getElementById(`pfLineCopyTarget-${pid}-${i}`)?.value || '';
             const tName = document.getElementById(`pfLineCopyTarget-${pid}-${i}`)?.selectedOptions?.[0]?.textContent || `#${t}`;
