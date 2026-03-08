@@ -1823,6 +1823,14 @@ def create_app() -> FastAPI:
             account_label = str((body or {}).get('account_label') or r['paired_account_label'] or '').strip()
             if not account_label:
                 raise HTTPException(status_code=400, detail='group is not paired to an account (account_label empty)')
+
+            account_id = f"tastytrade:{env}:{account_label}"
+            with _connect(db_path) as con2:
+                _ensure_execution_account_controls(con2)
+                rr = con2.execute("SELECT enabled FROM execution_account_controls WHERE account_id=?", (account_id,)).fetchone()
+            if rr is not None and int(rr['enabled'] or 0) != 1:
+                raise HTTPException(status_code=409, detail='paired account is OFF; signals were not emitted')
+
             broker_name = str((body or {}).get('broker_name') or cfg.broker_name or 'tastytrade').strip()
 
             inserted = 0
@@ -1989,10 +1997,19 @@ def create_app() -> FastAPI:
 
 # ---- Execution API ----
 
-    @app.get('/api/execution/accounts')
-    def execution_accounts() -> dict[str, Any]:
-        items: list[dict[str, Any]] = []
+    def _ensure_execution_account_controls(con: sqlite3.Connection) -> None:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS execution_account_controls (
+              account_id TEXT PRIMARY KEY,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              updated_at_utc TEXT NOT NULL
+            )
+            """
+        )
 
+    def _execution_accounts_catalog() -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
         sb_acct = str(cfg.tasty_sandbox_account_number or os.getenv('TASTY_SANDBOX_ACCOUNT_NUMBER', '') or '').strip()
         lv_acct = str(cfg.tasty_live_account_number or os.getenv('TASTY_LIVE_ACCOUNT_NUMBER', '') or '').strip()
 
@@ -2009,11 +2026,51 @@ def create_app() -> FastAPI:
 
         items.append(_mk('sandbox', sb_acct, 'Tastytrade Sandbox'))
         items.append(_mk('live', lv_acct, 'Tastytrade Live'))
+        return items
+
+    @app.get('/api/execution/accounts')
+    def execution_accounts() -> dict[str, Any]:
+        items = _execution_accounts_catalog()
+        with _connect(db_path) as con:
+            _ensure_execution_account_controls(con)
+            rows = con.execute("SELECT account_id, enabled FROM execution_account_controls").fetchall()
+        ctl = {str(r['account_id']): int(r['enabled'] or 0) for r in rows}
+        for it in items:
+            # default enabled=true for active accounts unless explicitly disabled
+            it['enabled'] = bool(it.get('active')) and bool(ctl.get(str(it['id']), 1))
 
         return {
             'items': items,
             'active_count': int(sum(1 for x in items if x.get('active'))),
+            'enabled_count': int(sum(1 for x in items if x.get('enabled'))),
         }
+
+    @app.post('/api/execution/accounts/{account_id}/enabled')
+    def execution_account_enabled_set(account_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        if 'enabled' not in (body or {}):
+            raise HTTPException(status_code=400, detail='enabled is required')
+        enabled = bool((body or {}).get('enabled'))
+
+        items = _execution_accounts_catalog()
+        acct = next((x for x in items if str(x.get('id')) == str(account_id)), None)
+        if acct is None:
+            raise HTTPException(status_code=404, detail='account not found')
+        if not bool(acct.get('active')):
+            raise HTTPException(status_code=400, detail='account is not active/configured')
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            _ensure_execution_account_controls(con)
+            con.execute(
+                """
+                INSERT INTO execution_account_controls(account_id, enabled, updated_at_utc)
+                VALUES(?,?,?)
+                ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled, updated_at_utc=excluded.updated_at_utc
+                """,
+                (str(account_id), 1 if enabled else 0, now),
+            )
+            con.commit()
+        return {'ok': True, 'account_id': str(account_id), 'enabled': bool(enabled)}
 
     @app.get('/api/execution/trading-enabled')
     def execution_trading_enabled() -> dict[str, Any]:

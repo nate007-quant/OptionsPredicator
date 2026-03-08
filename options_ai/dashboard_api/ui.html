@@ -610,6 +610,7 @@
             <div class="row">
               <button class="btn-primary" id="exRefreshAccounts">Refresh</button>
               <div>Active: <span id="exAccountsActive" class="pill">—</span></div>
+              <div>Enabled: <span id="exAccountsEnabled" class="pill">—</span></div>
               <label style="display:inline-flex; align-items:center; gap:8px; margin-left:10px;">
                 <span>Trading Enabled</span>
                 <span class="switch"><input id="exTradingEnabled" type="checkbox" role="switch" /><span class="slider"></span></span>
@@ -618,7 +619,7 @@
             </div>
             <div style="margin-top:10px; overflow:auto; max-height:220px;">
               <table>
-                <thead><tr><th>broker</th><th>environment</th><th>account_number</th><th>active</th></tr></thead>
+                <thead><tr><th>broker</th><th>environment</th><th>account_number</th><th>active</th><th>enabled</th></tr></thead>
                 <tbody id="exAccountsTable"></tbody>
               </table>
             </div>
@@ -3797,7 +3798,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                     );
 
                     const opts = (exAccounts || []).filter(a => {
-                      if (!a.active) return false;
+                      if (!a.active || !a.enabled) return false;
                       const acct = String(a.account_number || a.label || '');
                       const key = `${String(a.environment||'')}|${acct}`;
                       if (key === `${currentEnv}|${currentLabel}`) return true;
@@ -4760,6 +4761,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exRefreshAccounts: 'Refresh configured execution account list.',
         exAccountsActive: 'Count of configured active accounts available for pairing.',
         exAccountsTable: 'Execution account catalog (broker, env, account number).',
+        exAccountsEnabled: 'Count of accounts currently enabled for emission.',
         exTradingEnabled: 'Master execution gate for signal emission (runtime override).',
         exTradingEnabledText: 'Current Trading Enabled state (ON/OFF).',
 
@@ -4855,6 +4857,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
+    async function exSetAccountEnabled(accountId, enabled) {
+      const ok = confirm(`Set account ${enabled ? 'ON' : 'OFF'} for signal emission?`);
+      if (!ok) { await exRefreshAccounts(); return; }
+      await jpost(`/api/execution/accounts/${encodeURIComponent(String(accountId))}/enabled`, { enabled: !!enabled });
+      await exRefreshAccounts();
+      toast(`account ${enabled ? 'enabled' : 'disabled'}`, enabled ? 'success' : 'warn');
+    }
+
     async function exRefreshAccounts() {
       if (exAccountsLoading) return { items: exAccounts || [] };
       exAccountsLoading = true;
@@ -4874,20 +4884,36 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const active = document.getElementById('exAccountsActive');
       if (active) active.textContent = String(d.active_count ?? exAccounts.filter(x => x.active).length);
+      const enabledCount = document.getElementById('exAccountsEnabled');
+      if (enabledCount) enabledCount.textContent = String(d.enabled_count ?? exAccounts.filter(x => x.enabled).length);
 
       const tb = document.getElementById('exAccountsTable');
       if (tb) {
         tb.innerHTML = '';
         for (const a of exAccounts) {
           const tr = document.createElement('tr');
+          const dis = !a.active;
           tr.innerHTML = `
             <td>${esc(String(a.broker_name || ''))}</td>
             <td>${esc(String(a.environment || ''))}</td>
             <td>${esc(String(a.account_number || ''))}</td>
             <td>${a.active ? 'YES' : 'NO'}</td>
+            <td>
+              <span class="switch">
+                <input type="checkbox" data-acct-id="${esc(String(a.id || ''))}" ${a.enabled ? 'checked' : ''} ${dis ? 'disabled' : ''} />
+                <span class="slider"></span>
+              </span>
+            </td>
           `;
           tb.appendChild(tr);
         }
+
+        tb.querySelectorAll('input[data-acct-id]').forEach(cb => {
+          cb.addEventListener('change', () => {
+            const aid = cb.getAttribute('data-acct-id') || '';
+            safe(`ex_acct_toggle_${aid}`, () => exSetAccountEnabled(aid, !!cb.checked));
+          });
+        });
       }
 
       // account dropdowns in group cards depend on this list
