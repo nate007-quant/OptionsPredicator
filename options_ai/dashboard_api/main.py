@@ -140,6 +140,61 @@ def _now_central_iso() -> str:
     return datetime.now(timezone.utc).astimezone(CENTRAL_TZ).replace(microsecond=0).isoformat()
 
 
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_window_seconds(window: str | None) -> int:
+    w = str(window or '15m').strip().lower()
+    try:
+        if w.endswith('s'):
+            return max(1, int(float(w[:-1])))
+        if w.endswith('m'):
+            return max(1, int(float(w[:-1]) * 60))
+        if w.endswith('h'):
+            return max(1, int(float(w[:-1]) * 3600))
+        if w.endswith('d'):
+            return max(1, int(float(w[:-1]) * 86400))
+        return max(1, int(float(w)))
+    except Exception:
+        return 900
+
+
+def _resolution_seconds(resolution: str | None) -> int:
+    r = str(resolution or '5m').strip().lower()
+    return {
+        '1m': 60,
+        '5m': 300,
+        '15m': 900,
+        '30m': 1800,
+        '1h': 3600,
+    }.get(r, 300)
+
+
+def _read_thresholds() -> dict[str, Any]:
+    return {
+        'query_runtime_sec': {'green_max': 1.0, 'yellow_max': 5.0},
+        'lag_minutes': {'green_max': 5.0, 'yellow_max': 15.0},
+        'error_rate': {'green_max': 0.01, 'yellow_max': 0.05},
+    }
+
+
+def _color_from_max(v: float | None, green_max: float, yellow_max: float) -> str:
+    if v is None:
+        return 'gray'
+    try:
+        x = float(v)
+    except Exception:
+        return 'gray'
+    if x <= float(green_max):
+        return 'green'
+    if x <= float(yellow_max):
+        return 'yellow'
+    return 'red'
+
+
 def _to_central_iso(x: Any) -> Any:
     if x is None:
         return None
