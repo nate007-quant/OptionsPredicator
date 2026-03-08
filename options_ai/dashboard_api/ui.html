@@ -1342,23 +1342,21 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <div class="card-h"><h2>Parameter Group Testing — Portfolio Backtest</h2><div class="hint">Combine multiple parameter groups (equal weight) into one equity curve.</div></div>
             <div class="card-b">
 
-              <div class="row">
-                <label>Portfolio
-                  <select id="pfPortfolioSelect" style="min-width:240px;">
-                    <option value="">(loading)</option>
-                  </select>
-                </label>
-                <button id="pfPortfolioNew">New…</button>
-                <button id="pfPortfolioRename">Rename…</button>
-                <button class="btn-danger" id="pfPortfolioDelete">Delete</button>
-                <button id="pfPortfolioSave">Save</button>
-                <span class="hint" id="pfNote"></span>
-              </div>
-
-
               <fieldset class="fs" style="margin-top:12px;">
                 <legend>Group Manager</legend>
                 <div class="hint">Manage logical groups (Live, Sandbox-0DTE, Sandbox-30DTE, etc.). Each group is evaluated independently below.</div>
+                <div class="row" style="margin-top:8px;">
+                  <label>Portfolio
+                    <select id="pfPortfolioSelect" style="min-width:240px;">
+                      <option value="">(loading)</option>
+                    </select>
+                  </label>
+                  <button id="pfPortfolioNew">New…</button>
+                  <button id="pfPortfolioRename">Rename…</button>
+                  <button class="btn-danger" id="pfPortfolioDelete">Delete</button>
+                  <button id="pfPortfolioSave">Save</button>
+                  <span class="hint" id="pfNote"></span>
+                </div>
                 <div class="row" style="margin-top:8px;">
                   <label>Cache TTL (days) <input id="pfCacheDays" type="number" min="1" max="90" value="7" style="width:80px;" /></label>
                   <button id="pfCacheClear">Clear cached curves</button>
