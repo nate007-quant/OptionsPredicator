@@ -3198,23 +3198,49 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     function pfSavePortfoliosCache(items) {
+      const payload = {
+        saved_at_ms: Date.now(),
+        items: Array.isArray(items) ? items : [],
+      };
+      let ok = false;
+      let where = '';
+      let bytes = 0;
       try {
-        const payload = {
-          saved_at_ms: Date.now(),
-          items: Array.isArray(items) ? items : [],
-        };
-        localStorage.setItem(pfPortfoliosCacheKey(), JSON.stringify(payload));
+        const raw = JSON.stringify(payload);
+        bytes = raw.length;
+        try {
+          localStorage.setItem(pfPortfoliosCacheKey(), raw);
+          ok = true;
+          where = 'localStorage';
+        } catch {
+          // Fallback when localStorage quota is exceeded.
+          sessionStorage.setItem(pfPortfoliosCacheKey(), raw);
+          ok = true;
+          where = 'sessionStorage';
+        }
       } catch {}
+      const note = document.getElementById('pfCacheNote');
+      if (note) {
+        if (ok) note.textContent = `cache saved (${where}, ${(bytes/1024).toFixed(0)} KB)`;
+        else note.textContent = 'cache save failed';
+      }
     }
 
     function pfLoadPortfoliosCache() {
       try {
-        const raw = localStorage.getItem(pfPortfoliosCacheKey());
+        let raw = localStorage.getItem(pfPortfoliosCacheKey());
+        let where = 'localStorage';
+        if (!raw) {
+          raw = sessionStorage.getItem(pfPortfoliosCacheKey());
+          where = 'sessionStorage';
+        }
         if (!raw) return null;
         const obj = JSON.parse(raw);
         if (!obj || typeof obj !== 'object' || !Array.isArray(obj.items)) return null;
         const age = Date.now() - Number(obj.saved_at_ms || 0);
         if (!Number.isFinite(age) || age < 0 || age > pfCacheTtlMs()) return null;
+        const note = document.getElementById('pfCacheNote');
+        if (note) note.textContent = `cache hit (${where})`;
         return obj.items;
       } catch {
         return null;
@@ -4941,7 +4967,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('pfGotoBacktest')?.addEventListener('click', () => { window.location.hash = '#paramtest'; routeFromHash(); });
     document.getElementById('pfRemoveSelectedLegs')?.addEventListener('click', () => safe('pf_remove_selected', () => pfRemoveSelectedLegs()));
     document.getElementById('pfMoveSelectedLegs')?.addEventListener('click', () => safe('pf_move_selected', () => pfMoveSelectedLegs()));
-    document.getElementById('pfCacheClear')?.addEventListener('click', () => { const n = pfClearAllCardCache(); try { localStorage.removeItem(pfPortfoliosCacheKey()); } catch {} const note=document.getElementById('pfCacheNote'); if (note) note.textContent = `cleared ${n} cache item(s)`; toast(`cleared ${n} cache item(s)`, 'info'); });
+    document.getElementById('pfCacheClear')?.addEventListener('click', () => { const n = pfClearAllCardCache(); try { localStorage.removeItem(pfPortfoliosCacheKey()); } catch {}
+    try { sessionStorage.removeItem(pfPortfoliosCacheKey()); } catch {} const note=document.getElementById('pfCacheNote'); if (note) note.textContent = `cleared ${n} cache item(s)`; toast(`cleared ${n} cache item(s)`, 'info'); });
 
     document.getElementById('pfRunGroup')?.addEventListener('click', () => safe('pf_group_run', () => pfRunGroup()));
     document.getElementById('pfStopGroup')?.addEventListener('click', () => safe('pf_group_stop', () => pfStopGroup()));
