@@ -2011,12 +2011,17 @@ def create_app() -> FastAPI:
                     return {'ok': True, 'portfolio_id': int(portfolio_id), 'mode': mode, 'environment': env, 'account_label': account_label, 'inserted': 0, 'existing': 0}
 
                 strategy_key = strategy_keys[0] if strategy_keys else 'debit_spreads'
+                primary_params = {}
+                if lines and isinstance(lines[0], dict):
+                    primary_params = dict(lines[0].get('params') or {})
                 payload = {
                     'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name'])},
                     'strategy_key': strategy_key,
                     'merge_mode': 'merged',
                     'group_lines': lines,
-                    'params': {'group_lines': lines},
+                    # Executor currently requires top-level params with tradable leg symbols.
+                    # Use first qualifying line as executable representative for merged signal.
+                    'params': primary_params,
                     'summary': {},
                     'paired_account': {'environment': env, 'account_label': account_label},
                 }
