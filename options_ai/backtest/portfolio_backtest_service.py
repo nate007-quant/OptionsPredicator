@@ -87,6 +87,103 @@ def combine_trades_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple
     return eq, summary
 
 
+def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Merged mode: treat all legs as one shared strategy lifecycle.
+
+    Approximates shared management by allowing one open at a time across the union of leg trades.
+    Open trigger = earliest next entry across all legs.
+    Close trigger = earliest exit at/after open across all legs.
+    """
+    recs: list[dict[str, Any]] = []
+    for li, trades in enumerate(trades_by_leg):
+        for t in trades or []:
+            ts_e = t.get("entry_ts") or t.get("exit_ts")
+            ts_x = t.get("exit_ts") or t.get("entry_ts")
+            if not ts_e or not ts_x:
+                continue
+            dt_e = _parse_iso(str(ts_e))
+            dt_x = _parse_iso(str(ts_x))
+            if dt_e is None or dt_x is None:
+                continue
+            if dt_e.tzinfo is None:
+                dt_e = dt_e.replace(tzinfo=timezone.utc)
+            if dt_x.tzinfo is None:
+                dt_x = dt_x.replace(tzinfo=timezone.utc)
+            dt_e = dt_e.astimezone(timezone.utc)
+            dt_x = dt_x.astimezone(timezone.utc)
+            try:
+                pnl = float(t.get("pnl_dollars") or 0.0)
+            except Exception:
+                pnl = 0.0
+            recs.append({"leg": int(li), "entry": dt_e, "exit": dt_x, "pnl": pnl})
+
+    recs.sort(key=lambda r: (r["entry"], r["exit"]))
+    if not recs:
+        return [], {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+            "cum_pnl_dollars": 0.0,
+            "avg_pnl_dollars": 0.0,
+            "max_drawdown_dollars": 0.0,
+            "profit_factor": 0.0,
+            "mode": "merged",
+        }
+
+    synth_pnls: list[float] = []
+    eq_points: list[float] = []
+    eq: list[dict[str, Any]] = []
+    cum = 0.0
+
+    # walk timeline with one active position at a time
+    cursor: datetime | None = None
+    while True:
+        open_candidates = [r for r in recs if cursor is None or r["entry"] >= cursor]
+        if not open_candidates:
+            break
+        opener = min(open_candidates, key=lambda r: (r["entry"], r["exit"]))
+        open_ts = opener["entry"]
+
+        close_candidates = [r for r in recs if r["entry"] >= open_ts and r["exit"] >= open_ts]
+        if not close_candidates:
+            break
+        closer = min(close_candidates, key=lambda r: (r["exit"], r["entry"]))
+        close_ts = closer["exit"]
+        pnl = float(closer["pnl"])
+
+        synth_pnls.append(pnl)
+        cum += pnl
+        eq_points.append(cum)
+        eq.append({
+            "ts": close_ts.isoformat(),
+            "cum_pnl_dollars": float(cum),
+            "entry_ts": open_ts.isoformat(),
+            "close_leg": int(closer["leg"]),
+            "open_leg": int(opener["leg"]),
+        })
+        cursor = close_ts
+
+    wins = sum(1 for v in synth_pnls if v > 0)
+    losses = sum(1 for v in synth_pnls if v < 0)
+    sum_gain = sum(v for v in synth_pnls if v > 0)
+    sum_loss = sum(v for v in synth_pnls if v < 0)
+
+    summary = {
+        "trades": int(len(synth_pnls)),
+        "wins": int(wins),
+        "losses": int(losses),
+        "win_rate": float(wins / len(synth_pnls)) if synth_pnls else 0.0,
+        "cum_pnl_dollars": float(cum),
+        "avg_pnl_dollars": float(sum(synth_pnls) / len(synth_pnls)) if synth_pnls else 0.0,
+        "max_drawdown_dollars": float(_max_drawdown(eq_points) if eq_points else 0.0),
+        "profit_factor": float(sum_gain / abs(sum_loss)) if sum_loss < 0 else (float("inf") if sum_gain > 0 else 0.0),
+        "mode": "merged",
+    }
+    return eq, summary
+
+
+
 @dataclass
 class PortfolioStatus:
     session_id: int
@@ -114,9 +211,12 @@ class PortfolioBacktestService:
             if r is not None:
                 raise HTTPException(status_code=409, detail=f"portfolio backtest already active: {int(r[0])}")
 
-    def start(self, *, legs: list[dict[str, Any]]) -> dict[str, Any]:
+    def start(self, *, legs: list[dict[str, Any]], merge_mode: str = "independent") -> dict[str, Any]:
         if not isinstance(legs, list) or not legs:
             raise HTTPException(status_code=400, detail="legs must be a non-empty list")
+        merge_mode = str(merge_mode or "independent").strip().lower()
+        if merge_mode not in {"independent", "merged"}:
+            raise HTTPException(status_code=400, detail="merge_mode must be independent|merged")
         self._ensure_no_active()
 
         # Basic validation
@@ -149,7 +249,7 @@ class PortfolioBacktestService:
                 (
                     now,
                     now,
-                    json.dumps(norm_legs, separators=(",", ":"), sort_keys=True),
+                    json.dumps({"merge_mode": merge_mode, "legs": norm_legs}, separators=(",", ":"), sort_keys=True),
                     int(len(norm_legs)),
                     now,
                 ),
@@ -158,7 +258,7 @@ class PortfolioBacktestService:
             con.commit()
 
         self._spawn_worker(session_id=session_id)
-        return {"session_id": session_id, "status": "running", "legs_total": len(norm_legs)}
+        return {"session_id": session_id, "status": "running", "legs_total": len(norm_legs), "merge_mode": merge_mode}
 
     def stop(self, *, session_id: int) -> dict[str, Any]:
         with self._connect(self.db_path) as con:
@@ -291,7 +391,13 @@ class PortfolioBacktestService:
                 ).fetchone()
                 if not r:
                     return
-                legs = json.loads(r[0] or "[]")
+                payload = json.loads(r[0] or "[]")
+                if isinstance(payload, dict):
+                    merge_mode = str(payload.get("merge_mode") or "independent").strip().lower()
+                    legs = payload.get("legs") or []
+                else:
+                    merge_mode = "independent"
+                    legs = payload
 
             trades_by_leg: list[list[dict[str, Any]]] = []
             legs_summaries: list[dict[str, Any]] = []
@@ -315,7 +421,12 @@ class PortfolioBacktestService:
                     trades_by_leg.append([])
                     self._bump(session_id, failed=1)
 
-            combined_equity, combined_summary = combine_trades_to_equity(trades_by_leg)
+            if str(merge_mode) == "merged":
+                combined_equity, combined_summary = combine_trades_merged_to_equity(trades_by_leg)
+            else:
+                combined_equity, combined_summary = combine_trades_to_equity(trades_by_leg)
+                if isinstance(combined_summary, dict):
+                    combined_summary["mode"] = "independent"
 
             # If cancelled, still mark stopped and return partial results
             status = "stopped" if self._cancel_requested(session_id) else "stopped"

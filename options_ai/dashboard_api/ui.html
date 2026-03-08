@@ -3402,9 +3402,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (note) note.textContent = 'running…';
       pfRenderCardProgress(pid, 0, (legs || []).length);
 
+      const mode = String(it.execution_mode || 'independent');
       let resp;
       try {
         resp = await jpost('/api/portfolio_backtest/start', {
+          merge_mode: mode,
           legs: legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
         });
       } catch (e) {
@@ -3491,6 +3493,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       toast('line deleted', 'warn');
     }
 
+    async function pfSetGroupExecutionMode(pid, mode) {
+      const m = String(mode || 'independent').toLowerCase();
+      if (!['independent','merged'].includes(m)) throw new Error('invalid mode');
+      await jput(`/api/portfolios/${pid}`, { execution_mode: m });
+      await pfReloadPortfolios();
+      toast(`group mode set: ${m}`, 'info');
+    }
+
     async function pfAddGroupLine(pid) {
       const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
       if (!it) throw new Error('group not found');
@@ -3553,6 +3563,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <button class="btn-primary" id="pfCardRun-${pid}">Run this group</button>
               <button id="pfCardStop-${pid}">Stop</button>
               <button id="pfCardAdd-${pid}">Add line</button>
+              <label>Mode
+                <select id="pfCardMode-${pid}" style="min-width:140px;">
+                  <option value="independent" ${(String(it.execution_mode||'independent')==='independent')?'selected':''}>Independent</option>
+                  <option value="merged" ${(String(it.execution_mode||'independent')==='merged')?'selected':''}>Merged (shared)</option>
+                </select>
+              </label>
               <span class="hint" id="pfCardNote-${pid}"></span>
             </div>
             <div style="margin-top:8px;">
@@ -3622,6 +3638,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         document.getElementById(`pfCardRun-${pid}`)?.addEventListener('click', () => safe(`pf_card_run_${pid}`, () => pfRunSingleGroup(pid)));
         document.getElementById(`pfCardStop-${pid}`)?.addEventListener('click', () => safe(`pf_card_stop_${pid}`, () => pfStopSingleGroup(pid)));
         document.getElementById(`pfCardAdd-${pid}`)?.addEventListener('click', () => safe(`pf_card_add_${pid}`, () => pfAddGroupLine(pid)));
+        document.getElementById(`pfCardMode-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_mode_${pid}`, () => pfSetGroupExecutionMode(pid, ev.target.value)));
 
         for (let i = 0; i < legs.length; i++) {
           document.getElementById(`pfLineSave-${pid}-${i}`)?.addEventListener('click', () => safe(`pf_line_save_${pid}_${i}`, async () => {

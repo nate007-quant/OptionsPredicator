@@ -1613,7 +1613,7 @@ def create_app() -> FastAPI:
 
         with _connect(db_path) as con:
             rows = con.execute(
-                """SELECT id,name,legs_json,created_at_utc,updated_at_utc
+                """SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,created_at_utc,updated_at_utc
                    FROM portfolio_defs
                    ORDER BY updated_at_utc DESC, id DESC"""
             ).fetchall()
@@ -1630,6 +1630,8 @@ def create_app() -> FastAPI:
                     'legs': legs,
                     'created_at_utc': str(r['created_at_utc']),
                     'updated_at_utc': str(r['updated_at_utc']),
+            'execution_mode': str(r['execution_mode'] or 'independent'),
+                    'execution_mode': str(r['execution_mode'] or 'independent'),
                     'link_counts': {'groups': len(pid_to_groups.get(int(r['id']), []))},
                     'upstream_refs': [{'type':'group','id':x} for x in pid_to_groups.get(int(r['id']), [])],
                     'downstream_refs': [],
@@ -1646,6 +1648,10 @@ def create_app() -> FastAPI:
         if not name:
             raise HTTPException(status_code=400, detail='name required')
         legs = (body or {}).get('legs')
+        execution_mode = (body or {}).get('execution_mode')
+        execution_mode = str((body or {}).get('execution_mode') or 'independent').strip().lower()
+        if execution_mode not in {'independent','merged'}:
+            raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
         if legs is None:
             legs = []
         if not isinstance(legs, list):
@@ -1653,20 +1659,20 @@ def create_app() -> FastAPI:
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
             cur = con.execute(
-                """INSERT INTO portfolio_defs(name, legs_json, created_at_utc, updated_at_utc)
-                   VALUES(?,?,?,?)""",
-                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), now, now),
+                """INSERT INTO portfolio_defs(name, legs_json, execution_mode, created_at_utc, updated_at_utc)
+                   VALUES(?,?,?,?,?)""",
+                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, now, now),
             )
             pid = int(cur.lastrowid)
             con.commit()
-        return {'id': pid, 'name': name, 'legs': legs}
+        return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode}
 
     @app.get('/api/portfolios/{portfolio_id}')
     def portfolios_get(portfolio_id: int) -> dict[str, Any]:
         import json as _json
         with _connect(db_path) as con:
             r = con.execute(
-                """SELECT id,name,legs_json,created_at_utc,updated_at_utc
+                """SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,created_at_utc,updated_at_utc
                    FROM portfolio_defs WHERE id=?""",
                 (int(portfolio_id),),
             ).fetchone()
@@ -1689,16 +1695,23 @@ def create_app() -> FastAPI:
         import json as _json
         name = (body or {}).get('name')
         legs = (body or {}).get('legs')
+        execution_mode = str((body or {}).get('execution_mode') or 'independent').strip().lower()
+        if execution_mode not in {'independent','merged'}:
+            raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
         if name is not None:
             name = str(name).strip()
             if not name:
                 raise HTTPException(status_code=400, detail='name cannot be blank')
         if legs is not None and not isinstance(legs, list):
             raise HTTPException(status_code=400, detail='legs must be a list')
+        if execution_mode is not None:
+            execution_mode = str(execution_mode).strip().lower()
+            if execution_mode not in {'independent','merged'}:
+                raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
-            r = con.execute('SELECT id,name,legs_json FROM portfolio_defs WHERE id=?', (int(portfolio_id),)).fetchone()
+            r = con.execute("SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode FROM portfolio_defs WHERE id=?", (int(portfolio_id),)).fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail='portfolio not found')
             cur_name = str(r['name'])
@@ -1706,10 +1719,12 @@ def create_app() -> FastAPI:
 
             new_name = cur_name if name is None else str(name)
             new_legs_json = cur_legs_json if legs is None else _json.dumps(legs, separators=(',', ':'), sort_keys=True)
+            cur_mode = str(r['execution_mode'] or 'independent')
+            new_mode = cur_mode if execution_mode is None else str(execution_mode)
 
             con.execute(
-                'UPDATE portfolio_defs SET name=?, legs_json=?, updated_at_utc=? WHERE id=?',
-                (new_name, new_legs_json, now, int(portfolio_id)),
+                'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, updated_at_utc=? WHERE id=?',
+                (new_name, new_legs_json, new_mode, now, int(portfolio_id)),
             )
             con.commit()
 
@@ -1717,7 +1732,7 @@ def create_app() -> FastAPI:
             out_legs = _json.loads(new_legs_json or '[]')
         except Exception:
             out_legs = []
-        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs}
+        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode}
 
     @app.delete('/api/portfolios/{portfolio_id}')
     def portfolios_delete(portfolio_id: int) -> dict[str, Any]:
@@ -1739,6 +1754,9 @@ def create_app() -> FastAPI:
     @app.post('/api/portfolio_backtest/start')
     def portfolio_backtest_start(body: dict[str, Any]) -> dict[str, Any]:
         legs = (body or {}).get('legs')
+        execution_mode = str((body or {}).get('execution_mode') or 'independent').strip().lower()
+        if execution_mode not in {'independent','merged'}:
+            raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
         if not isinstance(legs, list) or not legs:
             raise HTTPException(status_code=400, detail='legs must be a non-empty list')
         return portfolio_service.start(legs=legs)

@@ -200,6 +200,11 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
         """,
     )
 
+    # Portfolio definitions: execution mode toggle (independent|merged)
+    if not _has_column(con, "portfolio_defs", "execution_mode"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'independent'")
+        con.commit()
+
 
 
 def backfill_params_hash(
