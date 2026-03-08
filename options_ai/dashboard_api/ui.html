@@ -3239,12 +3239,21 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       });
       const data = pts.map(p => Number(p.cum_pnl_dollars || 0));
       const key = String(pid);
+
+      const existing = pfCardCharts[key];
+      // If workbench re-rendered, old chart may point to a detached canvas.
+      if (existing && existing.canvas !== canvas) {
+        try { existing.destroy(); } catch {}
+        delete pfCardCharts[key];
+      }
+
       if (pfCardCharts[key]) {
         pfCardCharts[key].data.labels = labels;
         pfCardCharts[key].data.datasets[0].data = data;
         pfCardCharts[key].update();
         return;
       }
+
       pfCardCharts[key] = new Chart(canvas.getContext('2d'), {
         type: 'line',
         data: { labels, datasets: [{ label: 'cum_pnl_dollars', data, borderWidth: 2, pointRadius: 0, tension: 0.2 }] },
@@ -3398,6 +3407,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function pfRenderWorkbench() {
       const host = document.getElementById('pfWorkbench');
       if (!host) return;
+      // Clear old chart instances bound to old canvases before re-render.
+      try {
+        for (const k of Object.keys(pfCardCharts || {})) {
+          try { pfCardCharts[k]?.destroy?.(); } catch {}
+          delete pfCardCharts[k];
+        }
+      } catch {}
       host.innerHTML = '';
       const items = Array.isArray(pfPortfolios) ? pfPortfolios : [];
       if (!items.length) {
