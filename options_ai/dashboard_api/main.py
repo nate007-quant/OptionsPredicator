@@ -3678,40 +3678,125 @@ def create_app() -> FastAPI:
             ).fetchall()
         return {'window': window, 'items': [{'event': r['event'], 'component': r['component'], 'count': int(r['n'] or 0)} for r in rows]}
 
+    def _infer_service_meta(name: str) -> tuple[str, str, bool]:
+        n = str(name or '')
+        if n.startswith('spx_chain_ingester'):
+            return ('Ingest', 'pipeline', True)
+        if n.startswith('spx_chain_phase2'):
+            return ('Validate', 'pipeline', True)
+        if n.startswith('spx_debit_spreads'):
+            return ('Strategy Build', 'pipeline', True)
+        if n.startswith('spx_debit_ml'):
+            return ('Backtest Queue', 'pipeline', True)
+        if n.startswith('options_ai_execution'):
+            return ('Execution', 'execution', True)
+        if n.startswith('options_ai_risk_guard'):
+            return ('Control', 'control', True)
+        if n.startswith('options_ai_dashboard_api'):
+            return ('Control', 'control', True)
+        if n.startswith('options_predicator'):
+            return ('Control', 'control', True)
+        if n.startswith('strategy_factory_daily'):
+            return ('Strategy Factory', 'scheduler', False)
+        if n.startswith('optionspredicator-stack'):
+            return ('Dependencies', 'orchestrator', False)
+        return ('Unknown', 'misc', False)
+
     def _default_services() -> list[dict[str, Any]]:
-        return [
-            {'id': 'options_ai_watcher', 'name': 'options_ai_watcher', 'stage': 'Ingest', 'group': 'pipeline', 'critical': True, 'log_name': 'watcher'},
-            {'id': 'options_ai_scorer', 'name': 'options_ai_scorer', 'stage': 'Transform', 'group': 'pipeline', 'critical': True, 'log_name': 'scoring'},
-            {'id': 'options_ai_dashboard_api', 'name': 'options_ai_dashboard_api', 'stage': 'Control', 'group': 'control', 'critical': True, 'log_name': 'dashboard_api'},
-            {'id': 'options_ai_backtester', 'name': 'options_ai_backtester', 'stage': 'Backtest Queue', 'group': 'backtest', 'critical': False, 'log_name': 'backtest'},
+        names = [
+            'options_ai_dashboard_api',
+            'options_predicator',
+            'options_ai_execution',
+            'options_ai_execution_monitor',
+            'options_ai_risk_guard',
+            'spx_chain_ingester',
+            'spx_chain_phase2',
+            'spx_chain_phase2_term_dte7t2',
+            'spx_chain_phase2_term_dte14t2',
+            'spx_chain_phase2_term_dte21t3',
+            'spx_chain_phase2_term_dte30t5',
+            'spx_debit_spreads',
+            'spx_debit_spreads_term_dte7t2',
+            'spx_debit_spreads_term_dte14t2',
+            'spx_debit_spreads_term_dte21t3',
+            'spx_debit_spreads_term_dte30t5',
+            'spx_debit_ml',
+            'spx_debit_ml_term_dte7t2',
+            'spx_debit_ml_term_dte14t2',
+            'spx_debit_ml_term_dte21t3',
+            'spx_debit_ml_term_dte30t5',
+            'strategy_factory_daily',
+            'optionspredicator-stack',
         ]
+        out = []
+        for n in names:
+            stage, group, critical = _infer_service_meta(n)
+            out.append({'id': n, 'name': n, 'stage': stage, 'group': group, 'critical': critical, 'log_name': n})
+        return out
+
+    def _discover_systemd_services() -> list[str]:
+        allow_prefixes = ('options_', 'spx_', 'strategy_factory_', 'optionspredicator-')
+        out: list[str] = []
+        try:
+            p = subprocess.run(
+                ['systemctl', 'list-unit-files', '--type=service', '--no-legend', '--no-pager'],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            for line in (p.stdout or '').splitlines():
+                unit = (line.strip().split() or [''])[0]
+                if not unit.endswith('.service'):
+                    continue
+                base = unit[:-8]
+                if any(base.startswith(pref) for pref in allow_prefixes):
+                    out.append(base)
+        except Exception:
+            return []
+        seen = set()
+        uniq = []
+        for x in out:
+            if x in seen:
+                continue
+            seen.add(x)
+            uniq.append(x)
+        return uniq
 
     def _load_services_registry() -> list[dict[str, Any]]:
         raw = os.getenv('PROCESSING_SERVICES_JSON', '').strip()
-        if not raw:
-            return _default_services()
-        try:
-            obj = _json.loads(raw)
-            if isinstance(obj, list):
-                out = []
-                for it in obj:
-                    if not isinstance(it, dict):
-                        continue
-                    sid = str(it.get('id') or it.get('name') or '').strip()
-                    if not sid:
-                        continue
-                    out.append({
-                        'id': sid,
-                        'name': str(it.get('name') or sid),
-                        'stage': str(it.get('stage') or 'Unknown'),
-                        'group': str(it.get('group') or 'misc'),
-                        'critical': bool(it.get('critical', False)),
-                        'log_name': str(it.get('log_name') or sid),
-                    })
-                if out:
-                    return out
-        except Exception:
-            pass
+        if raw:
+            try:
+                obj = _json.loads(raw)
+                if isinstance(obj, list):
+                    out = []
+                    for it in obj:
+                        if not isinstance(it, dict):
+                            continue
+                        sid = str(it.get('id') or it.get('name') or '').strip()
+                        if not sid:
+                            continue
+                        stage, group, critical_guess = _infer_service_meta(str(it.get('name') or sid))
+                        out.append({
+                            'id': sid,
+                            'name': str(it.get('name') or sid),
+                            'stage': str(it.get('stage') or stage),
+                            'group': str(it.get('group') or group),
+                            'critical': bool(it.get('critical', critical_guess)),
+                            'log_name': str(it.get('log_name') or sid),
+                        })
+                    if out:
+                        return out
+            except Exception:
+                pass
+
+        discovered = _discover_systemd_services()
+        if discovered:
+            out = []
+            for n in discovered:
+                stage, group, critical = _infer_service_meta(n)
+                out.append({'id': n, 'name': n, 'stage': stage, 'group': group, 'critical': critical, 'log_name': n})
+            return out
         return _default_services()
 
     def _service_show(service: str) -> dict[str, Any]:
