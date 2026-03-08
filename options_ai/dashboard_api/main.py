@@ -1910,6 +1910,32 @@ def create_app() -> FastAPI:
 
 # ---- Execution API ----
 
+    @app.get('/api/execution/accounts')
+    def execution_accounts() -> dict[str, Any]:
+        items: list[dict[str, Any]] = []
+
+        sb_acct = str(cfg.tasty_sandbox_account_number or os.getenv('TASTY_SANDBOX_ACCOUNT_NUMBER', '') or '').strip()
+        lv_acct = str(cfg.tasty_live_account_number or os.getenv('TASTY_LIVE_ACCOUNT_NUMBER', '') or '').strip()
+
+        def _mk(env: str, acct: str, label: str) -> dict[str, Any]:
+            aid = f"tastytrade:{env}:{acct or 'unconfigured'}"
+            return {
+                'id': aid,
+                'broker_name': 'tastytrade',
+                'environment': env,
+                'account_number': acct,
+                'label': label,
+                'active': bool(acct),
+            }
+
+        items.append(_mk('sandbox', sb_acct, 'Tastytrade Sandbox'))
+        items.append(_mk('live', lv_acct, 'Tastytrade Live'))
+
+        return {
+            'items': items,
+            'active_count': int(sum(1 for x in items if x.get('active'))),
+        }
+
     @app.get('/api/execution/intents')
     def execution_intents_list(
         status: str | None = Query(None),

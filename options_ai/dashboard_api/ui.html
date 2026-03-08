@@ -596,6 +596,22 @@
           </div>
         </div>
 
+        <div class="card" style="margin-bottom: var(--space-4);">
+          <div class="card-h"><h2>Execution Accounts</h2><div class="hint">Configured broker accounts available for group pairing</div></div>
+          <div class="card-b">
+            <div class="row">
+              <button class="btn-primary" id="exRefreshAccounts">Refresh</button>
+              <div>Active: <span id="exAccountsActive" class="pill">—</span></div>
+            </div>
+            <div style="margin-top:10px; overflow:auto; max-height:220px;">
+              <table>
+                <thead><tr><th>broker</th><th>environment</th><th>account_number</th><th>active</th></tr></thead>
+                <tbody id="exAccountsTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         <div class="grid2">
           <div class="card">
             <div class="card-h"><h2>Risk Session</h2><div class="hint">Daily loss guard + kill switch</div></div>
@@ -1692,6 +1708,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     let pfCardPollers = {}; // portfolio_id -> timer id
     let pfCardRanges = {}; // portfolio_id -> {start,end}
     let pfCardModes = {}; // portfolio_id -> independent|merged
+    let exAccounts = []; // execution account catalog
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
@@ -3611,17 +3628,27 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       toast('line deleted', 'warn');
     }
 
-    async function pfSaveGroupAccountPair(pid, env, label) {
-      const e = String(env || 'sandbox').toLowerCase();
-      if (!['sandbox','live'].includes(e)) throw new Error('env must be sandbox|live');
-      await jput(`/api/portfolios/${pid}`, { paired_environment: e, paired_account_label: String(label || '') });
+    function pfSelectedAccountByCard(pid) {
+      const aid = document.getElementById(`pfCardAcct-${pid}`)?.value || '';
+      const acct = (exAccounts || []).find(a => String(a.id||'') === String(aid));
+      return acct || null;
+    }
+
+    async function pfSaveGroupAccountPair(pid) {
+      const acct = pfSelectedAccountByCard(pid);
+      if (!acct) throw new Error('select an active account');
+      const env = String(acct.environment || 'sandbox').toLowerCase();
+      const label = String(acct.account_number || acct.label || '').trim();
+      await jput(`/api/portfolios/${pid}`, { paired_environment: env, paired_account_label: label });
       await pfReloadPortfolios();
-      toast(`account pair saved (${e})`, 'success');
+      toast(`account pair saved (${env}${label ? ' ' + label : ''})`, 'success');
     }
 
     async function pfEmitGroupSignals(pid) {
-      const env = document.getElementById(`pfCardAcctEnv-${pid}`)?.value || 'sandbox';
-      const label = document.getElementById(`pfCardAcctLabel-${pid}`)?.value || '';
+      const acct = pfSelectedAccountByCard(pid);
+      if (!acct) throw new Error('select an active account');
+      const env = String(acct.environment || 'sandbox').toLowerCase();
+      const label = String(acct.account_number || acct.label || '').trim();
       const ok = confirm(`Emit signals for this group to ${env}${label ? ' ('+label+')' : ''}?`);
       if (!ok) return;
       const res = await jpost(`/api/portfolios/${pid}/emit_signals`, { environment: env, account_label: label });
@@ -3711,13 +3738,21 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                   <option value="merged" ${(String(it.execution_mode||'independent')==='merged')?'selected':''}>Merged (shared)</option>
                 </select>
               </label>
-              <label>Account env
-                <select id="pfCardAcctEnv-${pid}" style="min-width:110px;">
-                  <option value="sandbox" ${(String(it.paired_environment||'sandbox')==='sandbox')?'selected':''}>sandbox</option>
-                  <option value="live" ${(String(it.paired_environment||'sandbox')==='live')?'selected':''}>live</option>
+              <label>Paired account
+                <select id="pfCardAcct-${pid}" style="min-width:280px;">
+                  ${(() => {
+                    const opts = (exAccounts || []).filter(a => !!a.active);
+                    if (!opts.length) return '<option value="">(no active accounts)</option>';
+                    return opts.map(a => {
+                      const id = String(a.id || '');
+                      const acct = String(a.account_number || a.label || '');
+                      const isSel = (String(a.environment||'') === String(it.paired_environment||'')) && (acct === String(it.paired_account_label||''));
+                      const txt = `${String(a.label || a.broker_name || 'acct')} — ${String(a.environment||'')} ${acct}`.trim();
+                      return `<option value="${esc(id)}" ${isSel ? 'selected' : ''}>${esc(txt)}</option>`;
+                    }).join('');
+                  })()}
                 </select>
               </label>
-              <label>Account label <input id="pfCardAcctLabel-${pid}" value="${esc(String(it.paired_account_label || ''))}" placeholder="Tasty sandbox acct" style="min-width:170px;" /></label>
               <button id="pfCardAcctSave-${pid}">Save account</button>
               <button id="pfCardEmit-${pid}" class="btn-primary">Emit signals</button>
               <label>Group start <input id="pfCardStart-${pid}" type="date" value="${esc(String(it.group_start_day || pfInferGroupStartDefault(legs) || ''))}" /></label>
@@ -3806,9 +3841,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         document.getElementById(`pfCardAdd-${pid}`)?.addEventListener('click', () => safe(`pf_card_add_${pid}`, () => pfAddGroupLine(pid)));
         document.getElementById(`pfCardMode-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_mode_${pid}`, () => pfSetGroupExecutionMode(pid, ev.target.value)));
         document.getElementById(`pfCardAcctSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_acct_${pid}`, async () => {
-          const env = document.getElementById(`pfCardAcctEnv-${pid}`)?.value || 'sandbox';
-          const label = document.getElementById(`pfCardAcctLabel-${pid}`)?.value || '';
-          await pfSaveGroupAccountPair(pid, env, label);
+          await pfSaveGroupAccountPair(pid);
         }));
         document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('click', () => safe(`pf_card_emit_${pid}`, () => pfEmitGroupSignals(pid)));
         document.getElementById(`pfCardDateSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_date_save_${pid}`, async () => {
@@ -4660,6 +4693,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exKpiProtection: 'Open trades with armed protection / open trades.',
         exKpiForceSess: 'Count of force-close session events in selected window.',
         exKpiForceTrades: 'Count of trades closed by FORCE_CLOSE_SESSION_END.',
+        exRefreshAccounts: 'Refresh configured execution account list.',
+        exAccountsActive: 'Count of configured active accounts available for pairing.',
+        exAccountsTable: 'Execution account catalog (broker, env, account number).',
 
         exRefreshTrades: 'Refresh currently open/opening/closing trades table.',
         exTradesTable: 'Open trades view including protection status and P&L fields.',
@@ -4733,6 +4769,33 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
+
+    async function exRefreshAccounts() {
+      const d = await jget('/api/execution/accounts');
+      exAccounts = Array.isArray(d.items) ? d.items : [];
+
+      const active = document.getElementById('exAccountsActive');
+      if (active) active.textContent = String(d.active_count ?? exAccounts.filter(x => x.active).length);
+
+      const tb = document.getElementById('exAccountsTable');
+      if (tb) {
+        tb.innerHTML = '';
+        for (const a of exAccounts) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${esc(String(a.broker_name || ''))}</td>
+            <td>${esc(String(a.environment || ''))}</td>
+            <td>${esc(String(a.account_number || ''))}</td>
+            <td>${a.active ? 'YES' : 'NO'}</td>
+          `;
+          tb.appendChild(tr);
+        }
+      }
+
+      // account dropdowns in group cards depend on this list
+      try { if (Array.isArray(pfPortfolios) && pfPortfolios.length) pfRenderWorkbench(); } catch {}
+      return d;
+    }
 
     async function exRefreshRiskSession() {
       const d = await jget('/api/execution/risk-session');
@@ -5126,6 +5189,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('exRefreshTrades')?.addEventListener('click', () => safe('ex_trades', () => exRefreshOpenTrades()));
     document.getElementById('exRefreshHistory')?.addEventListener('click', () => safe('ex_trade_history', () => exRefreshTradeHistory()));
     document.getElementById('exRefreshKpis')?.addEventListener('click', () => safe('ex_kpis', () => exRefreshKpis()));
+    document.getElementById('exRefreshAccounts')?.addEventListener('click', () => safe('ex_accounts', () => exRefreshAccounts()));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
     document.getElementById('exRefreshIncidents')?.addEventListener('click', () => safe('ex_incidents', () => exRefreshIncidents()));
     document.getElementById('exRefreshRecon')?.addEventListener('click', () => safe('ex_recon', () => exRefreshReconciliation()));
@@ -5374,6 +5438,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
       setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), 7000);
       setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), 12000);
+      setInterval(() => safe('ex_accounts', () => exRefreshAccounts()), 60000);
       setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
       setInterval(() => safe('ex_recon', () => exRefreshReconciliation()), 10000);
       setInterval(() => safe('ex_actions', () => exRefreshOperatorActions()), 15000);
