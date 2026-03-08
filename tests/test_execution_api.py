@@ -72,3 +72,11 @@ def test_execution_endpoints_smoke(tmp_path: Path, monkeypatch):
 
     r13 = client.post("/api/execution/quarantine/clear", json={"reason": "test_clear"})
     assert r13.status_code == 200
+
+    r14 = client.get("/api/execution/trades/history?environment=sandbox&limit=10")
+    assert r14.status_code == 200
+    assert r14.json()["environment"] == "sandbox"
+
+    r15 = client.get("/api/execution/trades/history?environment=live&limit=10")
+    assert r15.status_code == 200
+    assert r15.json()["environment"] == "live"

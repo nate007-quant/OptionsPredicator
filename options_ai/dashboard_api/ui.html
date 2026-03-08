@@ -660,6 +660,38 @@
             </div>
           </div>
         </div>
+
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-h"><h2>Trade History (Sandbox vs Live)</h2><div class="hint">Most recent trade runs by environment</div></div>
+          <div class="card-b">
+            <div class="row">
+              <label>Limit <input id="exHistLimit" type="number" min="1" max="2000" value="200" style="width:90px;" /></label>
+              <button class="btn-primary" id="exRefreshHistory">Refresh</button>
+              <div>Sandbox: <span id="exHistSandboxCount" class="pill">—</span></div>
+              <div>Live: <span id="exHistLiveCount" class="pill">—</span></div>
+            </div>
+            <div class="grid2" style="margin-top:10px;">
+              <div>
+                <div class="hint" style="margin-bottom:6px;">Sandbox</div>
+                <div style="overflow:auto; max-height:320px;">
+                  <table>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>opened</th><th>closed</th><th>realized</th></tr></thead>
+                    <tbody id="exHistSandboxTable"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div>
+                <div class="hint" style="margin-bottom:6px;">Live</div>
+                <div style="overflow:auto; max-height:320px;">
+                  <table>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>opened</th><th>closed</th><th>realized</th></tr></thead>
+                    <tbody id="exHistLiveTable"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
 
@@ -3518,6 +3550,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
         exRefreshTrades: 'Refresh currently open/opening/closing trades table.',
         exTradesTable: 'Open trades view including protection status and P&L fields.',
+        exHistLimit: 'Rows per environment for trade history panels.',
+        exRefreshHistory: 'Refresh sandbox/live trade history tables.',
+        exHistSandboxCount: 'Number of sandbox trade history rows currently shown.',
+        exHistLiveCount: 'Number of live trade history rows currently shown.',
+        exHistSandboxTable: 'Recent sandbox trade runs (all statuses).',
+        exHistLiveTable: 'Recent live trade runs (all statuses).',
 
         exIntentStatus: 'Optional filter for execution intent status.',
         exRefreshIntents: 'Refresh execution intents list.',
@@ -3653,6 +3691,40 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tb.appendChild(tr);
       }
       return d;
+    }
+
+    function exRenderTradeHistoryTable(tableId, items) {
+      const tb = document.getElementById(tableId);
+      if (!tb) return;
+      tb.innerHTML = '';
+      for (const it of (items || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${it.id ?? ''}</td>
+          <td>${it.status ?? ''}</td>
+          <td>${it.underlying ?? ''}</td>
+          <td>${it.qty ?? ''}</td>
+          <td>${it.opened_at_utc ?? ''}</td>
+          <td>${it.closed_at_utc ?? ''}</td>
+          <td>${exFmtMoney(it.pnl_realized_usd)}</td>
+        `;
+        tb.appendChild(tr);
+      }
+    }
+
+    async function exRefreshTradeHistory() {
+      const limit = Number(document.getElementById('exHistLimit')?.value || 200);
+      const [sb, lv] = await Promise.all([
+        jget(`/api/execution/trades/history?environment=sandbox&limit=${encodeURIComponent(limit)}`),
+        jget(`/api/execution/trades/history?environment=live&limit=${encodeURIComponent(limit)}`),
+      ]);
+      exRenderTradeHistoryTable('exHistSandboxTable', sb.items || []);
+      exRenderTradeHistoryTable('exHistLiveTable', lv.items || []);
+      const sbc = document.getElementById('exHistSandboxCount');
+      const lvc = document.getElementById('exHistLiveCount');
+      if (sbc) sbc.textContent = String((sb.items || []).length);
+      if (lvc) lvc.textContent = String((lv.items || []).length);
+      return { sandbox: sb, live: lv };
     }
 
     async function exRefreshIncidents() {
@@ -3924,6 +3996,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('refreshLogs')?.addEventListener('click', () => safe('refreshLogs', () => refreshLogs()));
 
     document.getElementById('exRefreshTrades')?.addEventListener('click', () => safe('ex_trades', () => exRefreshOpenTrades()));
+    document.getElementById('exRefreshHistory')?.addEventListener('click', () => safe('ex_trade_history', () => exRefreshTradeHistory()));
     document.getElementById('exRefreshKpis')?.addEventListener('click', () => safe('ex_kpis', () => exRefreshKpis()));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
     document.getElementById('exRefreshIncidents')?.addEventListener('click', () => safe('ex_incidents', () => exRefreshIncidents()));
@@ -4125,6 +4198,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('ex_kpis', () => exRefreshKpis());
       await safe('ex_reprice', () => exLoadRepricePolicy());
       await safe('ex_trades', () => exRefreshOpenTrades());
+      await safe('ex_trade_history', () => exRefreshTradeHistory());
       await safe('ex_intents', () => exRefreshIntents());
       await safe('ex_incidents', () => exRefreshIncidents());
       await safe('ex_recon', () => exRefreshReconciliation());
@@ -4160,6 +4234,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
       setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
       setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), 7000);
+      setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), 12000);
       setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
       setInterval(() => safe('ex_recon', () => exRefreshReconciliation()), 10000);
       setInterval(() => safe('ex_actions', () => exRefreshOperatorActions()), 15000);

@@ -1839,6 +1839,60 @@ def create_app() -> FastAPI:
             })
         return {'items': items}
 
+    @app.get('/api/execution/trades/history')
+    def execution_trades_history(
+        environment: str | None = Query(None, pattern='^(sandbox|live)$'),
+        limit: int = Query(200, ge=1, le=5000),
+    ) -> dict[str, Any]:
+        import json as _json
+        env = str((environment or cfg.broker_env) or cfg.broker_env).strip().lower()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, created_at_utc, updated_at_utc, environment, broker_name,
+                       execution_intent_id, status, underlying, side, qty,
+                       entry_order_id, exit_order_id,
+                       opened_at_utc, closed_at_utc,
+                       open_reason, close_reason,
+                       pnl_realized_usd, pnl_unrealized_usd,
+                       run_payload_json
+                FROM trade_runs
+                WHERE environment=? AND broker_name=?
+                ORDER BY COALESCE(closed_at_utc, opened_at_utc, updated_at_utc, created_at_utc) DESC, id DESC
+                LIMIT ?
+                """,
+                (env, str(cfg.broker_name), int(limit)),
+            ).fetchall()
+
+        items = []
+        for r in rows:
+            try:
+                payload = _json.loads(r['run_payload_json'] or '{}')
+            except Exception:
+                payload = {}
+            items.append({
+                'id': int(r['id']),
+                'created_at_utc': str(r['created_at_utc']),
+                'updated_at_utc': str(r['updated_at_utc']),
+                'environment': str(r['environment']),
+                'broker_name': str(r['broker_name']),
+                'execution_intent_id': (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
+                'status': str(r['status']),
+                'underlying': (str(r['underlying']) if r['underlying'] is not None else None),
+                'side': (str(r['side']) if r['side'] is not None else None),
+                'qty': (int(r['qty']) if r['qty'] is not None else None),
+                'entry_order_id': (str(r['entry_order_id']) if r['entry_order_id'] is not None else None),
+                'exit_order_id': (str(r['exit_order_id']) if r['exit_order_id'] is not None else None),
+                'opened_at_utc': (str(r['opened_at_utc']) if r['opened_at_utc'] is not None else None),
+                'closed_at_utc': (str(r['closed_at_utc']) if r['closed_at_utc'] is not None else None),
+                'open_reason': (str(r['open_reason']) if r['open_reason'] is not None else None),
+                'close_reason': (str(r['close_reason']) if r['close_reason'] is not None else None),
+                'pnl_realized_usd': (float(r['pnl_realized_usd']) if r['pnl_realized_usd'] is not None else None),
+                'pnl_unrealized_usd': (float(r['pnl_unrealized_usd']) if r['pnl_unrealized_usd'] is not None else None),
+                'run_payload': payload,
+            })
+        return {'environment': env, 'items': items}
+
     @app.get('/api/execution/trades/{trade_id}')
     def execution_trade_get(trade_id: int) -> dict[str, Any]:
         import json as _json
