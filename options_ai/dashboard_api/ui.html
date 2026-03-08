@@ -3315,6 +3315,27 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       toast('line added', 'success');
     }
 
+    function pfParamsSummaryHtml(params) {
+      const p = (params && typeof params === 'object') ? params : {};
+      const pick = [
+        ['start_day', 'start'],
+        ['end_day', 'end'],
+        ['horizon_minutes', 'H'],
+        ['strategy_mode', 'mode'],
+        ['expiration_mode', 'exp'],
+        ['spread_style', 'style'],
+        ['min_p_bigwin', 'min_p'],
+        ['min_pred_change', 'min_pred'],
+      ];
+      const parts = [];
+      for (const [k, label] of pick) {
+        if (p[k] === undefined || p[k] === null || p[k] === '') continue;
+        parts.push(`<span class="pill" style="margin-right:6px; margin-bottom:6px; display:inline-block;">${esc(label)}: <strong>${esc(String(p[k]))}</strong></span>`);
+      }
+      if (!parts.length) return '<span class="hint">(no common fields; open JSON)</span>';
+      return parts.join('');
+    }
+
     function pfRenderWorkbench() {
       const host = document.getElementById('pfWorkbench');
       if (!host) return;
@@ -3354,7 +3375,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
             <div style="margin-top:10px; overflow:auto;">
               <table>
-                <thead><tr><th>#</th><th>source</th><th>params (JSON)</th><th>actions</th></tr></thead>
+                <thead><tr><th>#</th><th>source</th><th>params (summary)</th><th>actions</th></tr></thead>
                 <tbody id="pfCardLines-${pid}"></tbody>
               </table>
             </div>
@@ -3368,8 +3389,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td>${i + 1}</td>
-            <td><input id="pfLineSrc-${pid}-${i}" value="${esc(String(leg.source || ''))}" style="width:140px;" /></td>
-            <td><textarea id="pfLineParams-${pid}-${i}" style="width:100%; min-width:360px; height:84px; font-family:var(--mono); font-size:11px;">${esc(JSON.stringify(leg.params || {}, null, 2))}</textarea></td>
+            <td><input id="pfLineSrc-${pid}-${i}" value="${esc(String(leg.source || ''))}" style="width:160px;" /></td>
+            <td>
+              <div>${pfParamsSummaryHtml(leg.params || {})}</div>
+              <details style="margin-top:6px;">
+                <summary style="cursor:pointer; font-size:12px; color:var(--muted);">Edit JSON</summary>
+                <textarea id="pfLineParams-${pid}-${i}" style="margin-top:6px; width:100%; min-width:360px; height:96px; font-family:var(--mono); font-size:11px;">${esc(JSON.stringify(leg.params || {}, null, 2))}</textarea>
+              </details>
+            </td>
             <td>
               <button id="pfLineSave-${pid}-${i}" class="btn-primary" style="padding:4px 8px;">Save</button>
               <button id="pfLineDel-${pid}-${i}" class="btn-danger" style="padding:4px 8px; margin-left:6px;">Delete</button>
