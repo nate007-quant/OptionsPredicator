@@ -3611,6 +3611,25 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       toast('line deleted', 'warn');
     }
 
+    async function pfSaveGroupAccountPair(pid, env, label) {
+      const e = String(env || 'sandbox').toLowerCase();
+      if (!['sandbox','live'].includes(e)) throw new Error('env must be sandbox|live');
+      await jput(`/api/portfolios/${pid}`, { paired_environment: e, paired_account_label: String(label || '') });
+      await pfReloadPortfolios();
+      toast(`account pair saved (${e})`, 'success');
+    }
+
+    async function pfEmitGroupSignals(pid) {
+      const env = document.getElementById(`pfCardAcctEnv-${pid}`)?.value || 'sandbox';
+      const label = document.getElementById(`pfCardAcctLabel-${pid}`)?.value || '';
+      const ok = confirm(`Emit signals for this group to ${env}${label ? ' ('+label+')' : ''}?`);
+      if (!ok) return;
+      const res = await jpost(`/api/portfolios/${pid}/emit_signals`, { environment: env, account_label: label });
+      toast(`signals emitted: inserted ${res.inserted||0}, existing ${res.existing||0}`, 'success');
+      const note = document.getElementById(`pfCardNote-${pid}`);
+      if (note) note.textContent = `signals emitted → ${env}${label ? ' ('+label+')' : ''}`;
+    }
+
     async function pfSetGroupExecutionMode(pid, mode) {
       const m = String(mode || 'independent').toLowerCase();
       if (!['independent','merged'].includes(m)) throw new Error('invalid mode');
@@ -3692,6 +3711,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                   <option value="merged" ${(String(it.execution_mode||'independent')==='merged')?'selected':''}>Merged (shared)</option>
                 </select>
               </label>
+              <label>Account env
+                <select id="pfCardAcctEnv-${pid}" style="min-width:110px;">
+                  <option value="sandbox" ${(String(it.paired_environment||'sandbox')==='sandbox')?'selected':''}>sandbox</option>
+                  <option value="live" ${(String(it.paired_environment||'sandbox')==='live')?'selected':''}>live</option>
+                </select>
+              </label>
+              <label>Account label <input id="pfCardAcctLabel-${pid}" value="${esc(String(it.paired_account_label || ''))}" placeholder="Tasty sandbox acct" style="min-width:170px;" /></label>
+              <button id="pfCardAcctSave-${pid}">Save account</button>
+              <button id="pfCardEmit-${pid}" class="btn-primary">Emit signals</button>
               <label>Group start <input id="pfCardStart-${pid}" type="date" value="${esc(String(it.group_start_day || pfInferGroupStartDefault(legs) || ''))}" /></label>
               <label>Group end <input id="pfCardEnd-${pid}" type="date" value="${esc(String(it.group_end_day || pfLastTradingDayIso()))}" /></label>
               <button id="pfCardDateSave-${pid}">Save dates</button>
@@ -3777,6 +3805,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         document.getElementById(`pfCardStop-${pid}`)?.addEventListener('click', () => safe(`pf_card_stop_${pid}`, () => pfStopSingleGroup(pid)));
         document.getElementById(`pfCardAdd-${pid}`)?.addEventListener('click', () => safe(`pf_card_add_${pid}`, () => pfAddGroupLine(pid)));
         document.getElementById(`pfCardMode-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_mode_${pid}`, () => pfSetGroupExecutionMode(pid, ev.target.value)));
+        document.getElementById(`pfCardAcctSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_acct_${pid}`, async () => {
+          const env = document.getElementById(`pfCardAcctEnv-${pid}`)?.value || 'sandbox';
+          const label = document.getElementById(`pfCardAcctLabel-${pid}`)?.value || '';
+          await pfSaveGroupAccountPair(pid, env, label);
+        }));
+        document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('click', () => safe(`pf_card_emit_${pid}`, () => pfEmitGroupSignals(pid)));
         document.getElementById(`pfCardDateSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_date_save_${pid}`, async () => {
           const s0 = document.getElementById(`pfCardStart-${pid}`)?.value || '';
           const e0 = document.getElementById(`pfCardEnd-${pid}`)?.value || '';

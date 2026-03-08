@@ -189,6 +189,8 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
           execution_mode TEXT NOT NULL DEFAULT 'independent',
           group_start_day TEXT NULL,
           group_end_day TEXT NULL,
+          paired_environment TEXT NOT NULL DEFAULT 'sandbox',
+          paired_account_label TEXT NULL,
           created_at_utc TEXT NOT NULL,
           updated_at_utc TEXT NOT NULL
         );
@@ -215,6 +217,14 @@ def migrate_backtest_schema(con: sqlite3.Connection) -> None:
     if not _has_column(con, "portfolio_defs", "group_end_day"):
         con.execute("ALTER TABLE portfolio_defs ADD COLUMN group_end_day TEXT NULL")
         con.commit()
+    # Portfolio definitions: execution account pairing
+    if not _has_column(con, "portfolio_defs", "paired_environment"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN paired_environment TEXT NOT NULL DEFAULT 'sandbox'")
+        con.commit()
+    if not _has_column(con, "portfolio_defs", "paired_account_label"):
+        con.execute("ALTER TABLE portfolio_defs ADD COLUMN paired_account_label TEXT NULL")
+        con.commit()
+
 
 
 

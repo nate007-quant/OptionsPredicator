@@ -1615,6 +1615,8 @@ def create_app() -> FastAPI:
             rows = con.execute(
                 """SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
                           COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
+                          COALESCE(paired_environment,'sandbox') AS paired_environment,
+                          COALESCE(paired_account_label,'') AS paired_account_label,
                           created_at_utc,updated_at_utc
                    FROM portfolio_defs
                    ORDER BY updated_at_utc DESC, id DESC"""
@@ -1635,6 +1637,8 @@ def create_app() -> FastAPI:
                     'execution_mode': str(r['execution_mode'] or 'independent'),
                     'group_start_day': str(r['group_start_day'] or ''),
                     'group_end_day': str(r['group_end_day'] or ''),
+                    'paired_environment': str(r['paired_environment'] or 'sandbox'),
+                    'paired_account_label': str(r['paired_account_label'] or ''),
                     'link_counts': {'groups': len(pid_to_groups.get(int(r['id']), []))},
                     'upstream_refs': [{'type':'group','id':x} for x in pid_to_groups.get(int(r['id']), [])],
                     'downstream_refs': [],
@@ -1656,6 +1660,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
         group_start_day = str((body or {}).get('group_start_day') or '').strip()
         group_end_day = str((body or {}).get('group_end_day') or '').strip()
+        paired_environment = str((body or {}).get('paired_environment') or 'sandbox').strip().lower()
+        if paired_environment not in {'sandbox','live'}:
+            raise HTTPException(status_code=400, detail='paired_environment must be sandbox|live')
+        paired_account_label = str((body or {}).get('paired_account_label') or '').strip()
         if legs is None:
             legs = []
         if not isinstance(legs, list):
@@ -1663,13 +1671,13 @@ def create_app() -> FastAPI:
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
             cur = con.execute(
-                """INSERT INTO portfolio_defs(name, legs_json, execution_mode, group_start_day, group_end_day, created_at_utc, updated_at_utc)
-                   VALUES(?,?,?,?,?,?,?)""",
-                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, (group_start_day or None), (group_end_day or None), now, now),
+                """INSERT INTO portfolio_defs(name, legs_json, execution_mode, group_start_day, group_end_day, paired_environment, paired_account_label, created_at_utc, updated_at_utc)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, (group_start_day or None), (group_end_day or None), paired_environment, (paired_account_label or None), now, now),
             )
             pid = int(cur.lastrowid)
             con.commit()
-        return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode, 'group_start_day': group_start_day, 'group_end_day': group_end_day}
+        return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode, 'group_start_day': group_start_day, 'group_end_day': group_end_day, 'paired_environment': paired_environment, 'paired_account_label': paired_account_label}
 
     @app.get('/api/portfolios/{portfolio_id}')
     def portfolios_get(portfolio_id: int) -> dict[str, Any]:
@@ -1678,6 +1686,8 @@ def create_app() -> FastAPI:
             r = con.execute(
                 """SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
                           COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
+                          COALESCE(paired_environment,'sandbox') AS paired_environment,
+                          COALESCE(paired_account_label,'') AS paired_account_label,
                           created_at_utc,updated_at_utc
                    FROM portfolio_defs WHERE id=?""",
                 (int(portfolio_id),),
@@ -1697,6 +1707,8 @@ def create_app() -> FastAPI:
             'execution_mode': str(r['execution_mode'] or 'independent'),
             'group_start_day': str(r['group_start_day'] or ''),
             'group_end_day': str(r['group_end_day'] or ''),
+            'paired_environment': str(r['paired_environment'] or 'sandbox'),
+            'paired_account_label': str(r['paired_account_label'] or ''),
         }
 
     @app.put('/api/portfolios/{portfolio_id}')
@@ -1707,6 +1719,8 @@ def create_app() -> FastAPI:
         execution_mode_raw = (body or {}).get('execution_mode')
         group_start_day_raw = (body or {}).get('group_start_day')
         group_end_day_raw = (body or {}).get('group_end_day')
+        paired_environment_raw = (body or {}).get('paired_environment')
+        paired_account_label_raw = (body or {}).get('paired_account_label')
         execution_mode: str | None = None
         if execution_mode_raw is not None:
             execution_mode = str(execution_mode_raw).strip().lower()
@@ -1721,7 +1735,7 @@ def create_app() -> FastAPI:
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
-            r = con.execute("SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode, COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day FROM portfolio_defs WHERE id=?", (int(portfolio_id),)).fetchone()
+            r = con.execute("SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode, COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day, COALESCE(paired_environment,'sandbox') AS paired_environment, COALESCE(paired_account_label,'') AS paired_account_label FROM portfolio_defs WHERE id=?", (int(portfolio_id),)).fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail='portfolio not found')
             cur_name = str(r['name'])
@@ -1735,10 +1749,16 @@ def create_app() -> FastAPI:
             cur_end = str(r['group_end_day'] or '')
             new_start = cur_start if group_start_day_raw is None else str(group_start_day_raw or '').strip()
             new_end = cur_end if group_end_day_raw is None else str(group_end_day_raw or '').strip()
+            cur_env = str(r['paired_environment'] or 'sandbox')
+            new_env = cur_env if paired_environment_raw is None else str(paired_environment_raw or 'sandbox').strip().lower()
+            if new_env not in {'sandbox','live'}:
+                raise HTTPException(status_code=400, detail='paired_environment must be sandbox|live')
+            cur_label = str(r['paired_account_label'] or '')
+            new_label = cur_label if paired_account_label_raw is None else str(paired_account_label_raw or '').strip()
 
             con.execute(
-                'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, group_start_day=?, group_end_day=?, updated_at_utc=? WHERE id=?',
-                (new_name, new_legs_json, new_mode, (new_start or None), (new_end or None), now, int(portfolio_id)),
+                'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, group_start_day=?, group_end_day=?, paired_environment=?, paired_account_label=?, updated_at_utc=? WHERE id=?',
+                (new_name, new_legs_json, new_mode, (new_start or None), (new_end or None), new_env, (new_label or None), now, int(portfolio_id)),
             )
             con.commit()
 
@@ -1746,7 +1766,79 @@ def create_app() -> FastAPI:
             out_legs = _json.loads(new_legs_json or '[]')
         except Exception:
             out_legs = []
-        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'group_start_day': new_start, 'group_end_day': new_end}
+        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label}
+
+    @app.post('/api/portfolios/{portfolio_id}/emit_signals')
+    def portfolios_emit_signals(portfolio_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        import json as _json
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id,name,legs_json,COALESCE(paired_environment,'sandbox') AS paired_environment,
+                       COALESCE(paired_account_label,'') AS paired_account_label
+                FROM portfolio_defs WHERE id=?
+                """,
+                (int(portfolio_id),),
+            ).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='portfolio not found')
+            try:
+                legs = _json.loads(r['legs_json'] or '[]')
+            except Exception:
+                legs = []
+            if not isinstance(legs, list) or not legs:
+                raise HTTPException(status_code=400, detail='portfolio has no parameter lines')
+
+            env = str((body or {}).get('environment') or r['paired_environment'] or 'sandbox').strip().lower()
+            if env not in {'sandbox','live'}:
+                raise HTTPException(status_code=400, detail='environment must be sandbox|live')
+            account_label = str((body or {}).get('account_label') or r['paired_account_label'] or '').strip()
+            broker_name = str((body or {}).get('broker_name') or cfg.broker_name or 'tastytrade').strip()
+
+            inserted = 0
+            existing = 0
+            for i, leg in enumerate(legs):
+                sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
+                params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
+                payload = {
+                    'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name']), 'line_index': int(i)},
+                    'strategy_key': sid,
+                    'params': params,
+                    'summary': {},
+                    'paired_account': {'environment': env, 'account_label': account_label},
+                }
+                idem = str((body or {}).get('idempotency_prefix') or f"portfolio_group:{int(portfolio_id)}:{env}:{i}:{date.today().isoformat()}")
+                ex = con.execute("SELECT id FROM execution_intents WHERE idempotency_key=?", (idem,)).fetchone()
+                if ex is not None:
+                    existing += 1
+                    continue
+                con.execute(
+                    """
+                    INSERT INTO execution_intents(
+                      created_at_utc, updated_at_utc,
+                      environment, broker_name,
+                      status, strategy_key, symbol,
+                      candidate_ref, idempotency_key, intent_payload_json, error
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,NULL)
+                    """,
+                    (
+                        now,
+                        now,
+                        env,
+                        broker_name,
+                        'pending',
+                        sid,
+                        'SPX',
+                        f"portfolio_group:{int(portfolio_id)}:line:{int(i)}",
+                        idem,
+                        _json.dumps(payload, separators=(',', ':'), sort_keys=True),
+                    ),
+                )
+                inserted += 1
+            con.commit()
+        return {'ok': True, 'portfolio_id': int(portfolio_id), 'environment': env, 'account_label': account_label, 'inserted': inserted, 'existing': existing}
 
     @app.delete('/api/portfolios/{portfolio_id}')
     def portfolios_delete(portfolio_id: int) -> dict[str, Any]:
