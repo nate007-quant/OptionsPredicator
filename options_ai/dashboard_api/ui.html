@@ -1324,6 +1324,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                       <th class="sortable" data-sort="profit_factor">profit_factor</th>
                       <th class="sortable" data-sort="avg_pnl_dollars">avg_pnl</th>
                       <th class="sortable" data-sort="max_drawdown_dollars">max_dd</th>
+                      <th>parameter_groups</th>
                       <th>actions</th>
                     </tr>
                   </thead>
@@ -2600,6 +2601,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const tdDd = document.createElement('td');
         tdDd.textContent = (maxdd === null || maxdd === undefined) ? '—' : fmtNum(maxdd, 2);
 
+        const tdGroups = document.createElement('td');
+        const grefs = Array.isArray(it.group_memberships) ? it.group_memberships : (Array.isArray(it.downstream_refs) ? it.downstream_refs : []);
+        const gnames = grefs
+          .filter(x => x && ((x.type === undefined) || x.type === 'group'))
+          .map(x => String(x.name || (x.id != null ? `#${x.id}` : '')).trim())
+          .filter(Boolean);
+        tdGroups.textContent = gnames.length ? gnames.join(', ') : '—';
+
         const tdAct = document.createElement('td');
         const delBtn = document.createElement('button');
         delBtn.textContent = 'Delete';
@@ -2654,6 +2663,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tr.appendChild(tdPf);
         tr.appendChild(tdAvg);
         tr.appendChild(tdDd);
+        tr.appendChild(tdGroups);
         tr.appendChild(tdAct);
 
         tr.addEventListener('click', () => {

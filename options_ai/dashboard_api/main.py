@@ -2962,15 +2962,18 @@ def create_app() -> FastAPI:
             })
 
         groups = _load_parameter_groups()
-        run_to_groups: dict[int, list[int]] = {}
+        run_to_groups: dict[int, list[dict[str, Any]]] = {}
         for g in groups:
+            gref = {'id': int(g['id']), 'name': str(g.get('name') or f"Group {int(g['id'])}")}
             for rid in (g.get('run_ids') or []):
-                run_to_groups.setdefault(int(rid), []).append(int(g['id']))
+                run_to_groups.setdefault(int(rid), []).append(gref)
         for it in items:
-            gids = run_to_groups.get(int(it['id']), [])
+            grefs = run_to_groups.get(int(it['id']), [])
+            gids = [int(x.get('id')) for x in grefs if x.get('id') is not None]
+            it['group_memberships'] = grefs
             it['link_counts'] = {'groups': len(gids)}
             it['upstream_refs'] = []
-            it['downstream_refs'] = [{'type':'group','id':x} for x in gids]
+            it['downstream_refs'] = [{'type':'group','id':int(x.get('id')),'name':str(x.get('name') or '')} for x in grefs]
             it['in_use'] = len(gids) > 0
             it['eligible_next_stage'] = True
             it['ineligible_reason'] = None
