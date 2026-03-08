@@ -4824,7 +4824,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       } finally {
         exAccountsLoading = false;
       }
-      exAccounts = Array.isArray(d.items) ? d.items : [];
+      exAccounts = Array.isArray(d.items) ? d.items.slice() : [];
+      // Keep deterministic alphabetical order so account lists don't jump around.
+      exAccounts.sort((a, b) => {
+        const ka = `${String(a?.label || '')}|${String(a?.environment || '')}|${String(a?.account_number || '')}`.toLowerCase();
+        const kb = `${String(b?.label || '')}|${String(b?.environment || '')}|${String(b?.account_number || '')}`.toLowerCase();
+        return ka.localeCompare(kb);
+      });
 
       const active = document.getElementById('exAccountsActive');
       if (active) active.textContent = String(d.active_count ?? exAccounts.filter(x => x.active).length);
