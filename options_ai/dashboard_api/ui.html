@@ -3292,6 +3292,51 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       });
     }
 
+    function pfRenderCardSummaryGraphics(pid, summary) {
+      const host = document.getElementById(`pfCardSummary-${pid}`);
+      if (!host) return;
+      const s = (summary && typeof summary === 'object') ? summary : {};
+
+      const n = (v, d=2) => (v === null || v === undefined || Number.isNaN(Number(v))) ? null : Number(v);
+      const fmt = (v, d=2) => (v === null || v === undefined || Number.isNaN(Number(v))) ? '—' : Number(v).toFixed(d);
+      const pct = (v) => (v === null || v === undefined || Number.isNaN(Number(v))) ? '—' : (100*Number(v)).toFixed(1) + '%';
+      const nonnegPct = (v) => {
+        const x = Number(v);
+        if (!Number.isFinite(x)) return 0;
+        return Math.max(0, Math.min(100, x));
+      };
+
+      const trades = n(s.trades ?? s.n_trades, 0);
+      const pnl = n(s.cum_pnl_dollars);
+      const wr = n(s.win_rate) != null ? (100 * n(s.win_rate)) : null;
+      const pf = n(s.profit_factor);
+      const dd = n(s.max_drawdown_dollars ?? s.max_dd);
+      const avg = n(s.avg_pnl_dollars);
+
+      const wrBar = nonnegPct(wr ?? 0);
+      const pfBar = nonnegPct(((pf ?? 0) / 5) * 100); // 5.0 => full bar
+      const pnlBar = nonnegPct(Math.min(100, Math.abs((pnl ?? 0) / 2000) * 100));
+
+      const tile = (label, value, barPct, good=true) => `
+        <div style="border:1px solid var(--border); border-radius:10px; padding:8px; background: var(--surface-elev);">
+          <div style="font-size:11px; opacity:.8;">${label}</div>
+          <div style="font-size:16px; font-weight:700; margin-top:2px;">${value}</div>
+          <div style="margin-top:6px; height:5px; border-radius:999px; background: rgba(148,163,184,.25); overflow:hidden;">
+            <div style="height:100%; width:${Math.max(0, Math.min(100, barPct || 0))}%; background:${good ? 'linear-gradient(90deg,#22c55e,#16a34a)' : 'linear-gradient(90deg,#f59e0b,#ef4444)'};"></div>
+          </div>
+        </div>
+      `;
+
+      host.innerHTML = [
+        tile('Trades', trades == null ? '—' : String(Math.trunc(trades)), Math.min(100, (trades || 0))),
+        tile('Total PnL ($)', fmt(pnl, 2), pnlBar, (pnl ?? 0) >= 0),
+        tile('Win Rate', pct(n(s.win_rate)), wrBar, (wr ?? 0) >= 50),
+        tile('Profit Factor', (pf === Infinity ? 'inf' : fmt(pf, 2)), pfBar, (pf ?? 0) >= 1),
+        tile('Max Drawdown ($)', fmt(dd, 2), nonnegPct(Math.min(100, Math.abs((dd ?? 0)/1500) * 100)), false),
+        tile('Avg PnL / trade ($)', fmt(avg, 2), nonnegPct(Math.min(100, Math.abs((avg ?? 0)/300) * 100)), (avg ?? 0) >= 0),
+      ].join('');
+    }
+
     function pfRenderCardKpis(pid, summary) {
       const s = (summary && typeof summary === 'object') ? summary : {};
       const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -3338,9 +3383,10 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         note.textContent = `status: ${st.status} legs: ${st.legs_completed||0}/${st.legs_total||0}`;
       }
       if (st && st.combined_equity_curve) pfRenderCardEquity(pid, st.combined_equity_curve || []);
-      const sum = document.getElementById(`pfCardSummary-${pid}`);
-      if (sum && st && st.combined_summary) sum.textContent = JSON.stringify(st.combined_summary, null, 2);
-      if (st && st.combined_summary) pfRenderCardKpis(pid, st.combined_summary);
+      if (st && st.combined_summary) {
+        pfRenderCardKpis(pid, st.combined_summary);
+        pfRenderCardSummaryGraphics(pid, st.combined_summary);
+      }
       if (st && (st.status === 'stopped' || st.status === 'failed')) {
         if (pfCardPollers[String(pid)]) { clearInterval(pfCardPollers[String(pid)]); delete pfCardPollers[String(pid)]; }
       }
@@ -3421,7 +3467,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
             <div style="margin-top:10px;">
               <div class="hint">Summary</div>
-              <pre id="pfCardSummary-${pid}" class="mono" style="max-height:220px; overflow:auto;"></pre>
+              <div id="pfCardSummary-${pid}" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:8px;"></div>
             </div>
 
             <div style="margin-top:10px; overflow:auto;">
