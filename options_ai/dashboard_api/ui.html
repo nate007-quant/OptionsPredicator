@@ -3385,6 +3385,26 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       ].join('');
     }
 
+    function pfCountTradingDays(startIso, endIso) {
+      try {
+        const a = new Date(String(startIso || '') + 'T00:00:00Z');
+        const b = new Date(String(endIso || '') + 'T00:00:00Z');
+        if (isNaN(a.getTime()) || isNaN(b.getTime())) return 0;
+        const start = a <= b ? a : b;
+        const end = a <= b ? b : a;
+        let n = 0;
+        const d = new Date(start.getTime());
+        while (d <= end) {
+          const wd = d.getUTCDay(); // 0 Sun .. 6 Sat
+          if (wd >= 1 && wd <= 5) n += 1; // Mon-Fri
+          d.setUTCDate(d.getUTCDate() + 1);
+        }
+        return n;
+      } catch {
+        return 0;
+      }
+    }
+
     function pfRenderCardProgress(pid, completed, total, st=null) {
       const c = Number(completed || 0);
       const t = Number(total || 0);
@@ -3410,16 +3430,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
 
       if (mode === 'merged') {
-        let totalDays = 0;
-        try {
-          const a = rg.start ? new Date(rg.start + 'T00:00:00Z') : null;
-          const b = rg.end ? new Date(rg.end + 'T00:00:00Z') : null;
-          if (a && b && !isNaN(a.getTime()) && !isNaN(b.getTime())) {
-            totalDays = Math.max(1, Math.floor((b.getTime() - a.getTime()) / 86400000) + 1);
-          }
-        } catch {}
+        const totalDays = Math.max(0, pfCountTradingDays(rg.start, rg.end));
         const doneDays = totalDays > 0 ? Math.max(0, Math.min(totalDays, Math.round((pct / 100) * totalDays))) : 0;
-        if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | day progress: ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, estimated)`;
+        if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | trading-day progress: ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, estimated)`;
       } else {
         if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`;
       }
