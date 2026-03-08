@@ -1788,7 +1788,9 @@ def create_app() -> FastAPI:
         import json as _json
 
         # Operator expectation: when execution is OFF, do not enqueue intents.
-        if not bool(cfg.trading_enabled):
+        overrides = load_overrides_file(overrides_path)
+        effective = apply_overrides(cfg, overrides)
+        if not bool(effective.trading_enabled):
             raise HTTPException(status_code=409, detail='execution is OFF (TRADING_ENABLED=false); signals were not emitted')
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -2011,6 +2013,36 @@ def create_app() -> FastAPI:
         return {
             'items': items,
             'active_count': int(sum(1 for x in items if x.get('active'))),
+        }
+
+    @app.get('/api/execution/trading-enabled')
+    def execution_trading_enabled() -> dict[str, Any]:
+        overrides = load_overrides_file(overrides_path)
+        effective = apply_overrides(cfg, overrides)
+        return {
+            'trading_enabled': bool(effective.trading_enabled),
+            'env_default': str(effective.broker_env),
+            'overrides_has_key': ('TRADING_ENABLED' in overrides),
+        }
+
+    @app.post('/api/execution/trading-enabled')
+    def execution_trading_enabled_set(body: dict[str, Any]) -> dict[str, Any]:
+        b = body or {}
+        if 'enabled' not in b:
+            raise HTTPException(status_code=400, detail='enabled is required')
+        enabled = bool(b.get('enabled'))
+
+        cur = load_overrides_file(overrides_path)
+        merged = dict(cur)
+        merged['TRADING_ENABLED'] = enabled
+        norm = validate_and_normalize_overrides(merged)
+        write_overrides_file_atomic(overrides_path, norm)
+
+        effective = apply_overrides(cfg, norm)
+        return {
+            'ok': True,
+            'trading_enabled': bool(effective.trading_enabled),
+            'overrides_has_key': ('TRADING_ENABLED' in norm),
         }
 
     @app.get('/api/execution/intents')

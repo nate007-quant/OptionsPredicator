@@ -397,7 +397,15 @@
                    opacity:0; pointer-events:none; transition:opacity 120ms ease; z-index:51; }
     .tip:hover::after, .tip:hover::before { opacity: 1; }
     tbody tr.selected { outline: 2px solid rgba(63,161,255,0.65); }
-</style>
+
+    .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .switch .slider { position: absolute; cursor: pointer; inset: 0; background: #64748b; transition: .2s; border-radius: 999px; }
+    .switch .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; top: 3px; background: #fff; transition: .2s; border-radius: 50%; }
+    .switch input:checked + .slider { background: #22c55e; }
+    .switch input:checked + .slider:before { transform: translateX(20px); }
+
+  </style>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
@@ -602,6 +610,11 @@
             <div class="row">
               <button class="btn-primary" id="exRefreshAccounts">Refresh</button>
               <div>Active: <span id="exAccountsActive" class="pill">—</span></div>
+              <label style="display:inline-flex; align-items:center; gap:8px; margin-left:10px;">
+                <span>Trading Enabled</span>
+                <span class="switch"><input id="exTradingEnabled" type="checkbox" role="switch" /><span class="slider"></span></span>
+                <span id="exTradingEnabledText" class="pill">—</span>
+              </label>
             </div>
             <div style="margin-top:10px; overflow:auto; max-height:220px;">
               <table>
@@ -4747,6 +4760,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exRefreshAccounts: 'Refresh configured execution account list.',
         exAccountsActive: 'Count of configured active accounts available for pairing.',
         exAccountsTable: 'Execution account catalog (broker, env, account number).',
+        exTradingEnabled: 'Master execution gate for signal emission (runtime override).',
+        exTradingEnabledText: 'Current Trading Enabled state (ON/OFF).',
 
         exRefreshTrades: 'Refresh currently open/opening/closing trades table.',
         exTradesTable: 'Open trades view including protection status and P&L fields.',
@@ -4820,6 +4835,25 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
+
+    async function exRefreshTradingEnabled() {
+      const d = await jget('/api/execution/trading-enabled');
+      const cb = document.getElementById('exTradingEnabled');
+      const tx = document.getElementById('exTradingEnabledText');
+      if (cb) cb.checked = !!d.trading_enabled;
+      if (tx) tx.textContent = d.trading_enabled ? 'ON' : 'OFF';
+      return d;
+    }
+
+    async function exSetTradingEnabled(on) {
+      const ok = confirm(`Set Trading Enabled ${on ? 'ON' : 'OFF'}?`);
+      if (!ok) { await exRefreshTradingEnabled(); return; }
+      const d = await jpost('/api/execution/trading-enabled', { enabled: !!on });
+      const tx = document.getElementById('exTradingEnabledText');
+      if (tx) tx.textContent = d.trading_enabled ? 'ON' : 'OFF';
+      toast(`Trading Enabled ${d.trading_enabled ? 'ON' : 'OFF'}`, d.trading_enabled ? 'warn' : 'info');
+      return d;
+    }
 
     async function exRefreshAccounts() {
       if (exAccountsLoading) return { items: exAccounts || [] };
@@ -5254,6 +5288,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('exRefreshHistory')?.addEventListener('click', () => safe('ex_trade_history', () => exRefreshTradeHistory()));
     document.getElementById('exRefreshKpis')?.addEventListener('click', () => safe('ex_kpis', () => exRefreshKpis()));
     document.getElementById('exRefreshAccounts')?.addEventListener('click', () => safe('ex_accounts', () => exRefreshAccounts()));
+    document.getElementById('exTradingEnabled')?.addEventListener('change', (ev) => safe('ex_trading_enabled_set', () => exSetTradingEnabled(!!ev.target.checked)));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
     document.getElementById('exRefreshIncidents')?.addEventListener('click', () => safe('ex_incidents', () => exRefreshIncidents()));
     document.getElementById('exRefreshRecon')?.addEventListener('click', () => safe('ex_recon', () => exRefreshReconciliation()));
@@ -5461,6 +5496,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('ex_risk', () => exRefreshRiskSession());
       await safe('ex_kpis', () => exRefreshKpis());
       await safe('ex_accounts', () => exRefreshAccounts());
+      await safe('ex_trading_enabled', () => exRefreshTradingEnabled());
       await safe('ex_reprice', () => exLoadRepricePolicy());
       await safe('ex_trades', () => exRefreshOpenTrades());
       await safe('ex_trade_history', () => exRefreshTradeHistory());
@@ -5504,6 +5540,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), 7000);
       setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), 12000);
       setInterval(() => safe('ex_accounts', () => exRefreshAccounts()), 60000);
+      setInterval(() => safe('ex_trading_enabled', () => exRefreshTradingEnabled()), 10000);
       setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
       setInterval(() => safe('ex_recon', () => exRefreshReconciliation()), 10000);
       setInterval(() => safe('ex_actions', () => exRefreshOperatorActions()), 15000);

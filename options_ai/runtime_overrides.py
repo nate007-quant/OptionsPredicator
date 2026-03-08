@@ -35,6 +35,9 @@ ALLOWLIST: dict[str, Any] = {
 
     # Optional experiment/versioning
     "PROMPT_VERSION": {"type": "str", "min_len": 1, "max_len": 64},
+
+    # Execution gate toggle (dashboard/runtime)
+    "TRADING_ENABLED": {"type": "bool"},
 }
 
 
@@ -191,6 +194,9 @@ def apply_overrides(base_cfg: Config, overrides: dict[str, Any]) -> Config:
 
     if "PROMPT_VERSION" in overrides:
         fields["prompt_version"] = str(overrides["PROMPT_VERSION"]).strip()
+
+    if "TRADING_ENABLED" in overrides:
+        fields["trading_enabled"] = bool(overrides["TRADING_ENABLED"])
 
     if not fields:
         return base_cfg
