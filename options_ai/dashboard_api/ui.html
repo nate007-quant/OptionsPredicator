@@ -776,6 +776,11 @@
                 <div class="badge">Newest snapshot_index: <strong id="newestSnap2">—</strong></div>
                 <div class="badge">Oldest unscored: <strong id="oldestUnscored2">—</strong></div>
               </div>
+              <div style="margin-top:10px;" class="row">
+                <div class="badge">Live option_chain: <strong id="liveChainTs2">—</strong></div>
+                <div class="badge">Feature lag: <strong id="featureLag2">—</strong></div>
+                <div class="badge">Pipeline state: <strong id="pipelineFresh2">—</strong></div>
+              </div>
 
               <div style="margin-top:12px;" class="badge">Currently processing: <strong id="processingBox2">—</strong></div>
             </div>
@@ -1436,6 +1441,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       } catch (e) {
         console.error(where, e);
         showError(where, e);
+        if (where === 'health') {
+          const dot = document.getElementById('healthDot');
+          const ht = document.getElementById('healthText');
+          if (dot) {
+            dot.style.background = 'var(--error)';
+            dot.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.18)';
+          }
+          if (ht) ht.textContent = 'DOWN';
+        }
         return null;
       }
     }
@@ -3310,6 +3324,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const page = parseInt(document.getElementById('queuePage')?.value || '1', 10);
       const page_size = parseInt(document.getElementById('queuePageSize')?.value || '50', 10);
       const data = await jget(`/api/status/processing?page=${page}&page_size=${page_size}&order=${order}`);
+      let pipes = null;
+      try {
+        const win = parseInt(document.getElementById('pipeWin')?.value || '500', 10);
+        pipes = await jget(`/api/status/pipelines?window=${encodeURIComponent(String(win))}`);
+      } catch (_) {}
 
       // Overview counters
       document.getElementById('queueCount').textContent = data.queue.count;
@@ -3345,7 +3364,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const pbox = document.getElementById('processingBox');
       const pbox2 = document.getElementById('processingBox2');
       if ((data.processing.items || []).length === 0) {
-        const msg = 'idle / not available';
+        let msg = 'idle / not available';
+        const lag = pipes?.lags_minutes?.chain_features_0dte;
+        const chainTs = pipes?.latest?.option_chain;
+        if (chainTs && lag !== null && lag !== undefined && Number.isFinite(Number(lag))) {
+          const lagN = Number(lag);
+          const state = lagN <= 20 ? 'live' : (lagN <= 120 ? 'warming' : 'stale');
+          msg = `idle in legacy queue | option_chain live=${chainTs} | feature lag=${lagN.toFixed(1)}m (${state})`;
+        }
         if (pbox) pbox.textContent = msg;
         if (pbox2) pbox2.textContent = msg;
       } else {
@@ -3354,6 +3380,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         if (pbox) pbox.textContent = msg;
         if (pbox2) pbox2.textContent = msg;
       }
+
+      // Pipeline quick badges (processing tab)
+      const liveTs = pipes?.latest?.option_chain || '—';
+      const lagRaw = pipes?.lags_minutes?.chain_features_0dte;
+      const lagTxt = (lagRaw === null || lagRaw === undefined || !Number.isFinite(Number(lagRaw))) ? '—' : `${Number(lagRaw).toFixed(1)}m`;
+      let stateTxt = 'unknown';
+      if (lagRaw !== null && lagRaw !== undefined && Number.isFinite(Number(lagRaw))) {
+        const lagN = Number(lagRaw);
+        stateTxt = (lagN <= 20) ? 'live' : ((lagN <= 120) ? 'warming' : 'stale');
+      }
+      const l2 = document.getElementById('liveChainTs2');
+      const f2 = document.getElementById('featureLag2');
+      const ps2 = document.getElementById('pipelineFresh2');
+      if (l2) l2.textContent = liveTs;
+      if (f2) f2.textContent = lagTxt;
+      if (ps2) ps2.textContent = stateTxt;
 
       return data;
     }
