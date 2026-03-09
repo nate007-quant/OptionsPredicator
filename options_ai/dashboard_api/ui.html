@@ -5130,6 +5130,30 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
 
+    function sfAuditParsedParts(line) {
+      const txt = String(line || '');
+      const i = txt.indexOf('{');
+      if (i < 0) return { head: txt, obj: null };
+      const head = txt.slice(0, i).trim();
+      const js = txt.slice(i).trim();
+      try {
+        const obj = JSON.parse(js);
+        return { head: head || txt, obj: (obj && typeof obj === 'object') ? obj : null };
+      } catch {
+        return { head: txt, obj: null };
+      }
+    }
+
+    function sfAuditObjHtml(obj) {
+      if (!obj || typeof obj !== 'object') return '';
+      const entries = Object.entries(obj).slice(0, 12);
+      if (!entries.length) return '';
+      return `<div style="margin-top:6px;">${entries.map(([k,v]) => {
+        const val = (v && typeof v === 'object') ? JSON.stringify(v) : String(v);
+        return `<span class="pill" style="margin-right:6px; margin-bottom:6px; display:inline-block;">${esc(String(k))}: <strong>${esc(val)}</strong></span>`;
+      }).join('')}</div>`;
+    }
+
     // Strategy Factory UI
     async function sfRefreshLatest() {
       const d = await jget('/api/strategy_factory/latest');
@@ -5190,9 +5214,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             if (lower.includes('error') || lower.includes('fail')) { c = 'red'; tag = 'ERROR'; }
             else if (lower.includes('warn')) { c = 'yellow'; tag = 'WARN'; }
             else if (lower.includes('approved') || lower.includes('promoted') || lower.includes('success')) { c = 'green'; tag = 'OK'; }
+            const parsed = sfAuditParsedParts(txt);
             return `<div style="border:1px solid var(--border); border-radius:10px; padding:8px; margin-bottom:8px; background:var(--surface-elev);">
               <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">${opsBadgeHtml(c, tag)}</div>
-              <div class="mono" style="font-size:11px; margin-top:6px;">${esc(txt)}</div>
+              <div class="mono" style="font-size:11px; margin-top:6px;">${esc(parsed.head || txt)}</div>
+              ${sfAuditObjHtml(parsed.obj)}
             </div>`;
           }).join('');
         }
