@@ -5144,12 +5144,27 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
     }
 
+    function sfAuditObjFlat(obj, prefix = '', out = []) {
+      if (!obj || typeof obj !== 'object') return out;
+      for (const [k, v] of Object.entries(obj)) {
+        const kk = prefix ? `${prefix}.${k}` : String(k);
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          sfAuditObjFlat(v, kk, out);
+        } else if (Array.isArray(v)) {
+          out.push([kk, `array(${v.length})`]);
+        } else {
+          out.push([kk, v]);
+        }
+      }
+      return out;
+    }
+
     function sfAuditObjHtml(obj) {
       if (!obj || typeof obj !== 'object') return '';
-      const entries = Object.entries(obj).slice(0, 12);
+      const entries = sfAuditObjFlat(obj).slice(0, 14);
       if (!entries.length) return '';
       return `<div style="margin-top:6px;">${entries.map(([k,v]) => {
-        const val = (v && typeof v === 'object') ? JSON.stringify(v) : String(v);
+        const val = (v === null || v === undefined) ? '—' : String(v);
         return `<span class="pill" style="margin-right:6px; margin-bottom:6px; display:inline-block;">${esc(String(k))}: <strong>${esc(val)}</strong></span>`;
       }).join('')}</div>`;
     }
