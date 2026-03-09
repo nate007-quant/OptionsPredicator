@@ -5214,10 +5214,18 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       tb.innerHTML = '';
       for (const it of (d.items || [])) {
         const tr = document.createElement('tr');
+        const sc = (it.state_counts && typeof it.state_counts === 'object') ? it.state_counts : {};
+        const stateHtml = Object.entries(sc).map(([k,v]) => {
+          const kk = String(k).toUpperCase();
+          let c = 'yellow';
+          if (['APPROVED','PROMOTED','ACTIVE','SUCCESS'].includes(kk)) c = 'green';
+          else if (['FAILED','ERROR','REJECTED'].includes(kk)) c = 'red';
+          return `<span style="display:inline-block; margin:2px 6px 2px 0;">${opsBadgeHtml(c, `${esc(k)}:${esc(String(v))}`)}</span>`;
+        }).join('') || '<span class="hint">none</span>';
         tr.innerHTML = `
           <td>${it.run_id || ''}</td>
           <td>${it.strategies_count ?? 0}</td>
-          <td>${JSON.stringify(it.state_counts || {})}</td>
+          <td>${stateHtml}</td>
           <td class="mono">${it.summary_path || ''}</td>
           <td class="mono">${it.audit_path || ''}</td>
         `;
