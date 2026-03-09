@@ -3789,11 +3789,14 @@ def create_app() -> FastAPI:
 
     @app.get('/api/metrics/processing/pipeline')
     def metrics_processing_pipeline(window: str = Query('15m')) -> dict[str, Any]:
-        pp = status_pipelines(window=max(50, min(5000, int(_parse_window_seconds(window) / 3))))
+        ws = _parse_window_seconds(window)
+        cutoff_dt = _now_utc() - timedelta(seconds=ws)
+        cutoff_iso = cutoff_dt.replace(microsecond=0).isoformat()
+
+        pp = status_pipelines(window=max(50, min(5000, int(ws / 3))))
         counts = pp.get('counts_recent') or {}
         n_0dte = int(((counts.get('features_missing') or {}).get('n')) or 0)
 
-        # Prefer 0DTE only when it is actually near-live; otherwise fall back to TERM.
         latest = pp.get('latest') or {}
         latest_chain = latest.get('option_chain')
         latest_0dte_feat = latest.get('chain_features_0dte')
@@ -3807,44 +3810,144 @@ def create_app() -> FastAPI:
         use_term = (n_0dte == 0) or (lag_0dte_min is None) or (lag_0dte_min > 120.0)
         profile = 'term' if use_term else '0dte'
 
-        stage_names = [
-            ('option_chain', 'Ingest'),
-            ('chain_features_term', 'Validate'),
-            ('chain_labels_term', 'Transform'),
-            ('debit_candidates_term', 'Strategy Build'),
-            ('debit_labels_term', 'Backtest Queue'),
-            ('debit_scores_term', 'Complete'),
-        ] if use_term else [
-            ('option_chain', 'Ingest'),
-            ('chain_features_0dte', 'Validate'),
-            ('chain_labels_0dte', 'Transform'),
-            ('debit_candidates_0dte', 'Strategy Build'),
-            ('debit_labels_0dte', 'Backtest Queue'),
-            ('debit_scores_0dte', 'Complete'),
+        stage_defs = [
+            {'key': 'option_chain', 'label': 'Ingest', 'table': 'spx.option_chain', 'future_dependent': False},
+            {'key': 'chain_features_term' if use_term else 'chain_features_0dte', 'label': 'Feature Build', 'table': 'spx.chain_features_term' if use_term else 'spx.chain_features_0dte', 'future_dependent': False},
+            {'key': 'chain_labels_term' if use_term else 'chain_labels_0dte', 'label': 'Label Build', 'table': 'spx.chain_labels_term' if use_term else 'spx.chain_labels_0dte', 'future_dependent': True},
+            {'key': 'debit_candidates_term' if use_term else 'debit_candidates_0dte', 'label': 'Candidate Build', 'table': 'spx.debit_spread_candidates_term' if use_term else 'spx.debit_spread_candidates_0dte', 'future_dependent': False},
+            {'key': 'debit_scores_term' if use_term else 'debit_scores_0dte', 'label': 'Score Build', 'table': 'spx.debit_spread_scores_term' if use_term else 'spx.debit_spread_scores_0dte', 'future_dependent': False},
+            {'key': 'signal_emit', 'label': 'Signal Emit', 'table': None, 'future_dependent': False},
+            {'key': 'execution', 'label': 'Execution', 'table': None, 'future_dependent': False},
         ]
+
+        stage_metrics: dict[str, dict[str, Any]] = {}
+
+        try:
+            dsn = _pg_dsn()
+            if dsn:
+                with _pg_connect(dsn) as conn:
+                    with conn.cursor() as cur:
+                        time_cols: dict[str, str] = {}
+                        for sd in stage_defs:
+                            tb = sd.get('table')
+                            if not tb:
+                                continue
+                            try:
+                                sch, tbl = str(tb).split('.', 1)
+                                cur.execute(
+                                    """
+                                    SELECT column_name
+                                    FROM information_schema.columns
+                                    WHERE table_schema=%s AND table_name=%s
+                                      AND column_name IN ('computed_at', 'snapshot_ts')
+                                    ORDER BY CASE WHEN column_name='computed_at' THEN 0 ELSE 1 END
+                                    LIMIT 1
+                                    """,
+                                    (sch, tbl),
+                                )
+                                rr = cur.fetchone()
+                                time_cols[str(tb)] = str(rr[0]) if rr and rr[0] else 'snapshot_ts'
+                            except Exception:
+                                time_cols[str(tb)] = 'snapshot_ts'
+
+                        for sd in stage_defs:
+                            key = str(sd['key'])
+                            tb = sd.get('table')
+                            if not tb:
+                                continue
+                            tcol = time_cols.get(str(tb), 'snapshot_ts')
+                            cur.execute(
+                                f"SELECT COUNT(*), COUNT(DISTINCT snapshot_ts), MAX(snapshot_ts), MAX({tcol}) FROM {tb} WHERE {tcol} >= %s",
+                                (cutoff_dt,),
+                            )
+                            r = cur.fetchone()
+                            stage_metrics[key] = {
+                                'rows_window': int((r[0] or 0) if r else 0),
+                                'snapshots_window': int((r[1] or 0) if r else 0),
+                                'latest_ts': (r[2] if r else None),
+                                'latest_loaded_at': (r[3] if r else None),
+                            }
+        except Exception:
+            pass
+
+        try:
+            with _connect(db_path) as con:
+                r = con.execute(
+                    "SELECT COUNT(*) AS n, MAX(created_at_utc) AS mx FROM execution_intents WHERE created_at_utc >= ?",
+                    (cutoff_iso,),
+                ).fetchone()
+                stage_metrics['signal_emit'] = {
+                    'rows_window': int((r['n'] or 0) if r else 0),
+                    'snapshots_window': None,
+                    'latest_ts': (datetime.fromisoformat(str(r['mx']).replace('Z', '+00:00')) if r and r['mx'] else None),
+                    'latest_loaded_at': (datetime.fromisoformat(str(r['mx']).replace('Z', '+00:00')) if r and r['mx'] else None),
+                }
+                r2 = con.execute(
+                    "SELECT COUNT(*) AS n, MAX(updated_at_utc) AS mx FROM trade_runs WHERE updated_at_utc >= ?",
+                    (cutoff_iso,),
+                ).fetchone()
+                stage_metrics['execution'] = {
+                    'rows_window': int((r2['n'] or 0) if r2 else 0),
+                    'snapshots_window': None,
+                    'latest_ts': (datetime.fromisoformat(str(r2['mx']).replace('Z', '+00:00')) if r2 and r2['mx'] else None),
+                    'latest_loaded_at': (datetime.fromisoformat(str(r2['mx']).replace('Z', '+00:00')) if r2 and r2['mx'] else None),
+                }
+        except Exception:
+            pass
+
         stages = []
         worst = ('green', None)
-        for key, label in stage_names:
+        for sd in stage_defs:
+            key = str(sd['key'])
+            label = str(sd['label'])
+            met = stage_metrics.get(key, {})
             lag_min = (pp.get('lags_minutes') or {}).get(key)
+            if key == 'option_chain':
+                lag_min = 0.0
+
             color = _color_from_max(float(lag_min) if lag_min is not None else None, 5.0, 15.0)
+            cause = 'Backlog at stage' if color != 'green' else None
+
+            if bool(sd.get('future_dependent')):
+                rw = int(met.get('rows_window') or 0)
+                if rw == 0:
+                    color = 'gray'
+                    cause = 'Future-dependent stage (no horizons matured in window)'
+
+            if key in {'signal_emit', 'execution'}:
+                rw = int(met.get('rows_window') or 0)
+                color = 'green' if rw > 0 else 'yellow'
+                cause = None if rw > 0 else 'No events in selected window'
+                lag_min = None
+
             if color == 'red':
                 worst = ('red', label)
             elif color == 'yellow' and worst[0] != 'red':
                 worst = ('yellow', label)
+
+            rows_window = met.get('rows_window')
+            snapshots_window = met.get('snapshots_window')
             stages.append({
                 'key': key,
                 'label': label,
                 'lag_minutes': lag_min,
+                'rows_window': rows_window,
+                'snapshots_window': snapshots_window,
+                'latest_ts': met.get('latest_ts'),
+                'latest_loaded_at': met.get('latest_loaded_at'),
+                'throughput_rows_per_min': (float(rows_window) / max(1.0, ws / 60.0)) if rows_window is not None else None,
                 'status_color': color,
                 'inflight': None,
                 'success': None,
                 'fail': None,
                 'retry': None,
                 'p95_latency_ms': None,
-                'likely_cause': 'Backlog at stage' if color != 'green' else None,
+                'likely_cause': cause,
             })
+
         return {
             'window': window,
+            'window_seconds': int(ws),
             'generated_at': _now_central_iso(),
             'profile': profile,
             'stages': stages,
@@ -3881,9 +3984,9 @@ def create_app() -> FastAPI:
         if n.startswith('spx_chain_ingester'):
             return ('Ingest', 'pipeline', True)
         if n.startswith('spx_chain_phase2'):
-            return ('Validate', 'pipeline', True)
+            return ('Feature Build', 'pipeline', True)
         if n.startswith('spx_debit_spreads'):
-            return ('Strategy Build', 'pipeline', True)
+            return ('Candidate Build', 'pipeline', True)
         if n.startswith('spx_debit_ml'):
             return ('Backtest Queue', 'pipeline', True)
         if n.startswith('options_ai_execution'):

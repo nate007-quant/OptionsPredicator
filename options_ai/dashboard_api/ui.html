@@ -4510,7 +4510,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById('kpiError').textContent = `${fmtNum(100 * Number(k.error_rate ?? 0), 2)}%`;
 
       const pb = document.getElementById('opsBottleneck');
-      if (pb) pb.textContent = `Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
+      if (pb) pb.textContent = `Profile: ${(pipeline.profile || 'unknown')} | Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
 
       const pf = document.getElementById('pipelineFlow');
       if (pf) {
@@ -4518,7 +4518,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         for (const st of (pipeline.stages || [])) {
           const n = document.createElement('div');
           n.className = `pipe-node ${st.status_color || 'yellow'}`;
-          n.innerHTML = `<div class="n1">${st.label}</div><div class="n2">lag: ${st.lag_minutes === null || st.lag_minutes === undefined ? '—' : fmtNum(st.lag_minutes,1)+'m'}</div><div class="n2">cause: ${st.likely_cause || '—'}</div>`;
+          const lagTxt = (st.lag_minutes === null || st.lag_minutes === undefined) ? '—' : (fmtNum(st.lag_minutes,1) + 'm');
+          const rowsTxt = (st.rows_window === null || st.rows_window === undefined) ? '—' : String(st.rows_window);
+          const snapsTxt = (st.snapshots_window === null || st.snapshots_window === undefined) ? '—' : String(st.snapshots_window);
+          const thrTxt = (st.throughput_rows_per_min === null || st.throughput_rows_per_min === undefined) ? '—' : (fmtNum(st.throughput_rows_per_min, 1) + '/min');
+          n.innerHTML = `<div class="n1">${st.label}</div><div class="n2">lag: ${lagTxt}</div><div class="n2">rows(win): ${rowsTxt} | snaps(win): ${snapsTxt}</div><div class="n2">throughput: ${thrTxt}</div><div class="n2">cause: ${st.likely_cause || '—'}</div>`;
           pf.appendChild(n);
         }
       }
