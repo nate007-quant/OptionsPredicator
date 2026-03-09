@@ -948,6 +948,11 @@
               <fieldset class="fs" style="margin-top:6px;">
                 <legend>Backtest window</legend>
                 <div class="row">
+                  <label>Underlying <span class="tip" data-tip="Primary underlying/ticker for this parameter set.">i</span>
+                    <select id="btUnderlying">
+                      <option value="SPX" selected>SPX</option>
+                    </select>
+                  </label>
                   <label>Start <span class="tip" data-tip="Backtest start date (Central day).">i</span> <input id="btStart" type="date" /></label>
                   <label>End <span class="tip" data-tip="Backtest end date (Central day). Default is yesterday.">i</span> <input id="btEnd" type="date" /></label>
                 </div>
@@ -1895,6 +1900,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const base = {
         strategy_mode,
+        underlying: (document.getElementById('btUnderlying')?.value || 'SPX').toUpperCase(),
         start_day: document.getElementById('btStart')?.value,
         end_day: document.getElementById('btEnd')?.value,
         expiration_mode,
@@ -1984,6 +1990,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const setc = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
 
       setv('btStrategyMode', p.strategy_mode);
+      setv('btUnderlying', (p.underlying || 'SPX'));
       setv('btStart', p.start_day);
       setv('btEnd', p.end_day);
       setv('btExpMode', p.expiration_mode);
@@ -2130,6 +2137,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       };
 
       const parts = [
+        String((p.underlying || 'SPX')).toLowerCase(),
         ss,
         sm,
         exp,
@@ -3727,6 +3735,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function pfParamsSummaryHtml(params) {
       const p = (params && typeof params === 'object') ? params : {};
       const pick = [
+        ['underlying', 'u'],
         ['start_day', 'start'],
         ['end_day', 'end'],
         ['horizon_minutes', 'H'],

@@ -1908,6 +1908,10 @@ def create_app() -> FastAPI:
         dsn = _pg_dsn()
         if not dsn:
             return None
+        underlying = str((params or {}).get('underlying') or 'SPX').strip().upper()
+        if underlying != 'SPX':
+            # current live source tables are SPX-only; preserve forward-compatible param flow.
+            return None
         # Respect per-line entry windows (same intent semantics as strategy params/backtest design).
         if not _is_now_in_entry_window_ct(params or {}):
             return None
@@ -1963,6 +1967,7 @@ def create_app() -> FastAPI:
                     return None
                 return {
                     'snapshot_ts': snapshot_ts,
+                    'underlying': underlying,
                     'anchor_type': r[0],
                     'spread_type': r[1],
                     'anchor_strike': float(r[2]) if r[2] is not None else None,
@@ -1992,6 +1997,14 @@ def create_app() -> FastAPI:
                     (last_source_ts if last_source_ts else None, last_source_ts if last_source_ts else None, int(max_n)),
                 )
                 return [str(r[0]) for r in cur.fetchall()]
+
+    def _intent_symbol_from_payload(payload: dict[str, Any]) -> str:
+        try:
+            p = (payload or {}).get('params') or {}
+            sym = str(p.get('underlying') or p.get('symbol') or 'SPX').strip().upper()
+            return sym or 'SPX'
+        except Exception:
+            return 'SPX'
 
     @app.post('/api/portfolios/{portfolio_id}/emit_signals')
     def portfolios_emit_signals(portfolio_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2069,7 +2082,7 @@ def create_app() -> FastAPI:
                         broker_name,
                         'pending',
                         strategy_key,
-                        'SPX',
+                        _intent_symbol_from_payload(payload),
                         candidate_ref,
                         idem,
                         _json.dumps(payload, separators=(',', ':'), sort_keys=True),
