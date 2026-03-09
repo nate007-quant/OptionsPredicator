@@ -676,6 +676,6 @@ def load_config_from_env() -> DebitSpreadConfig:
         horizons_minutes=horizons,
         max_future_lookahead_minutes=int(os.getenv("MAX_FUTURE_LOOKAHEAD_MINUTES", "120")),
         max_debit_points=float(os.getenv("MAX_DEBIT_POINTS", "5.0")),
-        poll_seconds=float(os.getenv("DEBIT_POLL_SECONDS", "20")),
+        poll_seconds=float(os.getenv("DEBIT_POLL_SECONDS", "60")),
         batch_limit=int(os.getenv("DEBIT_BATCH_LIMIT", "200")),
     )

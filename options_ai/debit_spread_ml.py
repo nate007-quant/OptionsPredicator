@@ -670,7 +670,7 @@ def load_config_from_env() -> DebitMLConfig:
         min_train_rows=int(os.getenv("DEBIT_ML_MIN_TRAIN_ROWS", "300")),
         max_train_rows=int(os.getenv("DEBIT_ML_MAX_TRAIN_ROWS", "50000")),
         retrain_seconds=int(os.getenv("DEBIT_ML_RETRAIN_SECONDS", "900")),
-        poll_seconds=float(os.getenv("DEBIT_ML_POLL_SECONDS", "20")),
+        poll_seconds=float(os.getenv("DEBIT_ML_POLL_SECONDS", "60")),
         models_dir=os.getenv("DEBIT_ML_MODELS_DIR", "/mnt/options_ai/models/debit_spread"),
         model_version=os.getenv("DEBIT_ML_MODEL_VERSION", "debit_ridge_v1"),
     )
