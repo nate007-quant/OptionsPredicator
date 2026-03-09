@@ -677,6 +677,13 @@ def create_app() -> FastAPI:
                     latest_dlbl = max_ts_le('spx.debit_spread_labels_0dte', latest_chain)
                     latest_score = max_ts_le('spx.debit_spread_scores_0dte', latest_chain)
 
+                    # TERM pipeline timestamps (profile selected by dashboard when 0DTE is absent)
+                    latest_feat_term = max_ts_le('spx.chain_features_term', latest_chain)
+                    latest_label_term = max_ts_le('spx.chain_labels_term', latest_chain)
+                    latest_cand_term = max_ts_le('spx.debit_spread_candidates_term', latest_chain)
+                    latest_dlbl_term = max_ts_le('spx.debit_spread_labels_term', latest_chain)
+                    latest_score_term = max_ts_le('spx.debit_spread_scores_term', latest_chain)
+
                     out['latest'] = {
                         'option_chain': latest_chain,
                         'chain_features_0dte': latest_feat,
@@ -684,6 +691,11 @@ def create_app() -> FastAPI:
                         'debit_candidates_0dte': latest_cand,
                         'debit_labels_0dte': latest_dlbl,
                         'debit_scores_0dte': latest_score,
+                        'chain_features_term': latest_feat_term,
+                        'chain_labels_term': latest_label_term,
+                        'debit_candidates_term': latest_cand_term,
+                        'debit_labels_term': latest_dlbl_term,
+                        'debit_scores_term': latest_score_term,
                     }
 
                     # horizon breakdowns
@@ -801,6 +813,11 @@ def create_app() -> FastAPI:
                         'debit_candidates_0dte': lag_minutes(latest_cand),
                         'debit_labels_0dte': lag_minutes(latest_dlbl),
                         'debit_scores_0dte': lag_minutes(latest_score),
+                        'chain_features_term': lag_minutes(latest_feat_term),
+                        'chain_labels_term': lag_minutes(latest_label_term),
+                        'debit_candidates_term': lag_minutes(latest_cand_term),
+                        'debit_labels_term': lag_minutes(latest_dlbl_term),
+                        'debit_scores_term': lag_minutes(latest_score_term),
                     }
 
 

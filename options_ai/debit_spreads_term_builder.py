@@ -24,6 +24,8 @@ class DebitSpreadTermConfig:
     max_future_lookahead_minutes: int = 20160
 
     max_debit_points: float = 5.0
+    # Minimum age for candidate generation (keeps a small safety delay, but near-live).
+    candidate_min_age_minutes: int = 10
 
     poll_seconds: float = 20.0
     batch_limit: int = 200
@@ -641,7 +643,7 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
     return upserted
 
 
-def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: str, max_horizon_minutes: int, limit: int) -> list[tuple[datetime, Any]]:
+def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: str, candidate_min_age_minutes: int, limit: int) -> list[tuple[datetime, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -658,7 +660,7 @@ def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: s
             ORDER BY f.snapshot_ts DESC
             LIMIT %s
             """,
-            (term_bucket, int(max_horizon_minutes), int(limit)),
+            (term_bucket, int(candidate_min_age_minutes), int(limit)),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
@@ -681,7 +683,7 @@ def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, 
             ORDER BY c.snapshot_ts DESC
             LIMIT %s
             """,
-            (term_bucket, int(max_horizon_minutes), int(limit)),
+            (term_bucket, int(candidate_min_age_minutes), int(limit)),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
@@ -694,7 +696,12 @@ def run_daemon(cfg: DebitSpreadTermConfig) -> None:
         did = False
         try:
             with psycopg.connect(cfg.db_dsn) as conn:
-                for ts, exp in _feature_rows_missing_candidates(conn, term_bucket=cfg.term_bucket, max_horizon_minutes=max(cfg.horizons_minutes), limit=cfg.batch_limit):
+                for ts, exp in _feature_rows_missing_candidates(
+                    conn,
+                    term_bucket=cfg.term_bucket,
+                    candidate_min_age_minutes=cfg.candidate_min_age_minutes,
+                    limit=cfg.batch_limit,
+                ):
                     n = compute_candidates_for_snapshot(conn, snapshot_ts=ts, cfg=cfg)
                     if n:
                         did = True
@@ -733,6 +740,7 @@ def load_config_from_env() -> DebitSpreadTermConfig:
         horizons_minutes=horizons,
         max_future_lookahead_minutes=int(os.getenv("MAX_FUTURE_LOOKAHEAD_MINUTES", "20160")),
         max_debit_points=float(os.getenv("MAX_DEBIT_POINTS", "5.0")),
+        candidate_min_age_minutes=int(os.getenv("DEBIT_CANDIDATE_MIN_AGE_MINUTES", "10")),
         poll_seconds=float(os.getenv("DEBIT_POLL_SECONDS", "20")),
         batch_limit=int(os.getenv("DEBIT_BATCH_LIMIT", "200")),
     )
