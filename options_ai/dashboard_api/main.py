@@ -3793,8 +3793,18 @@ def create_app() -> FastAPI:
         counts = pp.get('counts_recent') or {}
         n_0dte = int(((counts.get('features_missing') or {}).get('n')) or 0)
 
-        # If there is no recent 0DTE stream, show TERM pipeline so dashboard reflects live work.
-        use_term = (n_0dte == 0)
+        # Prefer 0DTE only when it is actually near-live; otherwise fall back to TERM.
+        latest = pp.get('latest') or {}
+        latest_chain = latest.get('option_chain')
+        latest_0dte_feat = latest.get('chain_features_0dte')
+        lag_0dte_min = None
+        try:
+            if latest_chain is not None and latest_0dte_feat is not None:
+                lag_0dte_min = (latest_chain - latest_0dte_feat).total_seconds() / 60.0
+        except Exception:
+            lag_0dte_min = None
+
+        use_term = (n_0dte == 0) or (lag_0dte_min is None) or (lag_0dte_min > 120.0)
         profile = 'term' if use_term else '0dte'
 
         stage_names = [
