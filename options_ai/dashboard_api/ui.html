@@ -316,10 +316,12 @@
     .intent-s-gated { color:#fcd34d; border-color: rgba(245,158,11,.60); background: rgba(245,158,11,.14); }
     .intent-s-precheck { color:#fdba74; border-color: rgba(251,146,60,.60); background: rgba(251,146,60,.14); }
     .intent-s-critical { color:#fca5a5; border-color: rgba(239,68,68,.60); background: rgba(239,68,68,.14); }
-    .intent-chip { display:inline-block; margin:2px 4px 2px 0; padding:2px 7px; border-radius:999px; font-size:11px; border:1px solid var(--border); color:var(--muted); background: rgba(255,255,255,.04); }
+    .intent-chip { display:inline-block; margin:0 4px 0 0; padding:2px 7px; border-radius:999px; font-size:11px; border:1px solid var(--border); color:var(--muted); background: rgba(255,255,255,.04); white-space:nowrap; }
     .intent-chip.ok { color:#86efac; border-color: rgba(34,197,94,.55); background: rgba(34,197,94,.12); }
     .intent-chip.warn { color:#fcd34d; border-color: rgba(245,158,11,.55); background: rgba(245,158,11,.12); }
     .intent-chip.bad { color:#fca5a5; border-color: rgba(239,68,68,.55); background: rgba(239,68,68,.12); }
+    .intent-notes { display:flex; align-items:center; gap:4px; flex-wrap:nowrap; overflow:hidden; white-space:nowrap; max-width:420px; }
+    .intent-notes .intent-chip:last-child { margin-right:0; }
     .intent-row-critical td:first-child { box-shadow: inset 3px 0 0 rgba(239,68,68,.85); }
     .intent-row-gated td:first-child { box-shadow: inset 3px 0 0 rgba(245,158,11,.85); }
     .intent-quick button.active { background: rgba(96,165,250,0.22); border-color: rgba(96,165,250,0.55); }
@@ -5278,13 +5280,21 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           const b = exIntentBand(it.status);
           const reason = exIntentReason(it);
           const chips = [];
-          if (reason) chips.push(`<span class="intent-chip ${/fail|error|blocked|max_trades|one_trade|outside/i.test(reason) ? 'bad' : 'warn'}">${esc(reason)}</span>`);
+          const noteTexts = [];
+          if (reason) {
+            chips.push(`<span class="intent-chip ${/fail|error|blocked|max_trades|one_trade|outside/i.test(reason) ? 'bad' : 'warn'}">${esc(reason)}</span>`);
+            noteTexts.push(reason);
+          }
           const hasRisk = (risk.take_profit_pct != null) || (risk.stop_loss != null);
           chips.push(`<span class="intent-chip ${hasRisk ? 'ok' : 'bad'}">${hasRisk ? 'TP/SL set' : 'TP/SL missing'}</span>`);
+          noteTexts.push(hasRisk ? 'TP/SL set' : 'TP/SL missing');
           const maxPerDay = (p.params || {}).max_trades_per_day;
           const oneAtATime = (p.params || {}).one_trade_at_a_time;
-          if (maxPerDay != null) chips.push(`<span class="intent-chip">max/day: ${esc(String(maxPerDay))}</span>`);
-          if (oneAtATime != null) chips.push(`<span class="intent-chip">one-at-time: ${oneAtATime ? 'on' : 'off'}</span>`);
+          if (maxPerDay != null) { chips.push(`<span class="intent-chip">max/day: ${esc(String(maxPerDay))}</span>`); noteTexts.push(`max/day:${maxPerDay}`); }
+          if (oneAtATime != null) { chips.push(`<span class="intent-chip">one-at-time: ${oneAtATime ? 'on' : 'off'}</span>`); noteTexts.push(`one-at-time:${oneAtATime ? 'on' : 'off'}`); }
+          const shown = chips.slice(0, 2);
+          if (chips.length > 2) shown.push(`<span class="intent-chip">+${chips.length - 2}</span>`);
+          const notesHtml = `<div class="intent-notes" title="${esc(noteTexts.join(' | '))}">${shown.join('')}</div>`;
 
           const tr = document.createElement('tr');
           if (b.row) tr.classList.add(b.row);
@@ -5295,7 +5305,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <td>${it.symbol ?? ''}</td>
             <td>${it.candidate_ref ?? ''}</td>
             <td>${fmtCentral(it.updated_at_utc)}</td>
-            <td>${chips.join(' ')}</td>
+            <td>${notesHtml}</td>
           `;
           tb.appendChild(tr);
         }
