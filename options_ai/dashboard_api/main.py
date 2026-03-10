@@ -4382,6 +4382,13 @@ def create_app() -> FastAPI:
                 and str(x.get('id')) not in keep_set
             ]
             svc_action = 'stop'
+        elif action == 'start-term-services':
+            targets = [
+                x for x in items
+                if ('_term_' in str(x.get('id')))
+                and str(x.get('status')) not in {'active', 'activating'}
+            ]
+            svc_action = 'start'
         else:
             raise HTTPException(status_code=404, detail='unknown global action')
 
