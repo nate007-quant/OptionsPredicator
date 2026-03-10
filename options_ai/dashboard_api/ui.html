@@ -1516,6 +1516,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return (100.0 * x).toFixed(1) + '%';
     }
 
+    function fmtCentral(ts) {
+      if (ts === null || ts === undefined || ts === '') return '—';
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return String(ts);
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Chicago',
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZoneName: 'short',
+      }).format(d);
+    }
+
     function esc(x) {
       // Basic HTML escape for table rendering
       if (x === null || x === undefined) return '';
@@ -3843,7 +3859,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               <span class="hint" id="pfCardNote-${pid}"></span>
             </div>
             <div class="hint" style="margin-top:4px;">Run-time window overrides line-level start/end for consistency across this group.</div>
-            <div class="hint" style="margin-top:2px;">Signal engine: ${it.signal_engine_enabled ? 'ON' : 'OFF'} | last source: ${esc(String(it.signal_last_source_ts || '—'))} | last poll: ${esc(String(it.signal_last_poll_utc || '—'))} | last emit: ${esc(String(it.signal_last_emit_utc || '—'))}${it.signal_last_error ? ' | error: ' + esc(String(it.signal_last_error)) : ''}</div>
+            <div class="hint" style="margin-top:2px;">Signal engine: ${it.signal_engine_enabled ? 'ON' : 'OFF'} | last source: ${esc(fmtCentral(it.signal_last_source_ts))} | last poll: ${esc(fmtCentral(it.signal_last_poll_utc))} | last emit: ${esc(fmtCentral(it.signal_last_emit_utc))}${it.signal_last_error ? ' | error: ' + esc(String(it.signal_last_error)) : ''}</div>
             <div style="margin-top:8px;">
               <div style="height:8px; border-radius:999px; background:rgba(148,163,184,.25); overflow:hidden;">
                 <div id="pfCardProgBar-${pid}" style="height:100%; width:0%; background:linear-gradient(90deg,#60a5fa,#3b82f6);"></div>
