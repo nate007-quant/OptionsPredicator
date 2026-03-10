@@ -4,7 +4,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -226,6 +226,92 @@ class ExecutionExecutor:
             interval_seconds=max(1, int(row[2] or self.reprice_defaults.interval_seconds)),
             max_total_concession=float(row[3] or self.reprice_defaults.max_total_concession),
         )
+
+
+    @staticmethod
+    def _boolish(v: Any, default: bool = False) -> bool:
+        if v is None:
+            return bool(default)
+        if isinstance(v, bool):
+            return v
+        sv = str(v).strip().lower()
+        if sv in {'1', 'true', 'yes', 'on'}:
+            return True
+        if sv in {'0', 'false', 'no', 'off'}:
+            return False
+        return bool(default)
+
+    @staticmethod
+    def _intish(v: Any, default: int | None = None) -> int | None:
+        if v is None:
+            return default
+        try:
+            return int(v)
+        except Exception:
+            return default
+
+    def _session_day_bounds_utc(self) -> tuple[str, str]:
+        tz = ZoneInfo(self.session_tz)
+        now_local = datetime.now(timezone.utc).astimezone(tz)
+        day0_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        day1_local = day0_local + timedelta(days=1)
+        return day0_local.astimezone(timezone.utc).replace(microsecond=0).isoformat(), day1_local.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+    @staticmethod
+    def _source_key(payload: dict[str, Any]) -> tuple[str, str, str]:
+        src = (payload or {}).get('source') or {}
+        st = str(src.get('type') or '')
+        sid = str(src.get('id') or '')
+        li = src.get('line_index')
+        listr = '' if li in (None, '') else (str(int(li)) if str(li).lstrip('-').isdigit() else str(li))
+        return st, sid, listr
+
+    @staticmethod
+    def _source_key_from_run_payload_json(s: Any) -> tuple[str, str, str]:
+        p = _parse_json(s, {}) if not isinstance(s, dict) else s
+        src = (p.get('source') or {}) if isinstance(p, dict) else {}
+        st = str(src.get('type') or '')
+        sid = str(src.get('id') or '')
+        li = src.get('line_index')
+        listr = '' if li in (None, '') else (str(int(li)) if str(li).lstrip('-').isdigit() else str(li))
+        return st, sid, listr
+
+    def _count_open_trades_for_source(self, con: sqlite3.Connection, *, src_key: tuple[str, str, str]) -> int:
+        rows = con.execute(
+            """
+            SELECT run_payload_json
+            FROM trade_runs
+            WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')
+            """,
+            (self.environment, self.broker_name),
+        ).fetchall()
+        n = 0
+        for r in rows:
+            if self._source_key_from_run_payload_json(r['run_payload_json']) == src_key:
+                n += 1
+        return n
+
+    def _count_trades_today_for_source(self, con: sqlite3.Connection, *, src_key: tuple[str, str, str]) -> int:
+        start_utc, end_utc = self._session_day_bounds_utc()
+        rows = con.execute(
+            """
+            SELECT status, run_payload_json
+            FROM trade_runs
+            WHERE environment=?
+              AND broker_name=?
+              AND created_at_utc >= ?
+              AND created_at_utc < ?
+            """,
+            (self.environment, self.broker_name, start_utc, end_utc),
+        ).fetchall()
+        n = 0
+        for r in rows:
+            st = str(r['status'] or '').lower()
+            if st == 'rejected':
+                continue
+            if self._source_key_from_run_payload_json(r['run_payload_json']) == src_key:
+                n += 1
+        return n
 
     @staticmethod
     def _extract_leg_symbols(params: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -589,6 +675,27 @@ class ExecutionExecutor:
                         out["expired"] += 1
                         out["processed"] += 1
                         continue
+
+                    # strategy-level gates carried from triggering params
+                    max_trades_per_day = self._intish(params.get('max_trades_per_day'), None)
+                    one_trade_at_a_time = self._boolish(params.get('one_trade_at_a_time'), False)
+                    src_key = self._source_key(payload if isinstance(payload, dict) else {})
+
+                    if one_trade_at_a_time:
+                        open_same_source = self._count_open_trades_for_source(con, src_key=src_key)
+                        if open_same_source >= 1:
+                            self._mark_intent(con, intent_id=iid, status="blocked", error="one_trade_at_a_time gate hit", risk_gate_status="blocked")
+                            out["blocked"] += 1
+                            out["processed"] += 1
+                            continue
+
+                    if (max_trades_per_day is not None) and (max_trades_per_day >= 0):
+                        traded_today = self._count_trades_today_for_source(con, src_key=src_key)
+                        if traded_today >= int(max_trades_per_day):
+                            self._mark_intent(con, intent_id=iid, status="blocked", error="max_trades_per_day gate hit", risk_gate_status="blocked")
+                            out["blocked"] += 1
+                            out["processed"] += 1
+                            continue
 
                     # daily loss/risk gate
                     if self._risk_blocked(con):
