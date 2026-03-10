@@ -2023,6 +2023,23 @@ def create_app() -> FastAPI:
         except Exception:
             return 'SPX'
 
+    def _risk_from_params(params: dict[str, Any]) -> dict[str, Any]:
+        p = params or {}
+        tp = p.get('take_profit_pct')
+        if tp is None:
+            tp = p.get('credit_take_profit_pct')
+
+        sl = p.get('stop_loss_pct')
+        if sl is None:
+            sl = p.get('credit_stop_loss_mult')
+
+        out: dict[str, Any] = {
+            'take_profit_pct': (float(tp) if tp is not None else None),
+            'stop_loss': (float(sl) if sl is not None else None),
+            'stop_loss_kind': ('pct' if p.get('stop_loss_pct') is not None else ('mult' if p.get('credit_stop_loss_mult') is not None else None)),
+        }
+        return out
+
     @app.post('/api/portfolios/{portfolio_id}/emit_signals')
     def portfolios_emit_signals(portfolio_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
         import json as _json
@@ -2153,6 +2170,8 @@ def create_app() -> FastAPI:
                     # Executor currently requires top-level params with tradable leg symbols.
                     # Use first qualifying line as executable representative for merged signal.
                     'params': primary_params,
+                    # Carry TP/SL from the specific triggering line params used for executable representative.
+                    'risk': _risk_from_params(primary_params),
                     'summary': {},
                     'paired_account': {'environment': env, 'account_label': account_label},
                 }
@@ -2184,6 +2203,8 @@ def create_app() -> FastAPI:
                         'strategy_key': sid,
                         'merge_mode': 'independent',
                         'params': params,
+                        # Carry TP/SL from the triggering line params into executor-facing risk payload.
+                        'risk': _risk_from_params(params),
                         'summary': {},
                         'paired_account': {'environment': env, 'account_label': account_label},
                     }
