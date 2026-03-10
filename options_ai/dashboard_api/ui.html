@@ -1470,6 +1470,39 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return (100.0 * x).toFixed(1) + '%';
     }
 
+    function fmtCentral(ts, opts = {}) {
+      if (ts === null || ts === undefined || ts === '') return '—';
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return String(ts);
+      const includeSeconds = !!opts.includeSeconds;
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Chicago',
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: 'numeric',
+        minute: '2-digit',
+        ...(includeSeconds ? { second: '2-digit' } : {}),
+        hour12: true,
+        timeZoneName: 'short',
+      }).format(d);
+    }
+
+    function prettyDatesDeep(v, key = '') {
+      if (Array.isArray(v)) return v.map((x) => prettyDatesDeep(x, key));
+      if (v && typeof v === 'object') {
+        const out = {};
+        for (const [k, val] of Object.entries(v)) out[k] = prettyDatesDeep(val, k);
+        return out;
+      }
+      if (typeof v !== 'string') return v;
+      const looksDateLikeKey = /(?:^|_)(?:ts|time|date|datetime|mtime|at|source|poll|emit)(?:$|_)/i.test(key) || /^last_/i.test(key);
+      if (!looksDateLikeKey) return v;
+      const d = new Date(v);
+      if (Number.isNaN(d.getTime())) return v;
+      return fmtCentral(v);
+    }
+
     function esc(x) {
       // Basic HTML escape for table rendering
       if (x === null || x === undefined) return '';
@@ -3343,12 +3376,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (qc2) qc2.textContent = data.queue.count;
       if (pc2) pc2.textContent = data.processing.count;
 
-      document.getElementById('newestSnap').textContent = data.snapshot_index_newest_ts || '—';
-      document.getElementById('oldestUnscored').textContent = data.oldest_unscored_ts || '—';
+      document.getElementById('newestSnap').textContent = fmtCentral(data.snapshot_index_newest_ts);
+      document.getElementById('oldestUnscored').textContent = fmtCentral(data.oldest_unscored_ts);
       const ns2 = document.getElementById('newestSnap2');
       const ou2 = document.getElementById('oldestUnscored2');
-      if (ns2) ns2.textContent = data.snapshot_index_newest_ts || '—';
-      if (ou2) ou2.textContent = data.oldest_unscored_ts || '—';
+      if (ns2) ns2.textContent = fmtCentral(data.snapshot_index_newest_ts);
+      if (ou2) ou2.textContent = fmtCentral(data.oldest_unscored_ts);
 
       // Queue table
       const tb = document.getElementById('queueTable');
@@ -3356,7 +3389,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       for (const it of (data.queue.items || [])) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
+        tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${fmtCentral((it.mtime != null) ? (it.mtime * 1000) : null)}</td>`;
         tb.appendChild(tr);
       }
 
@@ -3382,7 +3415,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
 
       // Pipeline quick badges (processing tab)
-      const liveTs = pipes?.latest?.option_chain || '—';
+      const liveTs = fmtCentral(pipes?.latest?.option_chain);
       const lagRaw = pipes?.lags_minutes?.chain_features_0dte;
       const lagTxt = (lagRaw === null || lagRaw === undefined || !Number.isFinite(Number(lagRaw))) ? '—' : `${Number(lagRaw).toFixed(1)}m`;
       let stateTxt = 'unknown';
@@ -3407,7 +3440,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const data = await jget(`/api/status/pipelines?window=${encodeURIComponent(String(win))}`);
 
       const box = document.getElementById('pipeBox');
-      if (box) box.textContent = JSON.stringify(data, null, 2);
+      if (box) box.textContent = JSON.stringify(prettyDatesDeep(data), null, 2);
 
       if (note) {
         const tsok = data?.timescale?.ok;
