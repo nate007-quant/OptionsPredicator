@@ -5096,18 +5096,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return Math.max(2000, Math.min(120000, Math.round(v*1000)));
     }
 
-    function setupExecutionAutoRefresh() {
+    function setupExecutionAutoRefresh(opts = {}) {
+      const triggerNow = (opts && Object.prototype.hasOwnProperty.call(opts, 'triggerNow')) ? !!opts.triggerNow : true;
       for (const k of Object.keys(exAutoTimers)) {
         if (exAutoTimers[k]) { clearInterval(exAutoTimers[k]); exAutoTimers[k] = null; }
       }
 
       if (document.getElementById('exTradesAuto')?.checked) {
+        if (triggerNow) safe('ex_trades', () => exRefreshOpenTrades());
         exAutoTimers.trades = setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), exAutoMs('exTradesSec', 7000));
       }
       if (document.getElementById('exIntentsAuto')?.checked) {
+        if (triggerNow) safe('ex_intents', () => exRefreshIntents());
         exAutoTimers.intents = setInterval(() => safe('ex_intents', () => exRefreshIntents()), exAutoMs('exIntentsSec', 8000));
       }
       if (document.getElementById('exHistoryAuto')?.checked) {
+        if (triggerNow) safe('ex_trade_history', () => exRefreshTradeHistory());
         exAutoTimers.history = setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), exAutoMs('exHistorySec', 12000));
       }
     }
@@ -5856,7 +5860,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('config', () => refreshConfig()), 5000);
       setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
       setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
-      setupExecutionAutoRefresh();
+      setupExecutionAutoRefresh({ triggerNow: false });
       setInterval(() => safe('ex_accounts', () => exRefreshAccounts()), 60000);
       setInterval(() => safe('ex_trading_enabled', () => exRefreshTradingEnabled()), 10000);
       setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
