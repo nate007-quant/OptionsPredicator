@@ -238,6 +238,9 @@
     .ops-loading { display:inline-flex; align-items:center; gap:6px; font-size:12px; color: var(--muted); min-width:170px; visibility:hidden; }
     .ops-loading.active { visibility:visible; }
     .ops-loading-dot { width:8px; height:8px; border-radius:999px; background:#60a5fa; animation: opsPulse 1s ease-in-out infinite; }
+    .box-loading { display:inline-flex; align-items:center; gap:6px; font-size:12px; color: var(--muted); min-width:150px; visibility:hidden; }
+    .box-loading.active { visibility:visible; }
+    .box-loading-dot { width:8px; height:8px; border-radius:999px; background:#60a5fa; animation: opsPulse 1s ease-in-out infinite; }
     @keyframes opsPulse { 0%{opacity:0.25; transform:scale(0.9);} 50%{opacity:1; transform:scale(1.1);} 100%{opacity:0.25; transform:scale(0.9);} }
     .ops-exec-summary { display:none; margin-top:12px; }
     .ops-exec-summary .risk { font-size:13px; color: var(--muted); }
@@ -683,7 +686,13 @@
           <div class="card">
             <div class="card-h"><h2>Open Trades</h2><div class="hint">Protection status + PnL</div></div>
             <div class="card-b">
-              <div class="row"><button class="btn-primary" id="exRefreshTrades">Refresh</button></div>
+              <div class="row">
+                <button class="btn-primary" id="exRefreshTrades">Refresh</button>
+                <label><input id="exTradesAuto" type="checkbox" checked /> auto-refresh</label>
+                <label>sec <input id="exTradesSec" type="number" min="2" max="120" value="7" style="width:70px;" /></label>
+                <span id="exTradesLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
+                <span id="exTradesLast" class="hint">last: —</span>
+              </div>
               <div style="margin-top:10px; overflow:auto; max-height:340px;">
                 <table>
                   <thead>
@@ -725,6 +734,10 @@
                   </select>
                 </label>
                 <button class="btn-primary" id="exRefreshIntents">Refresh</button>
+                <label><input id="exIntentsAuto" type="checkbox" checked /> auto-refresh</label>
+                <label>sec <input id="exIntentsSec" type="number" min="2" max="120" value="8" style="width:70px;" /></label>
+                <span id="exIntentsLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
+                <span id="exIntentsLast" class="hint">last: —</span>
               </div>
               <div class="row intent-quick" id="exIntentQuick">
                 <button data-q="all" class="active">All</button>
@@ -758,6 +771,10 @@
             <div class="row">
               <label>Limit <input id="exHistLimit" type="number" min="1" max="2000" value="200" style="width:90px;" /></label>
               <button class="btn-primary" id="exRefreshHistory">Refresh</button>
+              <label><input id="exHistoryAuto" type="checkbox" checked /> auto-refresh</label>
+              <label>sec <input id="exHistorySec" type="number" min="2" max="120" value="12" style="width:70px;" /></label>
+              <span id="exHistoryLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
+              <span id="exHistoryLast" class="hint">last: —</span>
               <div>Sandbox: <span id="exHistSandboxCount" class="pill">—</span></div>
               <div>Live: <span id="exHistLiveCount" class="pill">—</span></div>
             </div>
@@ -5033,25 +5050,77 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
-    async function exRefreshOpenTrades() {
-      const d = await jget('/api/execution/trades/open?limit=500');
-      const tb = document.getElementById('exTradesTable');
-      if (!tb) return d;
-      tb.innerHTML = '';
-      for (const it of (d.items || [])) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${it.id ?? ''}</td>
-          <td>${it.status ?? ''}</td>
-          <td>${it.underlying ?? ''}</td>
-          <td>${it.qty ?? ''}</td>
-          <td>${it.protection_status ?? ''}</td>
-          <td>${exFmtMoney(it.pnl_realized_usd)}</td>
-          <td>${exFmtMoney(it.pnl_unrealized_usd)}</td>
-        `;
-        tb.appendChild(tr);
+    const exAutoTimers = { trades: null, intents: null, history: null };
+
+    function exBoxLoading(key, on, label) {
+      const el = document.getElementById(`ex${key}Load`);
+      if (!el) return;
+      el.classList.toggle('active', !!on);
+      if (label) el.innerHTML = `<span class="box-loading-dot"></span>${esc(String(label))}`;
+      else el.innerHTML = `<span class="box-loading-dot"></span>Updating…`;
+    }
+
+    function exBoxLast(key, ok=true, text='') {
+      const el = document.getElementById(`ex${key}Last`);
+      if (!el) return;
+      if (text) {
+        el.textContent = text;
+      } else {
+        el.textContent = `last: ${fmtCentral(Date.now())}`;
       }
-      return d;
+      el.style.color = ok ? 'var(--muted)' : 'var(--error)';
+    }
+
+    function exAutoMs(inputId, def=8000) {
+      const v = Number(document.getElementById(inputId)?.value || 0);
+      if (!Number.isFinite(v) || v < 2) return def;
+      return Math.max(2000, Math.min(120000, Math.round(v*1000)));
+    }
+
+    function setupExecutionAutoRefresh() {
+      for (const k of Object.keys(exAutoTimers)) {
+        if (exAutoTimers[k]) { clearInterval(exAutoTimers[k]); exAutoTimers[k] = null; }
+      }
+
+      if (document.getElementById('exTradesAuto')?.checked) {
+        exAutoTimers.trades = setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), exAutoMs('exTradesSec', 7000));
+      }
+      if (document.getElementById('exIntentsAuto')?.checked) {
+        exAutoTimers.intents = setInterval(() => safe('ex_intents', () => exRefreshIntents()), exAutoMs('exIntentsSec', 8000));
+      }
+      if (document.getElementById('exHistoryAuto')?.checked) {
+        exAutoTimers.history = setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), exAutoMs('exHistorySec', 12000));
+      }
+    }
+
+    async function exRefreshOpenTrades() {
+      exBoxLoading('Trades', true);
+      try {
+        const d = await jget('/api/execution/trades/open?limit=500');
+        const tb = document.getElementById('exTradesTable');
+        if (!tb) return d;
+        tb.innerHTML = '';
+        for (const it of (d.items || [])) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${it.id ?? ''}</td>
+            <td>${it.status ?? ''}</td>
+            <td>${it.underlying ?? ''}</td>
+            <td>${it.qty ?? ''}</td>
+            <td>${it.protection_status ?? ''}</td>
+            <td>${exFmtMoney(it.pnl_realized_usd)}</td>
+            <td>${exFmtMoney(it.pnl_unrealized_usd)}</td>
+          `;
+          tb.appendChild(tr);
+        }
+        exBoxLast('Trades', true);
+        return d;
+      } catch (e) {
+        exBoxLast('Trades', false, 'last: error');
+        throw e;
+      } finally {
+        exBoxLoading('Trades', false);
+      }
     }
 
     function exRenderTradeHistoryTable(tableId, items) {
@@ -5075,24 +5144,31 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     async function exRefreshTradeHistory() {
-      const limit = Number(document.getElementById('exHistLimit')?.value || 200);
+      exBoxLoading('History', true);
+      try {
+        const limit = Number(document.getElementById('exHistLimit')?.value || 200);
 
-      async function fetchEnv(env) {
-        try {
-          return await jget(`/api/execution/broker/orders?environment=${encodeURIComponent(env)}&limit=${encodeURIComponent(limit)}`);
-        } catch (e) {
-          return { environment: env, items: [], error: String(e && e.message ? e.message : e) };
+        async function fetchEnv(env) {
+          try {
+            return await jget(`/api/execution/broker/orders?environment=${encodeURIComponent(env)}&limit=${encodeURIComponent(limit)}`);
+          } catch (e) {
+            return { environment: env, items: [], error: String(e && e.message ? e.message : e) };
+          }
         }
-      }
 
-      const [sb, lv] = await Promise.all([fetchEnv('sandbox'), fetchEnv('live')]);
-      exRenderTradeHistoryTable('exHistSandboxTable', sb.items || []);
-      exRenderTradeHistoryTable('exHistLiveTable', lv.items || []);
-      const sbc = document.getElementById('exHistSandboxCount');
-      const lvc = document.getElementById('exHistLiveCount');
-      if (sbc) sbc.textContent = String((sb.items || []).length);
-      if (lvc) lvc.textContent = String((lv.items || []).length);
-      return { sandbox: sb, live: lv };
+        const [sb, lv] = await Promise.all([fetchEnv('sandbox'), fetchEnv('live')]);
+        exRenderTradeHistoryTable('exHistSandboxTable', sb.items || []);
+        exRenderTradeHistoryTable('exHistLiveTable', lv.items || []);
+        const sbc = document.getElementById('exHistSandboxCount');
+        const lvc = document.getElementById('exHistLiveCount');
+        if (sbc) sbc.textContent = String((sb.items || []).length);
+        if (lvc) lvc.textContent = String((lv.items || []).length);
+        const ok = !(sb?.error || lv?.error);
+        exBoxLast('History', ok, ok ? '' : 'last: partial/error');
+        return { sandbox: sb, live: lv };
+      } finally {
+        exBoxLoading('History', false);
+      }
     }
 
     async function exRefreshIncidents() {
@@ -5187,41 +5263,50 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     async function exRefreshIntents() {
-      const st = (document.getElementById('exIntentStatus')?.value || '').trim();
-      const q = st ? `?status=${encodeURIComponent(st)}&limit=500` : '?limit=500';
-      const d = await jget(`/api/execution/intents${q}`);
-      const tb = document.getElementById('exIntentsTable');
-      if (!tb) return d;
-      tb.innerHTML = '';
-      for (const it of (d.items || [])) {
-        if (!exIntentMatchesQuick(it.status)) continue;
-        const p = (it.intent_payload || {});
-        const risk = (p.risk || {});
-        const b = exIntentBand(it.status);
-        const reason = exIntentReason(it);
-        const chips = [];
-        if (reason) chips.push(`<span class="intent-chip ${/fail|error|blocked|max_trades|one_trade|outside/i.test(reason) ? 'bad' : 'warn'}">${esc(reason)}</span>`);
-        const hasRisk = (risk.take_profit_pct != null) || (risk.stop_loss != null);
-        chips.push(`<span class="intent-chip ${hasRisk ? 'ok' : 'bad'}">${hasRisk ? 'TP/SL set' : 'TP/SL missing'}</span>`);
-        const maxPerDay = (p.params || {}).max_trades_per_day;
-        const oneAtATime = (p.params || {}).one_trade_at_a_time;
-        if (maxPerDay != null) chips.push(`<span class="intent-chip">max/day: ${esc(String(maxPerDay))}</span>`);
-        if (oneAtATime != null) chips.push(`<span class="intent-chip">one-at-time: ${oneAtATime ? 'on' : 'off'}</span>`);
+      exBoxLoading('Intents', true);
+      try {
+        const st = (document.getElementById('exIntentStatus')?.value || '').trim();
+        const q = st ? `?status=${encodeURIComponent(st)}&limit=500` : '?limit=500';
+        const d = await jget(`/api/execution/intents${q}`);
+        const tb = document.getElementById('exIntentsTable');
+        if (!tb) return d;
+        tb.innerHTML = '';
+        for (const it of (d.items || [])) {
+          if (!exIntentMatchesQuick(it.status)) continue;
+          const p = (it.intent_payload || {});
+          const risk = (p.risk || {});
+          const b = exIntentBand(it.status);
+          const reason = exIntentReason(it);
+          const chips = [];
+          if (reason) chips.push(`<span class="intent-chip ${/fail|error|blocked|max_trades|one_trade|outside/i.test(reason) ? 'bad' : 'warn'}">${esc(reason)}</span>`);
+          const hasRisk = (risk.take_profit_pct != null) || (risk.stop_loss != null);
+          chips.push(`<span class="intent-chip ${hasRisk ? 'ok' : 'bad'}">${hasRisk ? 'TP/SL set' : 'TP/SL missing'}</span>`);
+          const maxPerDay = (p.params || {}).max_trades_per_day;
+          const oneAtATime = (p.params || {}).one_trade_at_a_time;
+          if (maxPerDay != null) chips.push(`<span class="intent-chip">max/day: ${esc(String(maxPerDay))}</span>`);
+          if (oneAtATime != null) chips.push(`<span class="intent-chip">one-at-time: ${oneAtATime ? 'on' : 'off'}</span>`);
 
-        const tr = document.createElement('tr');
-        if (b.row) tr.classList.add(b.row);
-        tr.innerHTML = `
-          <td>${it.id ?? ''}</td>
-          <td><span class="intent-status ${b.cls}">${esc(String(it.status || ''))}</span></td>
-          <td>${it.strategy_key ?? ''}</td>
-          <td>${it.symbol ?? ''}</td>
-          <td>${it.candidate_ref ?? ''}</td>
-          <td>${fmtCentral(it.updated_at_utc)}</td>
-          <td>${chips.join(' ')}</td>
-        `;
-        tb.appendChild(tr);
+          const tr = document.createElement('tr');
+          if (b.row) tr.classList.add(b.row);
+          tr.innerHTML = `
+            <td>${it.id ?? ''}</td>
+            <td><span class="intent-status ${b.cls}">${esc(String(it.status || ''))}</span></td>
+            <td>${it.strategy_key ?? ''}</td>
+            <td>${it.symbol ?? ''}</td>
+            <td>${it.candidate_ref ?? ''}</td>
+            <td>${fmtCentral(it.updated_at_utc)}</td>
+            <td>${chips.join(' ')}</td>
+          `;
+          tb.appendChild(tr);
+        }
+        exBoxLast('Intents', true);
+        return d;
+      } catch (e) {
+        exBoxLast('Intents', false, 'last: error');
+        throw e;
+      } finally {
+        exBoxLoading('Intents', false);
       }
-      return d;
     }
 
 
@@ -5495,6 +5580,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('exRefreshAccounts')?.addEventListener('click', () => safe('ex_accounts', () => exRefreshAccounts()));
     document.getElementById('exTradingEnabled')?.addEventListener('change', (ev) => safe('ex_trading_enabled_set', () => exSetTradingEnabled(!!ev.target.checked)));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
+    ['exTradesAuto','exTradesSec','exIntentsAuto','exIntentsSec','exHistoryAuto','exHistorySec'].forEach((id) => {
+      document.getElementById(id)?.addEventListener('change', () => setupExecutionAutoRefresh());
+    });
     document.querySelectorAll('#exIntentQuick button[data-q]').forEach((btn) => {
       btn.addEventListener('click', () => {
         exIntentQuickFilter = String(btn.getAttribute('data-q') || 'all');
@@ -5742,8 +5830,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('config', () => refreshConfig()), 5000);
       setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
       setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
-      setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), 7000);
-      setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), 12000);
+      setupExecutionAutoRefresh();
       setInterval(() => safe('ex_accounts', () => exRefreshAccounts()), 60000);
       setInterval(() => safe('ex_trading_enabled', () => exRefreshTradingEnabled()), 10000);
       setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
