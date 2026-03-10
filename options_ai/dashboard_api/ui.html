@@ -656,8 +656,8 @@
               </div>
               <div class="row" style="margin-top:10px;">
                 <div>Force-close countdown: <span id="exForceCountdown" class="pill">—</span></div>
-                <button class="btn-danger" id="exKillOn">Kill switch ON</button>
-                <button id="exKillOff">Kill switch OFF</button>
+                <button class="btn-danger" id="exKillToggle">Kill switch: ON</button>
+                <span class="tip" id="exKillTip" data-tip="Kill switch blocks NEW entry orders immediately (it does not close existing trades). Toggle to allow new entries again.">?</span>
                 <button id="exQuarantineClear">Clear Quarantine</button>
               </div>
               <div class="hint" id="exRiskNote" style="margin-top:8px;"></div>
@@ -4816,8 +4816,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exForceCountdown: 'Time remaining until force-close trigger (session close minus configured minutes).',
         exRiskNote: 'Latest risk gate reason (e.g., daily_loss_breach, strict quarantine reason).',
 
-        exKillOn: 'Operator control: block new entries immediately (kill switch).',
-        exKillOff: 'Operator control: clear kill-switch block for new entries.',
+        exKillToggle: 'Toggle kill switch (blocks/unblocks NEW entries).',
+        exKillTip: 'Kill switch blocks NEW entries; it does not flatten existing positions.',
         exQuarantineClear: 'Operator control: clear strict quarantine gate after investigation.',
 
         exRpUnderlying: 'Underlying symbol profile for reprice policy (default SPX).',
@@ -5001,6 +5001,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
+    function exRenderKillButton(blocked) {
+      const btn = document.getElementById('exKillToggle');
+      if (!btn) return;
+      const on = !!blocked;
+      btn.textContent = on ? 'Kill switch: ON (click to disable)' : 'Kill switch: OFF (click to enable)';
+      btn.classList.toggle('btn-danger', !on);
+      btn.classList.toggle('btn-primary', on);
+    }
+
     async function exRefreshRiskSession() {
       const d = await jget('/api/execution/risk-session');
       document.getElementById('exRiskRealized').textContent = exFmtMoney(d.realized_pnl_usd);
@@ -5008,6 +5017,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById('exRiskMaxLoss').textContent = exFmtMoney(-Math.abs(Number(d.max_daily_loss_usd || 0)));
       document.getElementById('exRiskBlocked').textContent = d.block_new_entries ? 'YES' : 'NO';
       document.getElementById('exRiskNote').textContent = d.reason ? `reason: ${d.reason}` : '';
+      exRenderKillButton(!!d.block_new_entries);
       exRenderCountdown();
       return d;
     }
@@ -5021,7 +5031,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     async function exSetKillSwitch(on) {
       const d = await jpost('/api/execution/kill-switch', { block_new_entries: !!on, reason: (on ? 'manual_kill_switch' : 'manual_unblock') });
       toast(on ? 'kill switch enabled' : 'kill switch disabled', on ? 'warn' : 'success');
+      exRenderKillButton(!!d.block_new_entries);
       return d;
+    }
+
+    async function exToggleKillSwitch() {
+      const d = await jget('/api/execution/risk-session');
+      const next = !Boolean(d && d.block_new_entries);
+      return exSetKillSwitch(next);
     }
 
     async function exLoadRepricePolicy() {
@@ -5606,8 +5623,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('exFlattenAll')?.addEventListener('click', () => safe('ex_flatten_all', () => exFlattenAll()));
     document.getElementById('exRpLoad')?.addEventListener('click', () => safe('ex_rp_load', () => exLoadRepricePolicy()));
     document.getElementById('exRpSave')?.addEventListener('click', () => safe('ex_rp_save', () => exSaveRepricePolicy()));
-    document.getElementById('exKillOn')?.addEventListener('click', () => safe('ex_kill_on', () => exSetKillSwitch(true)));
-    document.getElementById('exKillOff')?.addEventListener('click', () => safe('ex_kill_off', () => exSetKillSwitch(false)));
+    document.getElementById('exKillToggle')?.addEventListener('click', () => safe('ex_kill_toggle', () => exToggleKillSwitch()));
     document.getElementById('exQuarantineClear')?.addEventListener('click', () => safe('ex_quarantine_clear', () => exClearQuarantine()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
     document.getElementById('runBacktestSampler')?.addEventListener('click', () => safe('sampler', () => samplerStartOrStop()));
