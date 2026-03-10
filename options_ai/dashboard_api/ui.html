@@ -242,6 +242,7 @@
     .box-loading { display:inline-flex; align-items:center; gap:6px; font-size:12px; color: var(--muted); min-width:150px; visibility:hidden; }
     .box-loading.active { visibility:visible; }
     .box-loading-dot { width:8px; height:8px; border-radius:999px; background:#60a5fa; animation: opsPulse 1s ease-in-out infinite; }
+    .ex-last-mini { font-size: 11px; opacity: .9; letter-spacing: .1px; }
     @keyframes opsPulse { 0%{opacity:0.25; transform:scale(0.9);} 50%{opacity:1; transform:scale(1.1);} 100%{opacity:0.25; transform:scale(0.9);} }
     .ops-exec-summary { display:none; margin-top:12px; }
     .ops-exec-summary .risk { font-size:13px; color: var(--muted); }
@@ -705,7 +706,7 @@
                 <label><input id="exTradesAuto" type="checkbox" checked /> auto-refresh</label>
                 <label>sec <input id="exTradesSec" type="number" min="2" max="120" value="7" style="width:70px;" /></label>
                 <span id="exTradesLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
-                <span id="exTradesLast" class="hint">last: —</span>
+                <span id="exTradesLast" class="hint ex-last-mini">—</span>
               </div>
               <div style="margin-top:10px; overflow:auto; max-height:340px;">
                 <table>
@@ -751,7 +752,7 @@
                 <label><input id="exIntentsAuto" type="checkbox" checked /> auto-refresh</label>
                 <label>sec <input id="exIntentsSec" type="number" min="2" max="120" value="8" style="width:70px;" /></label>
                 <span id="exIntentsLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
-                <span id="exIntentsLast" class="hint">last: —</span>
+                <span id="exIntentsLast" class="hint ex-last-mini">—</span>
               </div>
               <div class="row intent-quick" id="exIntentQuick">
                 <button data-q="all" class="active">All</button>
@@ -788,7 +789,7 @@
               <label><input id="exHistoryAuto" type="checkbox" checked /> auto-refresh</label>
               <label>sec <input id="exHistorySec" type="number" min="2" max="120" value="12" style="width:70px;" /></label>
               <span id="exHistoryLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
-              <span id="exHistoryLast" class="hint">last: —</span>
+              <span id="exHistoryLast" class="hint ex-last-mini">—</span>
               <div>Sandbox: <span id="exHistSandboxCount" class="pill">—</span></div>
               <div>Live: <span id="exHistLiveCount" class="pill">—</span></div>
             </div>
@@ -5091,15 +5092,34 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       else el.innerHTML = `<span class="box-loading-dot"></span>Updating…`;
     }
 
-    function exBoxLast(key, ok=true, text='') {
+    function exRenderLastStampEl(el) {
+      if (!el) return;
+      const ts = Number(el.dataset.ts || 0);
+      if (!ts) { el.textContent = '—'; return; }
+      const ok = String(el.dataset.ok || '1') !== '0';
+      const note = String(el.dataset.note || '').trim();
+      const ageSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+      const age = (ageSec < 2) ? 'now' : (ageSec < 60) ? `${ageSec}s` : (ageSec < 3600) ? `${Math.floor(ageSec / 60)}m` : `${Math.floor(ageSec / 3600)}h`;
+      const lead = ok ? '✓' : '⚠';
+      el.textContent = note ? `${lead} ${note} · ${age}` : `${lead} ${age}`;
+      el.style.color = ok ? 'var(--muted)' : 'var(--warn)';
+      el.title = `Last update: ${fmtCentral(ts)}`;
+    }
+
+    function exBoxLast(key, ok=true, note='') {
       const el = document.getElementById(`ex${key}Last`);
       if (!el) return;
-      if (text) {
-        el.textContent = text;
-      } else {
-        el.textContent = `last: ${fmtCentral(Date.now())}`;
-      }
-      el.style.color = ok ? 'var(--muted)' : 'var(--error)';
+      el.dataset.ts = String(Date.now());
+      el.dataset.ok = ok ? '1' : '0';
+      el.dataset.note = String(note || '');
+      exRenderLastStampEl(el);
+    }
+
+    function exRefreshLastStamps() {
+      ['exTradesLast','exIntentsLast','exHistoryLast'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) exRenderLastStampEl(el);
+      });
     }
 
     function exAutoMs(inputId, def=8000) {
@@ -5151,7 +5171,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exBoxLast('Trades', true);
         return d;
       } catch (e) {
-        exBoxLast('Trades', false, 'last: error');
+        exBoxLast('Trades', false, 'error');
         throw e;
       } finally {
         exBoxLoading('Trades', false);
@@ -5199,7 +5219,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         if (sbc) sbc.textContent = String((sb.items || []).length);
         if (lvc) lvc.textContent = String((lv.items || []).length);
         const ok = !(sb?.error || lv?.error);
-        exBoxLast('History', ok, ok ? '' : 'last: partial/error');
+        exBoxLast('History', ok, ok ? '' : 'partial');
         return { sandbox: sb, live: lv };
       } finally {
         exBoxLoading('History', false);
@@ -5345,7 +5365,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exBoxLast('Intents', true);
         return d;
       } catch (e) {
-        exBoxLast('Intents', false, 'last: error');
+        exBoxLast('Intents', false, 'error');
         throw e;
       } finally {
         exBoxLoading('Intents', false);
@@ -5873,6 +5893,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
       setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
       setupExecutionAutoRefresh({ triggerNow: false });
+      setInterval(() => exRefreshLastStamps(), 5000);
       setInterval(() => safe('ex_accounts', () => exRefreshAccounts()), 60000);
       setInterval(() => safe('ex_trading_enabled', () => exRefreshTradingEnabled()), 10000);
       setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
