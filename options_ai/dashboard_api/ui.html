@@ -1436,7 +1436,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       try {
         const r = await fn();
         // stamp last refresh if it succeeded
-        document.getElementById('lastRefresh').textContent = new Date().toLocaleString();
+        document.getElementById('lastRefresh').textContent = fmtCentral(Date.now());
         return r;
       } catch (e) {
         console.error(where, e);
@@ -2028,7 +2028,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const trades = it.last_summary?.trades ?? it.last_summary?.n_trades;
       const pnl = it.last_summary?.cum_pnl_dollars ?? it.last_summary?.total_pnl_dollars ?? it.last_summary?.total_pnl;
       const extra = (trades !== undefined || pnl !== undefined) ? ` (trades=${trades ?? '—'}, pnl=${pnl ?? '—'})` : '';
-      el.textContent = `Last run: ${it.last_run_at_utc}${extra}`;
+      el.textContent = `Last run: ${fmtCentral(it.last_run_at_utc)}${extra}`;
     }
 
     function btPresetSuggestedName() {
@@ -2433,7 +2433,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tdSel.appendChild(cb);
 
         const tdStrategy = document.createElement('td'); tdStrategy.textContent = it.strategy_key || '';
-        const tdCreated = document.createElement('td'); tdCreated.textContent = it.created_at_utc || '';
+        const tdCreated = document.createElement('td'); tdCreated.textContent = fmtCentral(it.created_at_utc);
         const tdPreset = document.createElement('td'); tdPreset.textContent = it.preset_name_at_run || '—';
         const tdStart = document.createElement('td'); tdStart.textContent = p.start_day || '—';
         const tdEnd = document.createElement('td'); tdEnd.textContent = p.end_day || '—';
@@ -3263,7 +3263,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const minPred = parseFloat(document.getElementById('dailyPickMinPred')?.value || '0');
       const data = await jget(`/api/debit_spreads/daily_pick?window_minutes=${win}&min_p_bigwin=${minP}&min_pred_change=${minPred}`);
       const box = document.getElementById('dailyPickBox');
-      if (box) box.textContent = JSON.stringify(data, null, 2);
+      if (box) box.textContent = JSON.stringify(prettyDatesDeep(data), null, 2);
       const note = document.getElementById('dailyPickNote');
       if (note) note.textContent = data.pick ? 'PICKED' : 'no pick (filters too strict or no data)';
       return data;
@@ -3286,7 +3286,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
         const pred = (it.pred_change === null || it.pred_change === undefined) ? '—' : fmtNum(it.pred_change, 2);
         tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
+          <td>${fmtCentral(it.snapshot_ts)}</td>
           <td>${it.anchor_type || ''}</td>
           <td>${it.spread_type || ''}</td>
           <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
@@ -3314,7 +3314,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const lim = parseInt(document.getElementById('debitLimit')?.value || '12', 10);
       const data = await jget(`/api/debit_spreads/top?limit=${lim}`);
 
-      document.getElementById('debitSnapshot').textContent = data.snapshot_ts || '—';
+      document.getElementById('debitSnapshot').textContent = fmtCentral(data.snapshot_ts);
       const lev = data.levels || {};
       document.getElementById('debitExp').textContent = lev.expiration_date || '—';
       document.getElementById('debitSpot').textContent = (lev.spot === null || lev.spot === undefined) ? '—' : fmtNum(lev.spot, 2);
@@ -3409,7 +3409,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         if (pbox2) pbox2.textContent = msg;
       } else {
         const it = data.processing.items[0];
-        const msg = `${it.file} | stage=${it.stage} | started=${it.started_at} | elapsed=${(it.elapsed_seconds ?? 0).toFixed(1)}s`;
+        const msg = `${it.file} | stage=${it.stage} | started=${fmtCentral(it.started_at)} | elapsed=${(it.elapsed_seconds ?? 0).toFixed(1)}s`;
         if (pbox) pbox.textContent = msg;
         if (pbox2) pbox2.textContent = msg;
       }
@@ -3479,7 +3479,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const n = parseInt(document.getElementById('rollingN').value || '50', 10);
       const roll = await jget(`/api/metrics/rolling?n=${n}`);
-      document.getElementById('metricsAsOf').textContent = roll.as_of ? `as_of ${roll.as_of}` : '';
+      document.getElementById('metricsAsOf').textContent = roll.as_of ? `as_of ${fmtCentral(roll.as_of)}` : '';
       document.getElementById('rollOverall').textContent = fmtPct(roll.overall_accuracy);
       document.getElementById('rollExcl').textContent = fmtPct(roll.accuracy_excluding_inconclusive);
       document.getElementById('rollHi').textContent = fmtPct(roll.hi_accuracy);
@@ -3648,7 +3648,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     async function exRefreshKpis() {
       const days = Number(document.getElementById('exKpiDays')?.value || 7);
       const d = await jget(`/api/execution/kpis?days=${encodeURIComponent(days)}`);
-      document.getElementById('exKpiAsOf').textContent = `cutoff: ${d.cutoff_utc || '—'}`;
+      document.getElementById('exKpiAsOf').textContent = `cutoff: ${fmtCentral(d.cutoff_utc)}`;
       document.getElementById('exKpiFillRate').textContent = (d.fill_rate == null) ? '—' : (100 * Number(d.fill_rate)).toFixed(1) + '%';
       document.getElementById('exKpiReprice').textContent = exFmtMoney(d.avg_reprice_concession);
       document.getElementById('exKpiProtection').textContent = (d.protection_rate_open == null) ? '—' : (100 * Number(d.protection_rate_open)).toFixed(1) + '%';
@@ -3690,7 +3690,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById('exRpInterval').value = String(d.interval_seconds ?? 25);
       document.getElementById('exRpCap').value = String(d.max_total_concession ?? 0.15);
       document.getElementById('exRpEnabled').checked = !!d.enabled;
-      document.getElementById('exRpNote').textContent = `updated: ${d.updated_at_utc || '—'}`;
+      document.getElementById('exRpNote').textContent = `updated: ${fmtCentral(d.updated_at_utc)}`;
       return d;
     }
 
@@ -3704,7 +3704,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         enabled: !!document.getElementById('exRpEnabled')?.checked,
       };
       const d = await jput('/api/execution/reprice-policy', body);
-      document.getElementById('exRpNote').textContent = `updated: ${d.updated_at_utc || '—'}`;
+      document.getElementById('exRpNote').textContent = `updated: ${fmtCentral(d.updated_at_utc)}`;
       toast('reprice policy saved', 'success');
       return d;
     }
@@ -3738,7 +3738,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       for (const it of (d.items || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${it.created_at_utc ?? ''}</td>
+          <td>${fmtCentral(it.created_at_utc)}</td>
           <td>${it.incident_type ?? ''}</td>
           <td>${it.severity ?? ''}</td>
           <td>${it.trade_run_id ?? ''}</td>
@@ -3768,7 +3768,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       for (const it of (d.items || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${it.created_at_utc ?? ''}</td>
+          <td>${fmtCentral(it.created_at_utc)}</td>
           <td>${it.action ?? ''}</td>
           <td>${it.entity_type ?? ''}:${it.entity_id ?? ''}</td>
         `;
@@ -3804,7 +3804,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <td>${it.strategy_key ?? ''}</td>
           <td>${it.symbol ?? ''}</td>
           <td>${it.candidate_ref ?? ''}</td>
-          <td>${it.updated_at_utc ?? ''}</td>
+          <td>${fmtCentral(it.updated_at_utc)}</td>
         `;
         tb.appendChild(tr);
       }
@@ -3866,7 +3866,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     async function sfRefreshWeeklyDigest() {
       const d = await jget('/api/strategy_factory/weekly_digest');
       const el = document.getElementById('sfWeeklyDigest');
-      if (el) el.textContent = JSON.stringify((d.weekly_digest || {}), null, 2);
+      if (el) el.textContent = JSON.stringify(prettyDatesDeep(d.weekly_digest || {}), null, 2);
       return d;
     }
 
