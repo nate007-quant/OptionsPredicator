@@ -38,6 +38,7 @@
       --btn-bg: rgba(255,255,255,0.08);
       --btn-bg-hover: rgba(255,255,255,0.12);
       --btn-border: rgba(255,255,255,0.14);
+      color-scheme: dark;
     }
 
     html[data-theme="midnight"] {
@@ -335,6 +336,17 @@
       padding: 8px 10px;
       color: var(--text);
       outline: none;
+    }
+    select {
+      background-color: var(--surface-2);
+      color: var(--text);
+    }
+    select option, select optgroup {
+      background-color: var(--surface-2);
+      color: var(--text);
+    }
+    select option:disabled {
+      color: var(--muted);
     }
     input:focus, select:focus {
       border-color: rgba(96,165,250,0.55);
