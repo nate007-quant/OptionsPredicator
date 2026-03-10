@@ -691,7 +691,7 @@
                 <label><input id="exRpEnabled" type="checkbox" checked /> enabled</label>
                 <button class="btn-primary" id="exRpLoad">Load</button>
                 <button id="exRpSave">Save</button>
-                <span class="hint" id="exRpNote"></span>
+                <span class="hint ex-last-mini" id="exRpNote">—</span>
               </div>
             </div>
           </div>
@@ -5063,7 +5063,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById('exRpInterval').value = String(d.interval_seconds ?? 25);
       document.getElementById('exRpCap').value = String(d.max_total_concession ?? 0.15);
       document.getElementById('exRpEnabled').checked = !!d.enabled;
-      document.getElementById('exRpNote').textContent = `updated: ${d.updated_at_utc || '—'}`;
+      exSetRpNote(d.updated_at_utc, true, 'policy');
       return d;
     }
 
@@ -5077,7 +5077,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         enabled: !!document.getElementById('exRpEnabled')?.checked,
       };
       const d = await jput('/api/execution/reprice-policy', body);
-      document.getElementById('exRpNote').textContent = `updated: ${d.updated_at_utc || '—'}`;
+      exSetRpNote(d.updated_at_utc, true, 'policy');
       toast('reprice policy saved', 'success');
       return d;
     }
@@ -5106,6 +5106,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       el.title = `Last update: ${fmtCentral(ts)}`;
     }
 
+    function exSetRpNote(tsLike, ok=true, note='') {
+      const el = document.getElementById('exRpNote');
+      if (!el) return;
+      const t = tsLike ? new Date(tsLike) : new Date();
+      const ts = Number.isNaN(t.getTime()) ? Date.now() : t.getTime();
+      el.dataset.ts = String(ts);
+      el.dataset.ok = ok ? '1' : '0';
+      el.dataset.note = String(note || 'policy');
+      exRenderLastStampEl(el);
+    }
+
     function exBoxLast(key, ok=true, note='') {
       const el = document.getElementById(`ex${key}Last`);
       if (!el) return;
@@ -5116,7 +5127,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     function exRefreshLastStamps() {
-      ['exTradesLast','exIntentsLast','exHistoryLast'].forEach((id) => {
+      ['exTradesLast','exIntentsLast','exHistoryLast','exRpNote'].forEach((id) => {
         const el = document.getElementById(id);
         if (el) exRenderLastStampEl(el);
       });
