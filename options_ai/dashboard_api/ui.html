@@ -689,8 +689,8 @@
               </div>
               <div class="row" style="margin-top:10px;">
                 <label><input id="exRpEnabled" type="checkbox" checked /> enabled</label>
-                <button class="btn-primary" id="exRpLoad">Load</button>
-                <button id="exRpSave">Save</button>
+                <button class="btn-primary" id="exRpSync">Sync</button>
+                <span id="exRpDirty" class="hint ex-last-mini" style="display:none; color: var(--warn);">unsaved changes</span>
                 <span class="hint ex-last-mini" id="exRpNote">—</span>
               </div>
             </div>
@@ -4839,8 +4839,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exRpInterval: 'Seconds between reprice attempts.',
         exRpCap: 'Maximum total concession from initial entry limit.',
         exRpEnabled: 'Enable/disable reprice policy row for this underlying.',
-        exRpLoad: 'Load current reprice policy from API for selected underlying.',
-        exRpSave: 'Save edited reprice policy to API (validated server-side).',
+        exRpSync: 'Sync policy: loads latest when clean, or prompts to save/discard when fields are edited.',
+        exRpDirty: 'Indicates unsaved local edits in Reprice Policy fields.',
         exRpNote: 'Last policy update timestamp/info message.',
 
         exKpiDays: 'Rolling KPI window length in days.',
@@ -5054,6 +5054,50 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return exSetKillSwitch(next);
     }
 
+    function exRpCurrentFormState() {
+      return {
+        underlying: (document.getElementById('exRpUnderlying')?.value || 'SPX').trim().toUpperCase() || 'SPX',
+        max_attempts: Number(document.getElementById('exRpAttempts')?.value || 3),
+        step: Number(document.getElementById('exRpStep')?.value || 0.05),
+        interval_seconds: Number(document.getElementById('exRpInterval')?.value || 25),
+        max_total_concession: Number(document.getElementById('exRpCap')?.value || 0.15),
+        enabled: !!document.getElementById('exRpEnabled')?.checked,
+      };
+    }
+
+    function exRpMarkDirty(isDirty) {
+      const d = document.getElementById('exRpDirty');
+      if (d) d.style.display = isDirty ? '' : 'none';
+      const syncBtn = document.getElementById('exRpSync');
+      if (syncBtn) syncBtn.textContent = isDirty ? 'Sync (save/reload)' : 'Sync';
+      window.__exRpDirty = !!isDirty;
+    }
+
+    function exRpWireDirtyTracking() {
+      ['exRpUnderlying','exRpAttempts','exRpStep','exRpInterval','exRpCap','exRpEnabled'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const evt = (id === 'exRpEnabled') ? 'change' : 'input';
+        el.addEventListener(evt, () => exRpMarkDirty(true));
+      });
+    }
+
+    async function exRpSync() {
+      const dirty = !!window.__exRpDirty;
+      if (!dirty) return exLoadRepricePolicy();
+
+      const save = confirm('Reprice Policy has unsaved changes.
+
+OK = Save changes
+Cancel = Discard changes and reload latest policy');
+      if (save) {
+        return exSaveRepricePolicy();
+      }
+      const d = await exLoadRepricePolicy();
+      exRpMarkDirty(false);
+      return d;
+    }
+
     async function exLoadRepricePolicy() {
       const u = (document.getElementById('exRpUnderlying')?.value || 'SPX').trim().toUpperCase() || 'SPX';
       const d = await jget(`/api/execution/reprice-policy?underlying=${encodeURIComponent(u)}`);
@@ -5064,20 +5108,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById('exRpCap').value = String(d.max_total_concession ?? 0.15);
       document.getElementById('exRpEnabled').checked = !!d.enabled;
       exSetRpNote(d.updated_at_utc, true, 'policy');
+      exRpMarkDirty(false);
       return d;
     }
 
     async function exSaveRepricePolicy() {
-      const body = {
-        underlying: (document.getElementById('exRpUnderlying')?.value || 'SPX').trim().toUpperCase() || 'SPX',
-        max_attempts: Number(document.getElementById('exRpAttempts')?.value || 3),
-        step: Number(document.getElementById('exRpStep')?.value || 0.05),
-        interval_seconds: Number(document.getElementById('exRpInterval')?.value || 25),
-        max_total_concession: Number(document.getElementById('exRpCap')?.value || 0.15),
-        enabled: !!document.getElementById('exRpEnabled')?.checked,
-      };
+      const body = exRpCurrentFormState();
       const d = await jput('/api/execution/reprice-policy', body);
       exSetRpNote(d.updated_at_utc, true, 'policy');
+      exRpMarkDirty(false);
       toast('reprice policy saved', 'success');
       return d;
     }
@@ -5668,8 +5707,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('exRefreshRecon')?.addEventListener('click', () => safe('ex_recon', () => exRefreshReconciliation()));
     document.getElementById('exCancelAll')?.addEventListener('click', () => safe('ex_cancel_all', () => exCancelAll()));
     document.getElementById('exFlattenAll')?.addEventListener('click', () => safe('ex_flatten_all', () => exFlattenAll()));
-    document.getElementById('exRpLoad')?.addEventListener('click', () => safe('ex_rp_load', () => exLoadRepricePolicy()));
-    document.getElementById('exRpSave')?.addEventListener('click', () => safe('ex_rp_save', () => exSaveRepricePolicy()));
+    document.getElementById('exRpSync')?.addEventListener('click', () => safe('ex_rp_sync', () => exRpSync()));
+    exRpWireDirtyTracking();
     document.getElementById('exKillToggle')?.addEventListener('click', () => safe('ex_kill_toggle', () => exToggleKillSwitch()));
     document.getElementById('exQuarantineClear')?.addEventListener('click', () => safe('ex_quarantine_clear', () => exClearQuarantine()));
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
