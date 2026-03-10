@@ -4359,6 +4359,29 @@ def create_app() -> FastAPI:
         elif action == 'stop-non-critical':
             targets = [x for x in items if str(x.get('status')) in {'active', 'activating'} and not bool(x.get('critical'))]
             svc_action = 'stop'
+        elif action == 'start-zero-dte':
+            zero_set = {
+                'options_predicator',
+                'spx_chain_ingester',
+                'spx_chain_phase2',
+                'spx_debit_spreads',
+                'spx_debit_ml',
+            }
+            targets = [x for x in items if str(x.get('id')) in zero_set and str(x.get('status')) not in {'active', 'activating'}]
+            svc_action = 'start'
+        elif action == 'stop-all-processing':
+            keep_set = {
+                'options_ai_dashboard_api',
+                'options_ai_execution',
+                'options_ai_execution_monitor',
+                'options_ai_risk_guard',
+            }
+            targets = [
+                x for x in items
+                if str(x.get('status')) in {'active', 'activating'}
+                and str(x.get('id')) not in keep_set
+            ]
+            svc_action = 'stop'
         else:
             raise HTTPException(status_code=404, detail='unknown global action')
 
