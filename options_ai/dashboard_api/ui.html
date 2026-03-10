@@ -306,6 +306,21 @@
       color: var(--text);
     }
 
+    .intent-status { display:inline-block; padding:3px 8px; border-radius:999px; border:1px solid var(--border); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.2px; }
+    .intent-s-success { color:#86efac; border-color: rgba(34,197,94,.60); background: rgba(34,197,94,.14); }
+    .intent-s-progress { color:#7dd3fc; border-color: rgba(56,189,248,.60); background: rgba(56,189,248,.14); }
+    .intent-s-queued { color:#cbd5e1; border-color: rgba(148,163,184,.60); background: rgba(148,163,184,.14); }
+    .intent-s-gated { color:#fcd34d; border-color: rgba(245,158,11,.60); background: rgba(245,158,11,.14); }
+    .intent-s-precheck { color:#fdba74; border-color: rgba(251,146,60,.60); background: rgba(251,146,60,.14); }
+    .intent-s-critical { color:#fca5a5; border-color: rgba(239,68,68,.60); background: rgba(239,68,68,.14); }
+    .intent-chip { display:inline-block; margin:2px 4px 2px 0; padding:2px 7px; border-radius:999px; font-size:11px; border:1px solid var(--border); color:var(--muted); background: rgba(255,255,255,.04); }
+    .intent-chip.ok { color:#86efac; border-color: rgba(34,197,94,.55); background: rgba(34,197,94,.12); }
+    .intent-chip.warn { color:#fcd34d; border-color: rgba(245,158,11,.55); background: rgba(245,158,11,.12); }
+    .intent-chip.bad { color:#fca5a5; border-color: rgba(239,68,68,.55); background: rgba(239,68,68,.12); }
+    .intent-row-critical td:first-child { box-shadow: inset 3px 0 0 rgba(239,68,68,.85); }
+    .intent-row-gated td:first-child { box-shadow: inset 3px 0 0 rgba(245,158,11,.85); }
+    .intent-quick button.active { background: rgba(96,165,250,0.22); border-color: rgba(96,165,250,0.55); }
+
     label { font-size: 12px; color: var(--muted); }
 
     input, select {
@@ -696,16 +711,27 @@
                   <select id="exIntentStatus">
                     <option value="">(all)</option>
                     <option value="pending">pending</option>
+                    <option value="PRECHECK_PENDING">PRECHECK_PENDING</option>
                     <option value="submitting">submitting</option>
                     <option value="working">working</option>
                     <option value="filled">filled</option>
-                    <option value="rejected">rejected</option>
-                    <option value="expired">expired</option>
                     <option value="blocked">blocked</option>
+                    <option value="expired">expired</option>
+                    <option value="QUARANTINED">QUARANTINED</option>
+                    <option value="PRECHECK_FAILED">PRECHECK_FAILED</option>
+                    <option value="rejected">rejected</option>
+                    <option value="PROTECTION_ARMING_FAILED">PROTECTION_ARMING_FAILED</option>
                     <option value="error">error</option>
                   </select>
                 </label>
                 <button class="btn-primary" id="exRefreshIntents">Refresh</button>
+              </div>
+              <div class="row intent-quick" id="exIntentQuick">
+                <button data-q="all" class="active">All</button>
+                <button data-q="active">Active</button>
+                <button data-q="gated">Blocked/Gated</button>
+                <button data-q="failed">Failed</button>
+                <button data-q="critical">Critical</button>
               </div>
               <div style="margin-top:10px; overflow:auto; max-height:340px;">
                 <table>
@@ -716,7 +742,7 @@
                       <th>strategy</th>
                       <th>symbol</th>
                       <th>candidate_ref</th>
-                      <th>updated</th>
+                      <th>updated</th><th>notes</th>
                     </tr>
                   </thead>
                   <tbody id="exIntentsTable"></tbody>
@@ -5128,6 +5154,38 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return d;
     }
 
+    let exIntentQuickFilter = 'all';
+
+    function exIntentBand(status) {
+      const s = String(status || '').toUpperCase();
+      if (['FILLED','OPEN','ARMED'].includes(s)) return { cls:'intent-s-success', row:'' };
+      if (['WORKING','SUBMITTING','PRECHECK_PENDING','WARNING_RECONFIRM_REQUIRED'].includes(s)) return { cls:'intent-s-progress', row:'' };
+      if (['PENDING'].includes(s)) return { cls:'intent-s-queued', row:'' };
+      if (['BLOCKED','EXPIRED','QUARANTINED'].includes(s)) return { cls:'intent-s-gated', row:'intent-row-gated' };
+      if (['PRECHECK_FAILED','REJECTED'].includes(s)) return { cls:'intent-s-precheck', row:'' };
+      if (['PROTECTION_ARMING_FAILED','ERROR'].includes(s)) return { cls:'intent-s-critical', row:'intent-row-critical' };
+      return { cls:'intent-s-queued', row:'' };
+    }
+
+    function exIntentMatchesQuick(status) {
+      const s = String(status || '').toUpperCase();
+      if (exIntentQuickFilter === 'all') return true;
+      if (exIntentQuickFilter === 'active') return ['PENDING','SUBMITTING','WORKING','PRECHECK_PENDING'].includes(s);
+      if (exIntentQuickFilter === 'gated') return ['BLOCKED','EXPIRED','QUARANTINED'].includes(s);
+      if (exIntentQuickFilter === 'failed') return ['PRECHECK_FAILED','REJECTED','ERROR','PROTECTION_ARMING_FAILED'].includes(s);
+      if (exIntentQuickFilter === 'critical') return ['ERROR','PROTECTION_ARMING_FAILED'].includes(s);
+      return true;
+    }
+
+    function exIntentReason(it) {
+      const err = String(it?.error || '').trim();
+      if (err) return err;
+      const p = (it && it.intent_payload) || {};
+      const src = p.source || {};
+      if (src && src.type) return `source:${src.type}`;
+      return '';
+    }
+
     async function exRefreshIntents() {
       const st = (document.getElementById('exIntentStatus')?.value || '').trim();
       const q = st ? `?status=${encodeURIComponent(st)}&limit=500` : '?limit=500';
@@ -5136,14 +5194,30 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!tb) return d;
       tb.innerHTML = '';
       for (const it of (d.items || [])) {
+        if (!exIntentMatchesQuick(it.status)) continue;
+        const p = (it.intent_payload || {});
+        const risk = (p.risk || {});
+        const b = exIntentBand(it.status);
+        const reason = exIntentReason(it);
+        const chips = [];
+        if (reason) chips.push(`<span class="intent-chip ${/fail|error|blocked|max_trades|one_trade|outside/i.test(reason) ? 'bad' : 'warn'}">${esc(reason)}</span>`);
+        const hasRisk = (risk.take_profit_pct != null) || (risk.stop_loss != null);
+        chips.push(`<span class="intent-chip ${hasRisk ? 'ok' : 'bad'}">${hasRisk ? 'TP/SL set' : 'TP/SL missing'}</span>`);
+        const maxPerDay = (p.params || {}).max_trades_per_day;
+        const oneAtATime = (p.params || {}).one_trade_at_a_time;
+        if (maxPerDay != null) chips.push(`<span class="intent-chip">max/day: ${esc(String(maxPerDay))}</span>`);
+        if (oneAtATime != null) chips.push(`<span class="intent-chip">one-at-time: ${oneAtATime ? 'on' : 'off'}</span>`);
+
         const tr = document.createElement('tr');
+        if (b.row) tr.classList.add(b.row);
         tr.innerHTML = `
           <td>${it.id ?? ''}</td>
-          <td>${it.status ?? ''}</td>
+          <td><span class="intent-status ${b.cls}">${esc(String(it.status || ''))}</span></td>
           <td>${it.strategy_key ?? ''}</td>
           <td>${it.symbol ?? ''}</td>
           <td>${it.candidate_ref ?? ''}</td>
-          <td>${it.updated_at_utc ?? ''}</td>
+          <td>${fmtCentral(it.updated_at_utc)}</td>
+          <td>${chips.join(' ')}</td>
         `;
         tb.appendChild(tr);
       }
@@ -5421,6 +5495,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('exRefreshAccounts')?.addEventListener('click', () => safe('ex_accounts', () => exRefreshAccounts()));
     document.getElementById('exTradingEnabled')?.addEventListener('change', (ev) => safe('ex_trading_enabled_set', () => exSetTradingEnabled(!!ev.target.checked)));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
+    document.querySelectorAll('#exIntentQuick button[data-q]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        exIntentQuickFilter = String(btn.getAttribute('data-q') || 'all');
+        document.querySelectorAll('#exIntentQuick button[data-q]').forEach((b) => b.classList.toggle('active', b === btn));
+        safe('ex_intents', () => exRefreshIntents());
+      });
+    });
     document.getElementById('exRefreshIncidents')?.addEventListener('click', () => safe('ex_incidents', () => exRefreshIncidents()));
     document.getElementById('exRefreshRecon')?.addEventListener('click', () => safe('ex_recon', () => exRefreshReconciliation()));
     document.getElementById('exCancelAll')?.addEventListener('click', () => safe('ex_cancel_all', () => exCancelAll()));
