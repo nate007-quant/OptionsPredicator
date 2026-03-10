@@ -5086,10 +5086,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const dirty = !!window.__exRpDirty;
       if (!dirty) return exLoadRepricePolicy();
 
-      const save = confirm('Reprice Policy has unsaved changes.
-
-OK = Save changes
-Cancel = Discard changes and reload latest policy');
+      const save = confirm('Reprice Policy has unsaved changes.\n\nOK = Save changes\nCancel = Discard changes and reload latest policy');
       if (save) {
         return exSaveRepricePolicy();
       }
