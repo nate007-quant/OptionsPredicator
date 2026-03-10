@@ -4404,25 +4404,38 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       el.textContent = txt || (color || 'unknown');
     }
 
-    async function serviceAction(serviceId, action, criticalName) {
-      const role = prompt('Role for this action? viewer/operator/admin', 'operator') || 'viewer';
-      const confirm = prompt(`Type YES to ${action} ${serviceId}`);
-      if (confirm !== 'YES') return;
-      const body = { confirm: 'YES' };
-      if (criticalName && (action === 'stop' || action === 'restart')) {
-        const cc = prompt(`Critical service. Type exact service name to confirm: ${criticalName}`);
-        body.confirm_critical = cc || '';
+    async function _waitServiceOperation(operationId, timeoutMs = 12000) {
+      const t0 = Date.now();
+      while (Date.now() - t0 < timeoutMs) {
+        const st = await jget(`/api/services/operations/${encodeURIComponent(String(operationId))}`);
+        const status = String(st?.status || '').toLowerCase();
+        if (status && status !== 'running') return st;
+        await new Promise((r) => setTimeout(r, 500));
       }
-      await jpost(`/api/services/${encodeURIComponent(serviceId)}/${action}`, body, {'X-Role': role});
+      return null;
+    }
+
+    async function serviceAction(serviceId, action, criticalName) {
+      const ok = confirm(`Confirm ${String(action).toUpperCase()} for ${criticalName || serviceId}?`);
+      if (!ok) return;
+      const body = { confirm: 'YES' };
+      if (criticalName && (action === 'stop' || action === 'restart')) body.confirm_critical = String(criticalName);
+      const resp = await jpost(`/api/services/${encodeURIComponent(serviceId)}/${action}`, body, {'X-Role': 'admin'});
+      const opId = resp?.operation_id;
+      if (opId) {
+        const done = await _waitServiceOperation(opId);
+        if (done && String(done.status || '').toLowerCase() === 'succeeded') toast(`${action} succeeded: ${criticalName || serviceId}`, 'success');
+        else if (done) toast(`${action} failed: ${done.message || criticalName || serviceId}`, 'error');
+        else toast(`${action} accepted: ${criticalName || serviceId}`, 'info');
+      }
       await refreshProcessing();
     }
 
-    
     async function serviceGlobalAction(action) {
-      const role = prompt('Role for this action? viewer/operator/admin', 'operator') || 'viewer';
-      const confirm = prompt(`Type YES to run global action: ${action}`);
-      if (confirm !== 'YES') return;
-      await jpost(`/api/services/actions/${encodeURIComponent(action)}`, {confirm: 'YES'}, {'X-Role': role});
+      const ok = confirm(`Confirm global action: ${action}?`);
+      if (!ok) return;
+      const resp = await jpost(`/api/services/actions/${encodeURIComponent(action)}`, {confirm: 'YES'}, {'X-Role': 'admin'});
+      toast(`global action accepted (${resp?.count ?? 0})`, 'info');
       await refreshProcessing();
     }
 

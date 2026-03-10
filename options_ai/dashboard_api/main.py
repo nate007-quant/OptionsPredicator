@@ -4251,17 +4251,31 @@ def create_app() -> FastAPI:
         if role not in needed:
             raise HTTPException(status_code=403, detail=f'role {role} not allowed')
 
+    _service_ops: dict[str, dict[str, Any]] = {}
+    _service_ops_lock = threading.Lock()
+
     def _run_service_action(op_id: str, service_name: str, action: str) -> None:
         final_status = 'failed'
         message = ''
         try:
-            cmd = ['systemctl', action, service_name]
-            p = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=20)
-            if p.returncode == 0:
+            attempts = [
+                ['sudo', '-n', 'systemctl', action, service_name],
+                ['systemctl', action, service_name],
+            ]
+            p = None
+            for cmd in attempts:
+                p = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=20)
+                if p.returncode == 0:
+                    break
+                stderr = (p.stderr or '').strip().lower()
+                if ('interactive authentication required' in stderr) or ('a password is required' in stderr):
+                    continue
+                break
+            if p and p.returncode == 0:
                 final_status = 'succeeded'
                 message = (p.stdout or '').strip() or 'ok'
             else:
-                message = ((p.stderr or '').strip() or (p.stdout or '').strip() or f'rc={p.returncode}')
+                message = (((p.stderr if p else '') or '').strip() or (((p.stdout if p else '') or '').strip()) or f'rc={(p.returncode if p else -1)}')
         except Exception as e:
             message = str(e)
         with _service_ops_lock:
