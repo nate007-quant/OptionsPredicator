@@ -4353,16 +4353,7 @@ def create_app() -> FastAPI:
         _require_role(role, {'operator', 'admin'})
         items = _collect_services()
 
-        if action == 'restart-unhealthy':
-            targets = [x for x in items if str(x.get('status_color')) in {'red', 'yellow'}]
-            svc_action = 'restart'
-        elif action == 'start-safe':
-            targets = [x for x in items if str(x.get('status')) not in {'active', 'activating'} and not bool(x.get('critical'))]
-            svc_action = 'start'
-        elif action == 'stop-non-critical':
-            targets = [x for x in items if str(x.get('status')) in {'active', 'activating'} and not bool(x.get('critical'))]
-            svc_action = 'stop'
-        elif action == 'start-zero-dte':
+        if action == 'start-zero-dte':
             zero_set = {
                 'options_predicator',
                 'spx_chain_ingester',
@@ -4372,13 +4363,10 @@ def create_app() -> FastAPI:
             }
             targets = [x for x in items if str(x.get('id')) in zero_set and str(x.get('status')) not in {'active', 'activating'}]
             svc_action = 'start'
-        elif action == 'stop-all-processing':
+        elif action in {'stop-all-processing', 'stop-processing-execution'}:
             keep_set = {
                 'options_ai_dashboard_api',
-                'options_ai_execution',
-                'options_ai_execution_monitor',
-                'options_ai_risk_guard',
-            'options_ai_storage_monitor',
+                'options_ai_storage_monitor',
             }
             targets = [
                 x for x in items
