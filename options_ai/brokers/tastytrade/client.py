@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 import os
+import re
 import time
 
 import httpx
@@ -121,7 +122,7 @@ def map_order_dto_to_tasty_payload(dto: OrderDTO) -> dict[str, Any]:
         legs_payload.append(
             {
                 "instrument-type": "Equity Option",
-                "symbol": str(leg.symbol).upper(),
+                "symbol": normalize_option_symbol_for_tasty(str(leg.symbol)),
                 "quantity": int(leg.quantity),
                 "action": _tasty_action(leg.side, leg.effect),
             }
@@ -138,6 +139,27 @@ def map_order_dto_to_tasty_payload(dto: OrderDTO) -> dict[str, Any]:
         payload["client-order-id"] = str(dto.client_order_id)
     return payload
 
+
+def normalize_option_symbol_for_tasty(symbol: str) -> str:
+    """Convert compact OCC symbols to Tastytrade padded-root format.
+
+    Example:
+      SPXW260311P06775000 -> SPXW  260311P06775000
+    """
+    sym = str(symbol or '').strip().upper()
+    if not sym:
+        return sym
+    # Already padded/root-separated
+    m = re.match(r'^([A-Z ]{1,6})(\d{6})([CP])(\d{8})$', sym)
+    if m:
+        root = m.group(1).strip().ljust(6)
+        return f"{root}{m.group(2)}{m.group(3)}{m.group(4)}"
+    # Compact OCC (root + date + C/P + strike)
+    m = re.match(r'^([A-Z]{1,6})(\d{6})([CP])(\d{8})$', sym)
+    if m:
+        root = m.group(1).ljust(6)
+        return f"{root}{m.group(2)}{m.group(3)}{m.group(4)}"
+    return sym
 
 class TastytradeClient:
     """Minimal Tastytrade REST adapter with dry-run support.
@@ -194,11 +216,22 @@ class TastytradeClient:
             path = "/" + path
         url = f"{self.base_url}{path}"
 
+        # Lazy auth: services can start with username/password in env and no pre-seeded token.
+        if (path != "/sessions") and (not self.session_token) and self.username and self.password:
+            self.authenticate()
+
         last_exc: Exception | None = None
+        did_reauth = False
         for attempt in range(0, self.http_max_retries + 1):
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
                     resp = client.request(method.upper(), url, headers=self._headers(), json=json_body, params=params)
+                    # 401 can happen when token expired/invalid; re-auth once then retry immediately.
+                    if resp.status_code == 401 and (path != "/sessions") and self.username and self.password and (not did_reauth):
+                        did_reauth = True
+                        self.session_token = None
+                        self.authenticate()
+                        continue
                     # Retryable statuses
                     if resp.status_code == 429 or resp.status_code >= 500:
                         if attempt < self.http_max_retries:

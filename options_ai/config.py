@@ -37,7 +37,7 @@ class Config:
     execution_risk_guard_poll_seconds: int = 15
 
     # Execution hardening v1.1
-    target_api_version: str = "20260307"
+    target_api_version: str = ""
     close_only_mode: bool = False
     max_reject_streak: int = 5
     max_streamer_downtime_seconds: int = 120
@@ -219,7 +219,7 @@ def load_config() -> Config:
         execution_poll_seconds=int(os.getenv("EXECUTION_POLL_SECONDS", "5")),
         execution_monitor_poll_seconds=int(os.getenv("EXECUTION_MONITOR_POLL_SECONDS", "10")),
         execution_risk_guard_poll_seconds=int(os.getenv("EXECUTION_RISK_GUARD_POLL_SECONDS", "15")),
-        target_api_version=os.getenv("TARGET_API_VERSION", "20260307").strip(),
+        target_api_version=os.getenv("TARGET_API_VERSION", "").strip(),
         close_only_mode=_get_bool("CLOSE_ONLY_MODE", False),
         max_reject_streak=int(os.getenv("MAX_REJECT_STREAK", "5")),
         max_streamer_downtime_seconds=int(os.getenv("MAX_STREAMER_DOWNTIME_SECONDS", "120")),

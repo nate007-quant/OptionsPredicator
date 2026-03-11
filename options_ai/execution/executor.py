@@ -841,7 +841,7 @@ class ExecutionExecutor:
                             else:
                                 resp = self.client.place_order(dto, dry_run=(not self.trading_enabled))
 
-                        order_id = str((resp.get("data") or {}).get("id") or resp.get("order-id") or order_id or "") or None
+                        order_id = str(((resp.get("data") or {}).get("id") or ((resp.get("data") or {}).get("order") or {}).get("id") or resp.get("order-id") or order_id or "")) or None
 
                         self._record_order_event(
                             con,
