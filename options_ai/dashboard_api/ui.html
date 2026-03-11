@@ -981,19 +981,7 @@
           </div>
         </div>
 
-        <div class="card ops-operator-only" style="margin-top: var(--space-4);">
-          <div class="card-h"><h2>Diagnostics</h2><div class="hint">24h trends + threshold bands + event annotations</div></div>
-          <div class="card-b">
-            <div class="grid2" style="margin-bottom:12px;">
-              <div><canvas id="opsTrendThroughput" height="120"></canvas></div>
-              <div><canvas id="opsTrendErrors" height="120"></canvas></div>
-            </div>
-            <div class="grid2">
-              <div><h3 style="margin-top:0;">Top Errors</h3><div id="opsTopErrors" class="mono" style="font-size:12px;"></div></div>
-              <div><h3 style="margin-top:0;">Audit / Incidents</h3><div id="opsAuditFeed" class="mono" style="font-size:12px; max-height:220px; overflow:auto;"></div></div>
-            </div>
-          </div>
-        </div>
+                </div>
       </section>
 
       <!-- DEBIT SPREADS -->
@@ -4444,8 +4432,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
 
-    let opsTrendThroughputChart = null;
-    let opsTrendErrorsChart = null;
     let opsStorageTrendChart = null;
 
     function _opsThreshold(thr, key, fallback) {
@@ -4455,56 +4441,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         yellow: Number(cfg.yellow_max ?? cfg.yellow_min ?? fallback.yellow),
         red: Number(cfg.red_max ?? cfg.red_min ?? fallback.red),
       };
-    }
-
-    function renderOpsTrendCharts(series, thresholds, events) {
-      if (!chartsAvailable()) return;
-      const rows = (series || []);
-      const labels = rows.map(r => (r.bucket_start || '').replace('T',' ').slice(0,16));
-      const tp = rows.map(r => Number(r.throughput_items_per_min || 0));
-      const erPct = rows.map(r => 100 * Number(r.error_rate || 0));
-
-      const errThr = _opsThreshold(thresholds, 'error_rate', {yellow: 1, red: 3});
-
-      const eventMap = new Map();
-      for (const e of (events || [])) {
-        const ts = String(e.timestamp || '').slice(0,16);
-        eventMap.set(ts, e);
-      }
-
-      const tpEventY = tp.length ? Math.max(...tp) : 0;
-      const evTp = labels.map((lb) => eventMap.has(lb) ? tpEventY : null);
-      const evEr = labels.map((lb) => eventMap.has(lb) ? (errThr.red + 0.5) : null);
-
-      const tpCtx = document.getElementById('opsTrendThroughput');
-      const erCtx = document.getElementById('opsTrendErrors');
-      if (tpCtx) {
-        const data = {
-          labels,
-          datasets: [
-            {label:'Throughput/min', data: tp, borderColor:'#60a5fa', tension:0.2, pointRadius:0},
-            {label:'Events', data: evTp, borderColor:'#f59e0b', backgroundColor:'#f59e0b', showLine:false, pointRadius:3},
-          ]
-        };
-        if (!opsTrendThroughputChart) opsTrendThroughputChart = new Chart(tpCtx, {type:'line', data, options:{responsive:true, plugins:{legend:{display:true}}, scales:{x:{display:false}}}});
-        else { opsTrendThroughputChart.data = data; opsTrendThroughputChart.update(); }
-      }
-
-      if (erCtx) {
-        const yBand = labels.map(() => errThr.yellow);
-        const rBand = labels.map(() => errThr.red);
-        const data = {
-          labels,
-          datasets: [
-            {label:'Error %', data: erPct, borderColor:'#ef4444', tension:0.2, pointRadius:0},
-            {label:'Yellow threshold', data:yBand, borderColor:'rgba(245,158,11,0.8)', borderDash:[4,4], pointRadius:0},
-            {label:'Red threshold', data:rBand, borderColor:'rgba(239,68,68,0.8)', borderDash:[4,4], pointRadius:0},
-            {label:'Events', data:evEr, borderColor:'#f59e0b', backgroundColor:'#f59e0b', showLine:false, pointRadius:3},
-          ]
-        };
-        if (!opsTrendErrorsChart) opsTrendErrorsChart = new Chart(erCtx, {type:'line', data, options:{responsive:true, plugins:{legend:{display:true}}, scales:{x:{display:false}}}});
-        else { opsTrendErrorsChart.data = data; opsTrendErrorsChart.update(); }
-      }
     }
 
     function opsColorHex(c) {
@@ -4597,18 +4533,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const opsLoading = document.getElementById('opsLoading');
       if (opsLoading) opsLoading.classList.add('active');
       const window = document.getElementById('opsWindow')?.value || '15m';
-      const [catalog, timeseries, summary, pipeline, services, storageTrend, longQ, idxRec, topErr, audit, incidents] = await Promise.all([
-        jget('/api/metrics'),
-        jget(`/api/metrics/processing/timeseries?window=24h&resolution=5m`),
+      const [summary, pipeline, services, storageTrend, longQ, idxRec] = await Promise.all([
         jget(`/api/metrics/processing/summary?window=${encodeURIComponent(window)}`),
         jget(`/api/metrics/processing/pipeline?window=${encodeURIComponent(window)}`),
         jget(`/api/services?window=${encodeURIComponent(window)}`),
         jget(`/api/metrics/storage/trends?window=24h&resolution=5m`),
         jget(`/api/metrics/database/queries/long-running?window=${encodeURIComponent(window)}`),
         jget(`/api/metrics/database/index-recommendations?window=24h`),
-        jget(`/api/metrics/processing/errors/top?window=24h`),
-        jget(`/api/audit/actions?window=24h`),
-        jget(`/api/audit/incidents?window=24h`),
       ]);
 
       const mode = document.getElementById('opsMode')?.value || 'operator';
