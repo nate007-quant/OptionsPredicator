@@ -960,8 +960,16 @@
 
         <div class="ops-bottom" style="margin-top: var(--space-4);">
           <div class="card">
-            <div class="card-h"><h2>Dependencies / DB Health</h2><div class="hint">Data layer status</div></div>
-            <div class="card-b"><div id="opsDepsBox" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px;"></div></div>
+            <div class="card-h"><h2>Storage Trends</h2><div class="hint">PostgreSQL + Timescale used bytes over time</div></div>
+            <div class="card-b">
+              <div class="row" style="margin-bottom:8px;">
+                <span class="pill" id="opsStoragePg">PostgreSQL: —</span>
+                <span class="pill" id="opsStorageTs">Timescale: —</span>
+                <span class="pill" id="opsStorageDisk">Disk used: —</span>
+                <span class="pill" id="opsStorageFree">Free: —</span>
+              </div>
+              <canvas id="opsStorageTrend" height="120"></canvas>
+            </div>
           </div>
           <div class="card ops-operator-only">
             <div class="card-h"><h2>Long-running Queries</h2><div class="hint">advisory</div></div>
@@ -4438,6 +4446,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
     let opsTrendThroughputChart = null;
     let opsTrendErrorsChart = null;
+    let opsStorageTrendChart = null;
 
     function _opsThreshold(thr, key, fallback) {
       if (!thr || !thr[key]) return fallback;
@@ -4511,6 +4520,33 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return `<span style="display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; color:#fff; background:${bg};">${esc(String(text||'—'))}</span>`;
     }
 
+    function renderStorageTrendChart(storage) {
+      const c = document.getElementById('opsStorageTrend');
+      if (!c) return;
+      const rows = Array.isArray(storage?.series) ? storage.series : [];
+      const labels = rows.map(r => String(r.sample_minute_utc || '').replace('T',' ').slice(5,16));
+      const gb = (x) => Number(x || 0) / (1024*1024*1024);
+      const data = {
+        labels,
+        datasets: [
+          { label: 'PostgreSQL used (GB)', data: rows.map(r => gb(r.postgres_bytes)), borderColor: '#60a5fa', tension: 0.2 },
+          { label: 'Timescale used (GB)', data: rows.map(r => gb(r.timescale_bytes)), borderColor: '#a78bfa', tension: 0.2 },
+        ],
+      };
+      if (!opsStorageTrendChart) {
+        opsStorageTrendChart = new Chart(c, {type:'line', data, options:{responsive:true, plugins:{legend:{display:true}}, scales:{x:{display:false}}}});
+      } else {
+        opsStorageTrendChart.data = data;
+        opsStorageTrendChart.update();
+      }
+      const cur = storage?.latest || {};
+      const set = (id, txt) => { const el=document.getElementById(id); if (el) el.textContent = txt; };
+      set('opsStoragePg', `PostgreSQL: ${fmtBytes(cur.postgres_bytes)}`);
+      set('opsStorageTs', `Timescale: ${fmtBytes(cur.timescale_bytes)}`);
+      set('opsStorageDisk', `Disk used: ${fmtBytes(cur.disk_used_bytes)}`);
+      set('opsStorageFree', `Free: ${fmtBytes(cur.disk_free_bytes)}`);
+    }
+
     function renderMetricTiles(hostId, kv, opts={}) {
       const host = document.getElementById(hostId);
       if (!host) return;
@@ -4561,14 +4597,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const opsLoading = document.getElementById('opsLoading');
       if (opsLoading) opsLoading.classList.add('active');
       const window = document.getElementById('opsWindow')?.value || '15m';
-      const [catalog, timeseries, summary, pipeline, services, deps, dbSummary, longQ, idxRec, topErr, audit, incidents] = await Promise.all([
+      const [catalog, timeseries, summary, pipeline, services, storageTrend, longQ, idxRec, topErr, audit, incidents] = await Promise.all([
         jget('/api/metrics'),
         jget(`/api/metrics/processing/timeseries?window=24h&resolution=5m`),
         jget(`/api/metrics/processing/summary?window=${encodeURIComponent(window)}`),
         jget(`/api/metrics/processing/pipeline?window=${encodeURIComponent(window)}`),
         jget(`/api/services?window=${encodeURIComponent(window)}`),
-        jget(`/api/metrics/dependencies?window=${encodeURIComponent(window)}`),
-        jget(`/api/metrics/database/summary?window=${encodeURIComponent(window)}`),
+        jget(`/api/metrics/storage/trends?window=24h&resolution=5m`),
         jget(`/api/metrics/database/queries/long-running?window=${encodeURIComponent(window)}`),
         jget(`/api/metrics/database/index-recommendations?window=24h`),
         jget(`/api/metrics/processing/errors/top?window=24h`),
@@ -4637,33 +4672,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       }
 
-      const depBox = document.getElementById('opsDepsBox');
-      if (depBox) {
-        const rows = (deps.items || []).map(d => {
-          const m = d.metrics || {};
-          const kv = Object.entries(m).slice(0,8).map(([k,v]) =>
-            `<span class="pill" style="margin-right:6px; margin-bottom:6px; display:inline-block;">${esc(String(k))}: <strong>${esc(String(v))}</strong></span>`
-          ).join('');
-          return `<div style="border:1px solid var(--border); border-radius:10px; padding:8px; background:var(--surface-elev);">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-              <strong>${esc(d.name || 'dependency')}</strong>
-              ${opsBadgeHtml(d.status_color || 'yellow', String((d.status_color || 'yellow')).toUpperCase())}
-            </div>
-            <div style="margin-top:6px;">${kv || '<span class="hint">no metrics</span>'}</div>
-          </div>`;
-        }).join('');
-
-        const dbKv = Object.entries(dbSummary || {}).slice(0,10).map(([k,v]) =>
-          `<span class="pill" style="margin-right:6px; margin-bottom:6px; display:inline-block;">${esc(String(k))}: <strong>${esc(String(v))}</strong></span>`
-        ).join('');
-
-        depBox.innerHTML = rows + `<div style="border:1px solid var(--border); border-radius:10px; padding:8px; background:var(--surface-elev);">
-          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-            <strong>DB summary</strong>${opsBadgeHtml('green','OK')}
-          </div>
-          <div style="margin-top:6px;">${dbKv || '<span class="hint">no db summary</span>'}</div>
-        </div>`;
-      }
+      renderStorageTrendChart(storageTrend || {});
 
       const lq = document.getElementById('opsLongQueries');
       if (lq) lq.textContent = (longQ.items || []).slice(0, 12).map(q => `[${(q.status_color || 'yellow').toUpperCase()}] ${fmtSec(q.current_runtime_sec)} ${q.status} :: ${q.query_fingerprint}`).join('\n') || 'No long-running query data.';
