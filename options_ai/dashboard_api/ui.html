@@ -931,13 +931,6 @@
           </div>
         </div>
 
-        <div class="ops-kpis" style="margin-top: var(--space-4);">
-          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Freshness Lag</div><div class="kpi-val" id="kpiLag">—</div></div></div>
-          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Inflight</div><div class="kpi-val" id="kpiInflight">—</div></div></div>
-          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Queue Depth</div><div class="kpi-val" id="kpiQueue">—</div></div></div>
-          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Throughput</div><div class="kpi-val" id="kpiThroughput">—</div></div></div>
-          <div class="card kpi-card"><div class="card-b"><div class="kpi-label">Error Rate</div><div class="kpi-val" id="kpiError">—</div></div></div>
-        </div>
 
         <div class="ops-main" style="margin-top: var(--space-4);">
           <div class="card">
@@ -4591,13 +4584,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const meta = `Updated ${summary.generated_at || '—'} | last data ${fmtSec(fresh.last_update_age_sec)} ago | cause: ${summary.likely_cause || 'none'}`;
       const fm = document.getElementById('opsFreshnessMeta');
       if (fm) fm.textContent = meta;
-
-      const k = summary.kpis || {};
-      document.getElementById('kpiLag').textContent = fmtSec(k.freshness_lag_sec);
-      document.getElementById('kpiInflight').textContent = `${k.inflight_count ?? 0}`;
-      document.getElementById('kpiQueue').textContent = `${k.queue_depth_total ?? 0}`;
-      document.getElementById('kpiThroughput').textContent = `${fmtNum(k.throughput_items_per_min ?? 0, 1)}/min`;
-      document.getElementById('kpiError').textContent = `${fmtNum(100 * Number(k.error_rate ?? 0), 2)}%`;
 
       const pb = document.getElementById('opsBottleneck');
       if (pb) pb.textContent = `Profile: ${(pipeline.profile || 'unknown')} | Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
