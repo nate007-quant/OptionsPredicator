@@ -4398,7 +4398,10 @@ def create_app() -> FastAPI:
 
         out = []
         for svc in targets:
-            op = _service_action(str(svc.get('id')), svc_action, role, body)
+            svc_body = dict(body or {})
+            if svc_action in {'stop', 'restart'} and bool(svc.get('critical')) and role == 'admin':
+                svc_body['confirm_critical'] = str(svc.get('name') or svc.get('id') or '')
+            op = _service_action(str(svc.get('id')), svc_action, role, svc_body)
             out.append({'service_id': svc.get('id'), 'operation_id': op.get('operation_id')})
 
         _audit_execution(
