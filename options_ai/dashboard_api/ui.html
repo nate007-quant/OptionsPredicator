@@ -906,16 +906,6 @@
                     <option value="7d">7d</option>
                   </select>
                 </label>
-                <label>Auto-refresh
-                  <select id="opsRefreshSec">
-                    <option value="5">5s</option>
-                    <option value="10" selected>10s</option>
-                    <option value="15">15s</option>
-                    <option value="30">30s</option>
-                  </select>
-                </label>
-                <button id="refreshProcessingBtn" class="btn-primary">Refresh</button>
-                <span id="opsLoading" class="ops-loading"><span class="ops-loading-dot"></span>Loading latest data…</span>
               </div>
             </div>
             <div class="hint ex-last-mini" id="opsFreshnessMeta" style="margin-top:8px;">—</div>
@@ -935,12 +925,12 @@
         <div class="ops-main" style="margin-top: var(--space-4);">
           <div class="card">
             <div class="card-h"><h2>Pipeline Flow</h2><div class="hint" id="opsBottleneck">Bottleneck: —</div></div>
-            <div class="card-b"><div class="row" style="margin-bottom:8px;"><span id="opsPipeLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsPipeLast" class="hint ex-last-mini">—</span></div><div class="pipeline-flow" id="pipelineFlow"></div></div>
+            <div class="card-b"><div class="row" style="margin-bottom:8px;"><button id="opsPipeRefresh" class="btn-primary">Refresh</button><label><input id="opsPipeAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsPipeSec" type="number" min="3" max="300" value="10" style="width:70px;" /></label><span id="opsPipeLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsPipeLast" class="hint ex-last-mini">—</span></div><div class="pipeline-flow" id="pipelineFlow"></div></div>
           </div>
           <div class="card ops-operator-only">
             <div class="card-h"><h2>Service Control Panel</h2><div class="hint">viewer/operator/admin via X-Role header</div></div>
             <div class="card-b">
-              <div class="row" style="margin-bottom:8px;"><span id="opsSvcLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsSvcLast" class="hint ex-last-mini">—</span></div>
+              <div class="row" style="margin-bottom:8px;"><button id="opsSvcRefresh" class="btn-primary">Refresh</button><label><input id="opsSvcAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsSvcSec" type="number" min="3" max="300" value="15" style="width:70px;" /></label><span id="opsSvcLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsSvcLast" class="hint ex-last-mini">—</span></div>
               <div class="row" style="margin-bottom:8px;">
                 <button onclick="serviceGlobalAction('restart-unhealthy')">Restart unhealthy</button>
                 <button onclick="serviceGlobalAction('start-safe')">Start safe services</button>
@@ -963,7 +953,7 @@
           <div class="card">
             <div class="card-h"><h2>Storage Trends</h2><div class="hint">PostgreSQL + Timescale used bytes over time</div></div>
             <div class="card-b">
-              <div class="row" style="margin-bottom:8px;"><span id="opsStorageLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsStorageLast" class="hint ex-last-mini">—</span></div>
+              <div class="row" style="margin-bottom:8px;"><button id="opsStorageRefresh" class="btn-primary">Refresh</button><label><input id="opsStorageAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsStorageSec" type="number" min="3" max="300" value="20" style="width:70px;" /></label><span id="opsStorageLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsStorageLast" class="hint ex-last-mini">—</span></div>
               <div class="row" style="margin-bottom:8px;">
                 <span class="pill" id="opsStoragePg">PostgreSQL: —</span>
                 <span class="pill" id="opsStorageTs">Timescale: —</span>
@@ -4545,134 +4535,162 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       exRenderLastStampEl(el);
     }
 
-    async function refreshProcessing() {
+    async function refreshProcessingPipeline() {
+      opsBoxLoading('Pipe', true);
       try {
-      const opsLoading = document.getElementById('opsLoading');
-      if (opsLoading) opsLoading.classList.add('active');
-      const window = document.getElementById('opsWindow')?.value || '15m';
-      opsBoxLoading('Pipe', true); opsBoxLoading('Svc', true); opsBoxLoading('Storage', true);
-      const rs = await Promise.allSettled([
-        jget(`/api/metrics/processing/summary?window=${encodeURIComponent(window)}`),
-        jget(`/api/metrics/processing/pipeline?window=${encodeURIComponent(window)}`),
-        jget(`/api/services?window=${encodeURIComponent(window)}`),
-        jget(`/api/metrics/storage/trends?window=24h&resolution=5m`),
-        jget(`/api/metrics/database/queries/long-running?window=${encodeURIComponent(window)}`),
-        jget(`/api/metrics/database/index-recommendations?window=24h`),
-      ]);
-      const summary = rs[0].status === 'fulfilled' ? rs[0].value : null;
-      const pipeline = rs[1].status === 'fulfilled' ? rs[1].value : null;
-      const services = rs[2].status === 'fulfilled' ? rs[2].value : null;
-      const storageTrend = rs[3].status === 'fulfilled' ? rs[3].value : null;
-      const longQ = rs[4].status === 'fulfilled' ? rs[4].value : {items:[]};
-      const idxRec = rs[5].status === 'fulfilled' ? rs[5].value : {items:[]};
+        const window = document.getElementById('opsWindow')?.value || '15m';
+        const [summary, pipeline] = await Promise.all([
+          jget(`/api/metrics/processing/summary?window=${encodeURIComponent(window)}`),
+          jget(`/api/metrics/processing/pipeline?window=${encodeURIComponent(window)}`),
+        ]);
 
-      const mode = document.getElementById('opsMode')?.value || 'operator';
-
-      const overallColor = (summary && summary.overall_health) ? summary.overall_health : 'yellow';
-      setHealthBadge(document.getElementById('opsOverallHealth'), overallColor, overallColor);
-      const fresh = (summary && summary.freshness) ? summary.freshness : {};
-      const fm = document.getElementById('opsFreshnessMeta');
-      if (fm) {
-        const rawTs = (summary && summary.generated_at) ? summary.generated_at : null;
-        const parsedTs = rawTs ? new Date(rawTs) : null;
-        const ts = (parsedTs && !Number.isNaN(parsedTs.getTime())) ? parsedTs.getTime() : Date.now();
-        fm.dataset.ts = String(ts);
-        fm.dataset.ok = (String(overallColor || 'yellow') === 'red') ? '0' : '1';
-        fm.dataset.note = '';
-        exRenderLastStampEl(fm);
-        fm.title = `Updated ${fmtCentral(ts)} | last data ${fmtSec(fresh.last_update_age_sec)} ago | cause: ${(summary && summary.likely_cause) ? summary.likely_cause : 'none'}`;
-      }
-
-      const pb = document.getElementById('opsBottleneck');
-      if (pb) pb.textContent = `Profile: ${((pipeline && pipeline.profile) || 'unknown')} | Bottleneck: ${((pipeline && pipeline.bottleneck_stage) || 'none')} (${((pipeline && pipeline.bottleneck_status) || 'green')})`;
-
-      const pf = document.getElementById('pipelineFlow');
-      if (pf) {
-        pf.innerHTML = '';
-        for (const st of ((pipeline && pipeline.stages) || [])) {
-          const n = document.createElement('div');
-          n.className = `pipe-node ${st.status_color || 'yellow'}`;
-          const lagTxt = (st.lag_minutes === null || st.lag_minutes === undefined) ? '—' : (fmtNum(st.lag_minutes,1) + 'm');
-          const rowsTxt = (st.rows_window === null || st.rows_window === undefined) ? '—' : String(st.rows_window);
-          const snapsTxt = (st.snapshots_window === null || st.snapshots_window === undefined) ? '—' : String(st.snapshots_window);
-          const thrTxt = (st.throughput_rows_per_min === null || st.throughput_rows_per_min === undefined) ? '—' : (fmtNum(st.throughput_rows_per_min, 1) + '/min');
-          n.innerHTML = `<div class="n1">${st.label}</div><div class="n2">lag: ${lagTxt}</div><div class="n2">rows(win): ${rowsTxt} | snaps(win): ${snapsTxt}</div><div class="n2">throughput: ${thrTxt}</div><div class="n2">cause: ${st.likely_cause || '—'}</div>`;
-          pf.appendChild(n);
+        const mode = document.getElementById('opsMode')?.value || 'operator';
+        const overallColor = summary.overall_health || 'yellow';
+        setHealthBadge(document.getElementById('opsOverallHealth'), overallColor, overallColor);
+        const fresh = summary.freshness || {};
+        const fm = document.getElementById('opsFreshnessMeta');
+        if (fm) {
+          const rawTs = summary.generated_at || null;
+          const parsedTs = rawTs ? new Date(rawTs) : null;
+          const ts = (parsedTs && !Number.isNaN(parsedTs.getTime())) ? parsedTs.getTime() : Date.now();
+          fm.dataset.ts = String(ts);
+          fm.dataset.ok = (String(overallColor || 'yellow') === 'red') ? '0' : '1';
+          fm.dataset.note = '';
+          exRenderLastStampEl(fm);
+          fm.title = `Updated ${fmtCentral(ts)} | last data ${fmtSec(fresh.last_update_age_sec)} ago | cause: ${summary.likely_cause || 'none'}`;
         }
-      }
-      opsBoxLast('Pipe', !!(summary && pipeline), (summary && pipeline) ? '' : 'error');
 
-      const st = document.getElementById('opsServicesTable');
-      if (st) {
-        st.innerHTML = '';
-        for (const svc of ((services && services.items) || [])) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${svc.name}</td>
-            <td>${svc.stage || '—'}</td>
-            <td><span class="svc-badge ${svc.status_color || 'yellow'}">${svc.status || 'unknown'}</span></td>
-            <td>${fmtSec(svc.uptime_sec)}</td>
-            <td>${fmtSec(svc.heartbeat_age_sec)}</td>
-            <td>${svc.cpu_util_pct == null ? '—' : fmtNum(svc.cpu_util_pct,1)+'%'}</td>
-            <td>${svc.memory_util_pct == null ? (svc.memory_bytes == null ? '—' : fmtBytes(svc.memory_bytes)) : fmtNum(svc.memory_util_pct,1)+'%'}</td>
-            <td>${svc.restart_count_24h ?? 0}</td>
-            <td>${(svc.oom_events_24h ?? 0) > 0 ? 'YES' : 'NO'}</td>
-            <td>${svc.version || '—'}</td>
-            <td>
-              <button onclick="serviceAction('${svc.id}','start','${svc.name}')">Start</button>
-              <button onclick="serviceAction('${svc.id}','stop','${svc.name}')">Stop</button>
-              <button onclick="serviceAction('${svc.id}','restart','${svc.name}')">Restart</button>
-            </td>
-          `;
-          st.appendChild(tr);
+        const pb = document.getElementById('opsBottleneck');
+        if (pb) pb.textContent = `Profile: ${(pipeline.profile || 'unknown')} | Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
+
+        const pf = document.getElementById('pipelineFlow');
+        if (pf) {
+          pf.innerHTML = '';
+          for (const st of (pipeline.stages || [])) {
+            const n = document.createElement('div');
+            n.className = `pipe-node ${st.status_color || 'yellow'}`;
+            const lagTxt = (st.lag_minutes === null || st.lag_minutes === undefined) ? '—' : (fmtNum(st.lag_minutes,1) + 'm');
+            const rowsTxt = (st.rows_window === null || st.rows_window === undefined) ? '—' : String(st.rows_window);
+            const snapsTxt = (st.snapshots_window === null || st.snapshots_window === undefined) ? '—' : String(st.snapshots_window);
+            const thrTxt = (st.throughput_rows_per_min === null || st.throughput_rows_per_min === undefined) ? '—' : (fmtNum(st.throughput_rows_per_min, 1) + '/min');
+            n.innerHTML = `<div class="n1">${st.label}</div><div class="n2">lag: ${lagTxt}</div><div class="n2">rows(win): ${rowsTxt} | snaps(win): ${snapsTxt}</div><div class="n2">throughput: ${thrTxt}</div><div class="n2">cause: ${st.likely_cause || '—'}</div>`;
+            pf.appendChild(n);
+          }
         }
-      }
-      opsBoxLast('Svc', !!services, services ? '' : 'error');
 
-      renderStorageTrendChart(storageTrend || {});
-      opsBoxLast('Storage', !!storageTrend, storageTrend ? '' : 'error');
+        const procView = document.getElementById('view-processing');
+        if (procView) {
+          if (mode === 'executive') procView.classList.add('executive');
+          else procView.classList.remove('executive');
+        }
 
-      const lq = document.getElementById('opsLongQueries');
-      if (lq) lq.textContent = (((longQ && longQ.items) || []).slice(0, 12).map(q => `[${(q.status_color || 'yellow').toUpperCase()}] ${fmtSec(q.current_runtime_sec)} ${q.status} :: ${q.query_fingerprint}`).join('\n')) || 'No long-running query data.';
+        const staleBanner = document.getElementById('opsStaleBanner');
+        if (staleBanner) {
+          const isStale = !!(summary.freshness && summary.freshness.stale_data);
+          staleBanner.style.display = isStale ? 'block' : 'none';
+          if (isStale) staleBanner.textContent = `Telemetry stale (${fmtSec(summary.freshness.last_update_age_sec)} since last update).`;
+        }
 
-      const ir = document.getElementById('opsIndexRecs');
-      if (ir) ir.textContent = (((idxRec && idxRec.items) || []).slice(0, 12).map(x => `(${x.confidence_score}) ${x.table_columns} -> ${x.recommended_index_type} | ${x.reason}`).join('\n')) || 'No recommendations.';
+        const riskEl = document.getElementById('opsExecRisk');
+        const bottEl = document.getElementById('opsExecBottleneck');
+        const flagsEl = document.getElementById('opsExecFlags');
+        if (riskEl) riskEl.textContent = `Top risk: ${summary.likely_cause || 'None detected'}`;
+        if (bottEl) bottEl.textContent = `Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
+        if (flagsEl) {
+          const flags = [];
+          const kk = summary.kpis || {};
+          if (kk.freshness_lag_color && kk.freshness_lag_color !== 'green') flags.push(`Lag ${kk.freshness_lag_color}`);
+          if (kk.error_rate_color && kk.error_rate_color !== 'green') flags.push(`Errors ${kk.error_rate_color}`);
+          if (kk.oldest_inflight_color && kk.oldest_inflight_color !== 'green') flags.push(`Inflight age ${kk.oldest_inflight_color}`);
+          flagsEl.textContent = `Flags: ${flags.length ? flags.join(', ') : 'All primary signals green'}`;
+        }
 
-      const procView = document.getElementById('view-processing');
-      if (procView) {
-        if (mode === 'executive') procView.classList.add('executive');
-        else procView.classList.remove('executive');
-      }
-
-      const staleBanner = document.getElementById('opsStaleBanner');
-      if (staleBanner) {
-        const isStale = !!(summary && summary.freshness && summary.freshness.stale_data);
-        staleBanner.style.display = isStale ? 'block' : 'none';
-        if (isStale) staleBanner.textContent = `Telemetry stale (${fmtSec(summary.freshness.last_update_age_sec)} since last update).`;
-      }
-
-      const riskEl = document.getElementById('opsExecRisk');
-      const bottEl = document.getElementById('opsExecBottleneck');
-      const flagsEl = document.getElementById('opsExecFlags');
-      if (riskEl) riskEl.textContent = `Top risk: ${(summary && summary.likely_cause) ? summary.likely_cause : 'None detected'}`;
-      if (bottEl) bottEl.textContent = `Bottleneck: ${((pipeline && pipeline.bottleneck_stage) || 'none')} (${((pipeline && pipeline.bottleneck_status) || 'green')})`;
-      if (flagsEl) {
-        const flags = [];
-        const kk = (summary && summary.kpis) ? summary.kpis : {};
-        if (kk.freshness_lag_color && kk.freshness_lag_color !== 'green') flags.push(`Lag ${kk.freshness_lag_color}`);
-        if (kk.error_rate_color && kk.error_rate_color !== 'green') flags.push(`Errors ${kk.error_rate_color}`);
-        if (kk.oldest_inflight_color && kk.oldest_inflight_color !== 'green') flags.push(`Inflight age ${kk.oldest_inflight_color}`);
-        flagsEl.textContent = `Flags: ${flags.length ? flags.join(', ') : 'All primary signals green'}`;
-      }
-
-      return {summary, pipeline, services};
-    
+        opsBoxLast('Pipe', true);
+        return {summary, pipeline};
+      } catch (e) {
+        opsBoxLast('Pipe', false, 'error');
+        throw e;
       } finally {
-        const opsLoading = document.getElementById('opsLoading');
-        if (opsLoading) opsLoading.classList.remove('active');
-        opsBoxLoading('Pipe', false); opsBoxLoading('Svc', false); opsBoxLoading('Storage', false);
+        opsBoxLoading('Pipe', false);
       }
     }
+
+    async function refreshProcessingServices() {
+      opsBoxLoading('Svc', true);
+      try {
+        const window = document.getElementById('opsWindow')?.value || '15m';
+        const [services, longQ, idxRec] = await Promise.all([
+          jget(`/api/services?window=${encodeURIComponent(window)}`),
+          jget(`/api/metrics/database/queries/long-running?window=${encodeURIComponent(window)}`),
+          jget(`/api/metrics/database/index-recommendations?window=24h`),
+        ]);
+
+        const st = document.getElementById('opsServicesTable');
+        if (st) {
+          st.innerHTML = '';
+          for (const svc of (services.items || [])) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td>${svc.name}</td>
+              <td>${svc.stage || '—'}</td>
+              <td><span class="svc-badge ${svc.status_color || 'yellow'}">${svc.status || 'unknown'}</span></td>
+              <td>${fmtSec(svc.uptime_sec)}</td>
+              <td>${fmtSec(svc.heartbeat_age_sec)}</td>
+              <td>${svc.cpu_util_pct == null ? '—' : fmtNum(svc.cpu_util_pct,1)+'%'}</td>
+              <td>${svc.memory_util_pct == null ? (svc.memory_bytes == null ? '—' : fmtBytes(svc.memory_bytes)) : fmtNum(svc.memory_util_pct,1)+'%'}</td>
+              <td>${svc.restart_count_24h ?? 0}</td>
+              <td>${(svc.oom_events_24h ?? 0) > 0 ? 'YES' : 'NO'}</td>
+              <td>${svc.version || '—'}</td>
+              <td>
+                <button onclick="serviceAction('${svc.id}','start','${svc.name}')">Start</button>
+                <button onclick="serviceAction('${svc.id}','stop','${svc.name}')">Stop</button>
+                <button onclick="serviceAction('${svc.id}','restart','${svc.name}')">Restart</button>
+              </td>
+            `;
+            st.appendChild(tr);
+          }
+        }
+
+        const lq = document.getElementById('opsLongQueries');
+        if (lq) lq.textContent = (longQ.items || []).slice(0, 12).map(q => `[${(q.status_color || 'yellow').toUpperCase()}] ${fmtSec(q.current_runtime_sec)} ${q.status} :: ${q.query_fingerprint}`).join('\n') || 'No long-running query data.';
+
+        const ir = document.getElementById('opsIndexRecs');
+        if (ir) ir.textContent = (idxRec.items || []).slice(0, 12).map(x => `(${x.confidence_score}) ${x.table_columns} -> ${x.recommended_index_type} | ${x.reason}`).join('\n') || 'No recommendations.';
+
+        opsBoxLast('Svc', true);
+        return {services, longQ, idxRec};
+      } catch (e) {
+        opsBoxLast('Svc', false, 'error');
+        throw e;
+      } finally {
+        opsBoxLoading('Svc', false);
+      }
+    }
+
+    async function refreshProcessingStorage() {
+      opsBoxLoading('Storage', true);
+      try {
+        const storageTrend = await jget(`/api/metrics/storage/trends?window=24h&resolution=5m`);
+        renderStorageTrendChart(storageTrend || {});
+        opsBoxLast('Storage', true);
+        return storageTrend;
+      } catch (e) {
+        opsBoxLast('Storage', false, 'error');
+        throw e;
+      } finally {
+        opsBoxLoading('Storage', false);
+      }
+    }
+
+    async function refreshProcessing() {
+      await Promise.allSettled([
+        refreshProcessingPipeline(),
+        refreshProcessingServices(),
+        refreshProcessingStorage(),
+      ]);
+      return true;
+    }
+
 
     async function refreshPipelines() {
       return refreshProcessing();
@@ -5630,12 +5648,19 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
 
-    let processingTimer = null;
-    function setupProcessingRefreshTimer() {
-      if (processingTimer) clearInterval(processingTimer);
-      const sec = parseInt(document.getElementById('opsRefreshSec')?.value || '10', 10);
-      const ms = Math.max(3000, sec * 1000);
-      processingTimer = setInterval(() => safe('processing', () => refreshProcessing()), ms);
+    const opsAreaTimers = { Pipe: null, Svc: null, Storage: null };
+    function _opsAreaMs(id, defMs) {
+      const v = Number(document.getElementById(id)?.value || 0);
+      if (!Number.isFinite(v) || v < 3) return defMs;
+      return Math.max(3000, Math.min(300000, Math.round(v * 1000)));
+    }
+    function setupProcessingAreaRefresh() {
+      for (const k of Object.keys(opsAreaTimers)) {
+        if (opsAreaTimers[k]) { clearInterval(opsAreaTimers[k]); opsAreaTimers[k] = null; }
+      }
+      if (document.getElementById('opsPipeAuto')?.checked) opsAreaTimers.Pipe = setInterval(() => safe('processing_pipe', () => refreshProcessingPipeline()), _opsAreaMs('opsPipeSec', 10000));
+      if (document.getElementById('opsSvcAuto')?.checked) opsAreaTimers.Svc = setInterval(() => safe('processing_svc', () => refreshProcessingServices()), _opsAreaMs('opsSvcSec', 15000));
+      if (document.getElementById('opsStorageAuto')?.checked) opsAreaTimers.Storage = setInterval(() => safe('processing_storage', () => refreshProcessingStorage()), _opsAreaMs('opsStorageSec', 20000));
     }
 
     // wiring
@@ -5827,8 +5852,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('clearReprocess')?.addEventListener('click', () => safe('clearReprocess', () => clearReprocess()));
     document.getElementById('runReset')?.addEventListener('click', () => safe('runReset', () => runFullReset()));
 
-    document.getElementById('refreshProcessingBtn')?.addEventListener('click', () => safe('refreshProcessing', () => refreshProcessing()));
-    document.getElementById('refreshPipes')?.addEventListener('click', () => safe('pipes', () => refreshPipelines()));
+        document.getElementById('refreshPipes')?.addEventListener('click', () => safe('pipes', () => refreshPipelines()));
 
     // routing
     window.addEventListener('hashchange', routeFromHash);
@@ -5879,7 +5903,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('sf_runs', () => sfRefreshRuns());
       await safe('tokens', () => refreshTokens());
       await safe('processing', () => refreshProcessing());
-      setupProcessingRefreshTimer();
+      setupProcessingAreaRefresh();
       await safe('pipes', () => refreshPipelines());
       await safe('llmMetrics', () => refreshMetrics());
       await safe('ml', () => refreshML());
@@ -5928,8 +5952,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       // processing controls
       document.getElementById('opsWindow')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
-      document.getElementById('opsMode')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
-      document.getElementById('opsRefreshSec')?.addEventListener('change', () => setupProcessingRefreshTimer());
+      document.getElementById('opsMode')?.addEventListener('change', () => safe('processing', () => refreshProcessingPipeline()));
+      document.getElementById('opsPipeRefresh')?.addEventListener('click', () => safe('processing_pipe', () => refreshProcessingPipeline()));
+      document.getElementById('opsSvcRefresh')?.addEventListener('click', () => safe('processing_svc', () => refreshProcessingServices()));
+      document.getElementById('opsStorageRefresh')?.addEventListener('click', () => safe('processing_storage', () => refreshProcessingStorage()));
+      ['opsPipeAuto','opsPipeSec','opsSvcAuto','opsSvcSec','opsStorageAuto','opsStorageSec'].forEach((id) => {
+        document.getElementById(id)?.addEventListener('change', () => setupProcessingAreaRefresh());
+      });
 
     })();
   </script>
