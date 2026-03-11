@@ -918,7 +918,7 @@
                 <span id="opsLoading" class="ops-loading"><span class="ops-loading-dot"></span>Loading latest data…</span>
               </div>
             </div>
-            <div class="hint" id="opsFreshnessMeta" style="margin-top:8px;">Updated —</div>
+            <div class="hint ex-last-mini" id="opsFreshnessMeta" style="margin-top:8px;">—</div>
             <div class="ops-stale-banner" id="opsStaleBanner">Telemetry stale. Data may be delayed.</div>
             <div class="ops-exec-summary card" id="opsExecutiveSummary">
               <div class="card-b">
@@ -4581,9 +4581,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const overallColor = summary.overall_health || 'yellow';
       setHealthBadge(document.getElementById('opsOverallHealth'), overallColor, overallColor);
       const fresh = summary.freshness || {};
-      const meta = `Updated ${summary.generated_at || '—'} | last data ${fmtSec(fresh.last_update_age_sec)} ago | cause: ${summary.likely_cause || 'none'}`;
       const fm = document.getElementById('opsFreshnessMeta');
-      if (fm) fm.textContent = meta;
+      if (fm) {
+        const rawTs = summary.generated_at || null;
+        const parsedTs = rawTs ? new Date(rawTs) : null;
+        const ts = (parsedTs && !Number.isNaN(parsedTs.getTime())) ? parsedTs.getTime() : Date.now();
+        fm.dataset.ts = String(ts);
+        fm.dataset.ok = (String(overallColor || 'yellow') === 'red') ? '0' : '1';
+        fm.dataset.note = '';
+        exRenderLastStampEl(fm);
+        fm.title = `Updated ${fmtCentral(ts)} | last data ${fmtSec(fresh.last_update_age_sec)} ago | cause: ${summary.likely_cause || 'none'}`;
+      }
 
       const pb = document.getElementById('opsBottleneck');
       if (pb) pb.textContent = `Profile: ${(pipeline.profile || 'unknown')} | Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
