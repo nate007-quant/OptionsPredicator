@@ -935,11 +935,12 @@
         <div class="ops-main" style="margin-top: var(--space-4);">
           <div class="card">
             <div class="card-h"><h2>Pipeline Flow</h2><div class="hint" id="opsBottleneck">Bottleneck: —</div></div>
-            <div class="card-b"><div class="pipeline-flow" id="pipelineFlow"></div></div>
+            <div class="card-b"><div class="row" style="margin-bottom:8px;"><span id="opsPipeLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsPipeLast" class="hint ex-last-mini">—</span></div><div class="pipeline-flow" id="pipelineFlow"></div></div>
           </div>
           <div class="card ops-operator-only">
             <div class="card-h"><h2>Service Control Panel</h2><div class="hint">viewer/operator/admin via X-Role header</div></div>
             <div class="card-b">
+              <div class="row" style="margin-bottom:8px;"><span id="opsSvcLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsSvcLast" class="hint ex-last-mini">—</span></div>
               <div class="row" style="margin-bottom:8px;">
                 <button onclick="serviceGlobalAction('restart-unhealthy')">Restart unhealthy</button>
                 <button onclick="serviceGlobalAction('start-safe')">Start safe services</button>
@@ -962,6 +963,7 @@
           <div class="card">
             <div class="card-h"><h2>Storage Trends</h2><div class="hint">PostgreSQL + Timescale used bytes over time</div></div>
             <div class="card-b">
+              <div class="row" style="margin-bottom:8px;"><span id="opsStorageLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsStorageLast" class="hint ex-last-mini">—</span></div>
               <div class="row" style="margin-bottom:8px;">
                 <span class="pill" id="opsStoragePg">PostgreSQL: —</span>
                 <span class="pill" id="opsStorageTs">Timescale: —</span>
@@ -4528,12 +4530,28 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       });
     }
 
+    function opsBoxLoading(key, on) {
+      const el = document.getElementById(`ops${key}Load`);
+      if (!el) return;
+      el.classList.toggle('active', !!on);
+    }
+
+    function opsBoxLast(key, ok=true, note='') {
+      const el = document.getElementById(`ops${key}Last`);
+      if (!el) return;
+      el.dataset.ts = String(Date.now());
+      el.dataset.ok = ok ? '1' : '0';
+      el.dataset.note = String(note || '');
+      exRenderLastStampEl(el);
+    }
+
     async function refreshProcessing() {
       try {
       const opsLoading = document.getElementById('opsLoading');
       if (opsLoading) opsLoading.classList.add('active');
       const window = document.getElementById('opsWindow')?.value || '15m';
-      const [summary, pipeline, services, storageTrend, longQ, idxRec] = await Promise.all([
+      opsBoxLoading('Pipe', true); opsBoxLoading('Svc', true); opsBoxLoading('Storage', true);
+      const rs = await Promise.allSettled([
         jget(`/api/metrics/processing/summary?window=${encodeURIComponent(window)}`),
         jget(`/api/metrics/processing/pipeline?window=${encodeURIComponent(window)}`),
         jget(`/api/services?window=${encodeURIComponent(window)}`),
@@ -4541,31 +4559,37 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         jget(`/api/metrics/database/queries/long-running?window=${encodeURIComponent(window)}`),
         jget(`/api/metrics/database/index-recommendations?window=24h`),
       ]);
+      const summary = rs[0].status === 'fulfilled' ? rs[0].value : null;
+      const pipeline = rs[1].status === 'fulfilled' ? rs[1].value : null;
+      const services = rs[2].status === 'fulfilled' ? rs[2].value : null;
+      const storageTrend = rs[3].status === 'fulfilled' ? rs[3].value : null;
+      const longQ = rs[4].status === 'fulfilled' ? rs[4].value : {items:[]};
+      const idxRec = rs[5].status === 'fulfilled' ? rs[5].value : {items:[]};
 
       const mode = document.getElementById('opsMode')?.value || 'operator';
 
-      const overallColor = summary.overall_health || 'yellow';
+      const overallColor = (summary && summary.overall_health) ? summary.overall_health : 'yellow';
       setHealthBadge(document.getElementById('opsOverallHealth'), overallColor, overallColor);
-      const fresh = summary.freshness || {};
+      const fresh = (summary && summary.freshness) ? summary.freshness : {};
       const fm = document.getElementById('opsFreshnessMeta');
       if (fm) {
-        const rawTs = summary.generated_at || null;
+        const rawTs = (summary && summary.generated_at) ? summary.generated_at : null;
         const parsedTs = rawTs ? new Date(rawTs) : null;
         const ts = (parsedTs && !Number.isNaN(parsedTs.getTime())) ? parsedTs.getTime() : Date.now();
         fm.dataset.ts = String(ts);
         fm.dataset.ok = (String(overallColor || 'yellow') === 'red') ? '0' : '1';
         fm.dataset.note = '';
         exRenderLastStampEl(fm);
-        fm.title = `Updated ${fmtCentral(ts)} | last data ${fmtSec(fresh.last_update_age_sec)} ago | cause: ${summary.likely_cause || 'none'}`;
+        fm.title = `Updated ${fmtCentral(ts)} | last data ${fmtSec(fresh.last_update_age_sec)} ago | cause: ${(summary && summary.likely_cause) ? summary.likely_cause : 'none'}`;
       }
 
       const pb = document.getElementById('opsBottleneck');
-      if (pb) pb.textContent = `Profile: ${(pipeline.profile || 'unknown')} | Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
+      if (pb) pb.textContent = `Profile: ${((pipeline && pipeline.profile) || 'unknown')} | Bottleneck: ${((pipeline && pipeline.bottleneck_stage) || 'none')} (${((pipeline && pipeline.bottleneck_status) || 'green')})`;
 
       const pf = document.getElementById('pipelineFlow');
       if (pf) {
         pf.innerHTML = '';
-        for (const st of (pipeline.stages || [])) {
+        for (const st of ((pipeline && pipeline.stages) || [])) {
           const n = document.createElement('div');
           n.className = `pipe-node ${st.status_color || 'yellow'}`;
           const lagTxt = (st.lag_minutes === null || st.lag_minutes === undefined) ? '—' : (fmtNum(st.lag_minutes,1) + 'm');
@@ -4576,11 +4600,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           pf.appendChild(n);
         }
       }
+      opsBoxLast('Pipe', !!(summary && pipeline), (summary && pipeline) ? '' : 'error');
 
       const st = document.getElementById('opsServicesTable');
       if (st) {
         st.innerHTML = '';
-        for (const svc of (services.items || [])) {
+        for (const svc of ((services && services.items) || [])) {
           const tr = document.createElement('tr');
           tr.innerHTML = `
             <td>${svc.name}</td>
@@ -4602,14 +4627,16 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           st.appendChild(tr);
         }
       }
+      opsBoxLast('Svc', !!services, services ? '' : 'error');
 
       renderStorageTrendChart(storageTrend || {});
+      opsBoxLast('Storage', !!storageTrend, storageTrend ? '' : 'error');
 
       const lq = document.getElementById('opsLongQueries');
-      if (lq) lq.textContent = (longQ.items || []).slice(0, 12).map(q => `[${(q.status_color || 'yellow').toUpperCase()}] ${fmtSec(q.current_runtime_sec)} ${q.status} :: ${q.query_fingerprint}`).join('\n') || 'No long-running query data.';
+      if (lq) lq.textContent = (((longQ && longQ.items) || []).slice(0, 12).map(q => `[${(q.status_color || 'yellow').toUpperCase()}] ${fmtSec(q.current_runtime_sec)} ${q.status} :: ${q.query_fingerprint}`).join('\n')) || 'No long-running query data.';
 
       const ir = document.getElementById('opsIndexRecs');
-      if (ir) ir.textContent = (idxRec.items || []).slice(0, 12).map(x => `(${x.confidence_score}) ${x.table_columns} -> ${x.recommended_index_type} | ${x.reason}`).join('\n') || 'No recommendations.';
+      if (ir) ir.textContent = (((idxRec && idxRec.items) || []).slice(0, 12).map(x => `(${x.confidence_score}) ${x.table_columns} -> ${x.recommended_index_type} | ${x.reason}`).join('\n')) || 'No recommendations.';
 
       const procView = document.getElementById('view-processing');
       if (procView) {
@@ -4619,7 +4646,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const staleBanner = document.getElementById('opsStaleBanner');
       if (staleBanner) {
-        const isStale = !!(summary.freshness && summary.freshness.stale_data);
+        const isStale = !!(summary && summary.freshness && summary.freshness.stale_data);
         staleBanner.style.display = isStale ? 'block' : 'none';
         if (isStale) staleBanner.textContent = `Telemetry stale (${fmtSec(summary.freshness.last_update_age_sec)} since last update).`;
       }
@@ -4627,11 +4654,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const riskEl = document.getElementById('opsExecRisk');
       const bottEl = document.getElementById('opsExecBottleneck');
       const flagsEl = document.getElementById('opsExecFlags');
-      if (riskEl) riskEl.textContent = `Top risk: ${summary.likely_cause || 'None detected'}`;
-      if (bottEl) bottEl.textContent = `Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
+      if (riskEl) riskEl.textContent = `Top risk: ${(summary && summary.likely_cause) ? summary.likely_cause : 'None detected'}`;
+      if (bottEl) bottEl.textContent = `Bottleneck: ${((pipeline && pipeline.bottleneck_stage) || 'none')} (${((pipeline && pipeline.bottleneck_status) || 'green')})`;
       if (flagsEl) {
         const flags = [];
-        const kk = summary.kpis || {};
+        const kk = (summary && summary.kpis) ? summary.kpis : {};
         if (kk.freshness_lag_color && kk.freshness_lag_color !== 'green') flags.push(`Lag ${kk.freshness_lag_color}`);
         if (kk.error_rate_color && kk.error_rate_color !== 'green') flags.push(`Errors ${kk.error_rate_color}`);
         if (kk.oldest_inflight_color && kk.oldest_inflight_color !== 'green') flags.push(`Inflight age ${kk.oldest_inflight_color}`);
@@ -4643,6 +4670,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       } finally {
         const opsLoading = document.getElementById('opsLoading');
         if (opsLoading) opsLoading.classList.remove('active');
+        opsBoxLoading('Pipe', false); opsBoxLoading('Svc', false); opsBoxLoading('Storage', false);
       }
     }
 
