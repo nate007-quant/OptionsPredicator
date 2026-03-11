@@ -4611,19 +4611,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const ir = document.getElementById('opsIndexRecs');
       if (ir) ir.textContent = (idxRec.items || []).slice(0, 12).map(x => `(${x.confidence_score}) ${x.table_columns} -> ${x.recommended_index_type} | ${x.reason}`).join('\n') || 'No recommendations.';
 
-      const te = document.getElementById('opsTopErrors');
-      if (te) te.textContent = (topErr.items || []).map(e => `${e.count}x ${e.component}/${e.event}`).join('\n') || 'No recent errors.';
-
-      const af = document.getElementById('opsAuditFeed');
-      if (af) {
-        const acts = (audit.items || []).slice(0, 20).map(a => `${a.timestamp} [ACTION] ${a.actor} ${a.action} ${a.entity_type || ''}:${a.entity_id || ''}`);
-        const incs = (incidents.items || []).slice(0, 20).map(i => `${i.timestamp} [${i.level}] ${i.component}/${i.event} ${i.message}`);
-        af.textContent = acts.concat(incs).slice(0, 40).join('\n');
-      }
-
-      const events = (audit.items || []).slice(0, 20).concat((incidents.items || []).slice(0, 20));
-      renderOpsTrendCharts(timeseries.series || [], catalog.thresholds || {}, events);
-
       const procView = document.getElementById('view-processing');
       if (procView) {
         if (mode === 'executive') procView.classList.add('executive');
