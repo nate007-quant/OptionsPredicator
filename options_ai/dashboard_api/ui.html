@@ -939,6 +939,9 @@
               </div>
               <div class="row" style="margin-bottom:8px;">
                 <label><input id="opsSchedEnabled" type="checkbox" /> Scheduler ON</label>
+                <label><input id="opsSchedStartZero" type="checkbox" /> Start Zero DTE</label>
+                <label><input id="opsSchedStartTerm" type="checkbox" /> Start Term</label>
+                <label><input id="opsSchedStartExec" type="checkbox" /> Start Execution</label>
                 <span id="opsSchedStatus" class="hint ex-last-mini">scheduler: —</span>
               </div>
               <div style="overflow:auto; max-height:320px;">
@@ -4425,12 +4428,23 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await refreshProcessing();
     }
 
+    function applySchedulerConfigUI(cfg) {
+      const c = cfg || {};
+      const z = document.getElementById('opsSchedStartZero');
+      const t = document.getElementById('opsSchedStartTerm');
+      const e = document.getElementById('opsSchedStartExec');
+      if (z) z.checked = !!c.include_start_zero_dte;
+      if (t) t.checked = !!c.include_start_term;
+      if (e) e.checked = !!c.include_start_execution;
+    }
+
     async function refreshSchedulerStatus() {
       const d = await jget('/api/scheduler/status');
       const cb = document.getElementById('opsSchedEnabled');
       const st = document.getElementById('opsSchedStatus');
       if (cb) cb.checked = !!d.enabled;
       if (st) st.textContent = `scheduler: ${d.enabled ? 'ON' : 'OFF'} (${d.status || 'unknown'})`;
+      applySchedulerConfigUI(d.config || {});
       return d;
     }
 
@@ -4440,7 +4454,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (cb) cb.checked = !!d.enabled;
       const st = document.getElementById('opsSchedStatus');
       if (st) st.textContent = `scheduler: ${d.enabled ? 'ON' : 'OFF'} (${d.status || 'unknown'})`;
+      applySchedulerConfigUI(d.config || {});
       toast(`scheduler ${d.enabled ? 'enabled' : 'disabled'}`, d.enabled ? 'success' : 'warn');
+      return d;
+    }
+
+    async function setSchedulerConfig(patch) {
+      const d = await jpost('/api/scheduler/config', patch || {}, {'X-Role': 'admin'});
+      applySchedulerConfigUI((d && d.config) || {});
+      toast('scheduler start options updated', 'success');
       return d;
     }
 
@@ -4642,17 +4664,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       opsBoxLoading('Svc', true);
       try {
         const window = document.getElementById('opsWindow')?.value || '15m';
-        const [services, longQ, idxRec, sched] = await Promise.all([
+        const [services, longQ, idxRec] = await Promise.all([
           jget(`/api/services?window=${encodeURIComponent(window)}`),
           jget(`/api/metrics/database/queries/long-running?window=${encodeURIComponent(window)}`),
           jget(`/api/metrics/database/index-recommendations?window=24h`),
-          jget('/api/scheduler/status'),
         ]);
 
-        const scb = document.getElementById('opsSchedEnabled');
-        const sst = document.getElementById('opsSchedStatus');
-        if (scb) scb.checked = !!(sched && sched.enabled);
-        if (sst) sst.textContent = `scheduler: ${(sched && sched.enabled) ? 'ON' : 'OFF'} (${(sched && sched.status) || 'unknown'})`;
+        await refreshSchedulerStatus();
 
         const st = document.getElementById('opsServicesTable');
         if (st) {
@@ -5985,6 +6003,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById('opsWindow')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
       document.getElementById('opsMode')?.addEventListener('change', () => safe('processing', () => refreshProcessingPipeline()));
       document.getElementById('opsSchedEnabled')?.addEventListener('change', (ev) => safe('scheduler_toggle', () => setSchedulerEnabled(!!ev.target.checked)));
+      document.getElementById('opsSchedStartZero')?.addEventListener('change', (ev) => safe('scheduler_cfg', () => setSchedulerConfig({include_start_zero_dte: !!ev.target.checked})));
+      document.getElementById('opsSchedStartTerm')?.addEventListener('change', (ev) => safe('scheduler_cfg', () => setSchedulerConfig({include_start_term: !!ev.target.checked})));
+      document.getElementById('opsSchedStartExec')?.addEventListener('change', (ev) => safe('scheduler_cfg', () => setSchedulerConfig({include_start_execution: !!ev.target.checked})));
       document.getElementById('opsPipeRefresh')?.addEventListener('click', () => safe('processing_pipe', () => refreshProcessingPipeline()));
       document.getElementById('opsSvcRefresh')?.addEventListener('click', () => safe('processing_svc', () => refreshProcessingServices()));
       document.getElementById('opsStorageRefresh')?.addEventListener('click', () => safe('processing_storage', () => refreshProcessingStorage()));

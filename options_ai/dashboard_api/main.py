@@ -4434,6 +4434,35 @@ def create_app() -> FastAPI:
     def services_global_action(action: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
         return _service_global_action(str(action), str(x_role or 'viewer').lower(), body)
 
+    _scheduler_cfg_path = data_root / 'state' / 'market_scheduler_config.json'
+
+    def _scheduler_cfg_defaults() -> dict[str, Any]:
+        return {
+            'include_start_zero_dte': True,
+            'include_start_term': True,
+            'include_start_execution': True,
+        }
+
+    def _load_scheduler_cfg() -> dict[str, Any]:
+        cfg = _scheduler_cfg_defaults()
+        try:
+            if _scheduler_cfg_path.exists():
+                raw = _json.loads(_scheduler_cfg_path.read_text(encoding='utf-8', errors='ignore'))
+                if isinstance(raw, dict):
+                    for k in cfg.keys():
+                        if k in raw:
+                            cfg[k] = bool(raw.get(k))
+        except Exception:
+            pass
+        return cfg
+
+    def _write_scheduler_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+        out = _scheduler_cfg_defaults()
+        out.update({k: bool(cfg.get(k)) for k in out.keys()})
+        _scheduler_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        _scheduler_cfg_path.write_text(_json.dumps(out, separators=(',', ':'), sort_keys=True))
+        return out
+
     @app.get('/api/scheduler/status')
     def scheduler_status() -> dict[str, Any]:
         svc = next((x for x in _collect_services() if str(x.get('id')) == 'options_ai_market_scheduler'), None)
@@ -4443,6 +4472,7 @@ def create_app() -> FastAPI:
             'enabled': enabled,
             'status': (svc.get('status') if svc else 'unknown'),
             'status_color': (svc.get('status_color') if svc else 'yellow'),
+            'config': _load_scheduler_cfg(),
             'updated_at': _now_central_iso(),
         }
 
@@ -4458,6 +4488,23 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=f'scheduler toggle failed: {msg}')
         _audit_execution(actor=f'dashboard_api:{role}', action=('scheduler_enabled' if want else 'scheduler_disabled'), entity_type='service', entity_id='options_ai_market_scheduler', details={})
         return scheduler_status()
+
+    @app.get('/api/scheduler/config')
+    def scheduler_config_get() -> dict[str, Any]:
+        return {'config': _load_scheduler_cfg(), 'updated_at': _now_central_iso()}
+
+    @app.post('/api/scheduler/config')
+    def scheduler_config_put(body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        role = str(x_role or 'viewer').lower()
+        _require_role(role, {'operator', 'admin'})
+        cur = _load_scheduler_cfg()
+        patch = body or {}
+        for k in cur.keys():
+            if k in patch:
+                cur[k] = bool(patch.get(k))
+        saved = _write_scheduler_cfg(cur)
+        _audit_execution(actor=f'dashboard_api:{role}', action='scheduler_config_updated', entity_type='service', entity_id='options_ai_market_scheduler', details={'config': saved})
+        return {'config': saved, 'updated_at': _now_central_iso()}
 
     @app.get('/api/metrics/dependencies')
     def metrics_dependencies(window: str = Query('15m')) -> dict[str, Any]:

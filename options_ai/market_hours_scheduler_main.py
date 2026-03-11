@@ -12,7 +12,42 @@ from zoneinfo import ZoneInfo
 
 
 TZ = ZoneInfo("America/Chicago")
-STATE_PATH = Path(os.getenv("OPTIONS_AI_DATA_ROOT", "/mnt/options_ai")) / "state" / "market_scheduler_state.json"
+DATA_ROOT = Path(os.getenv("OPTIONS_AI_DATA_ROOT", "/mnt/options_ai"))
+STATE_PATH = DATA_ROOT / "state" / "market_scheduler_state.json"
+CFG_PATH = DATA_ROOT / "state" / "market_scheduler_config.json"
+
+ZERO_DTE_SERVICES = [
+    "options_predicator",
+    "spx_chain_ingester",
+    "spx_chain_phase2",
+    "spx_debit_spreads",
+    "spx_debit_ml",
+]
+TERM_SERVICES = [
+    "spx_chain_phase2_term_dte7t2",
+    "spx_chain_phase2_term_dte14t2",
+    "spx_chain_phase2_term_dte21t3",
+    "spx_chain_phase2_term_dte30t5",
+    "spx_debit_spreads_term_dte7t2",
+    "spx_debit_spreads_term_dte14t2",
+    "spx_debit_spreads_term_dte21t3",
+    "spx_debit_spreads_term_dte30t5",
+    "spx_debit_ml_term_dte7t2",
+    "spx_debit_ml_term_dte14t2",
+    "spx_debit_ml_term_dte21t3",
+    "spx_debit_ml_term_dte30t5",
+]
+EXEC_SERVICES = [
+    "options_ai_execution",
+    "options_ai_execution_monitor",
+    "options_ai_risk_guard",
+]
+
+DEFAULT_SCHEDULER_CONFIG = {
+    "include_start_zero_dte": True,
+    "include_start_term": True,
+    "include_start_execution": True,
+}
 
 
 def _parse_hhmm(v: str, default: dtime) -> dtime:
@@ -28,18 +63,34 @@ def _split_services(v: str, fallback: list[str]) -> list[str]:
     return raw or fallback
 
 
-def _load_state() -> dict:
+def _load_json(path: Path) -> dict:
     try:
-        if STATE_PATH.exists():
-            return json.loads(STATE_PATH.read_text())
+        if path.exists():
+            obj = json.loads(path.read_text())
+            if isinstance(obj, dict):
+                return obj
     except Exception:
         pass
     return {}
 
 
+def _save_json(path: Path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, separators=(",", ":"), sort_keys=True))
+
+
+def _load_state() -> dict:
+    return _load_json(STATE_PATH)
+
+
 def _save_state(st: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(st, separators=(",", ":"), sort_keys=True))
+    _save_json(STATE_PATH, st)
+
+
+def _load_scheduler_config() -> dict:
+    c = dict(DEFAULT_SCHEDULER_CONFIG)
+    c.update(_load_json(CFG_PATH))
+    return c
 
 
 def _run_systemctl(action: str, service: str) -> tuple[bool, str]:
@@ -76,9 +127,7 @@ class Cfg:
     market_close_ct: dtime
     stop_grace_minutes: int
     api_base: str
-    start_services: list[str]
     stop_services: list[str]
-
 
 
 def _load_cfg() -> Cfg:
@@ -89,43 +138,9 @@ def _load_cfg() -> Cfg:
         market_close_ct=_parse_hhmm(os.getenv("MARKET_CLOSE_CT", "15:00"), dtime(15, 0)),
         stop_grace_minutes=max(0, int(os.getenv("MARKET_STOP_GRACE_MINUTES", "15") or "15")),
         api_base=os.getenv("MARKET_SCHEDULER_API_BASE", "http://127.0.0.1:8088").rstrip("/"),
-        start_services=_split_services(
-            os.getenv("MARKET_AUTOSTART_SERVICES", ""),
-            [
-                "options_predicator",
-                "spx_chain_ingester",
-                "spx_chain_phase2",
-                "spx_debit_spreads",
-                "spx_debit_ml",
-                "options_ai_execution",
-                "options_ai_execution_monitor",
-                "options_ai_risk_guard",
-            ],
-        ),
         stop_services=_split_services(
             os.getenv("MARKET_AUTOSTOP_SERVICES", ""),
-            [
-                "options_predicator",
-                "spx_chain_ingester",
-                "spx_chain_phase2",
-                "spx_debit_spreads",
-                "spx_debit_ml",
-                "spx_chain_phase2_term_dte7t2",
-                "spx_chain_phase2_term_dte14t2",
-                "spx_chain_phase2_term_dte21t3",
-                "spx_chain_phase2_term_dte30t5",
-                "spx_debit_spreads_term_dte7t2",
-                "spx_debit_spreads_term_dte14t2",
-                "spx_debit_spreads_term_dte21t3",
-                "spx_debit_spreads_term_dte30t5",
-                "spx_debit_ml_term_dte7t2",
-                "spx_debit_ml_term_dte14t2",
-                "spx_debit_ml_term_dte21t3",
-                "spx_debit_ml_term_dte30t5",
-                "options_ai_execution",
-                "options_ai_execution_monitor",
-                "options_ai_risk_guard",
-            ],
+            ZERO_DTE_SERVICES + TERM_SERVICES + EXEC_SERVICES,
         ),
     )
 
@@ -134,12 +149,35 @@ def _today_key(now: datetime) -> str:
     return now.date().isoformat()
 
 
+def _build_start_services(toggle_cfg: dict) -> list[str]:
+    out: list[str] = []
+    if bool(toggle_cfg.get("include_start_zero_dte", True)):
+        out.extend(ZERO_DTE_SERVICES)
+    if bool(toggle_cfg.get("include_start_term", True)):
+        out.extend(TERM_SERVICES)
+    if bool(toggle_cfg.get("include_start_execution", True)):
+        out.extend(EXEC_SERVICES)
+    # uniq preserve order
+    seen = set()
+    uniq = []
+    for x in out:
+        if x in seen:
+            continue
+        seen.add(x)
+        uniq.append(x)
+    return uniq
+
+
 def main() -> None:
-    cfg = _load_cfg()
     while True:
+        cfg = _load_cfg()  # reload env-controlled schedule each cycle
         if not cfg.enabled:
             time.sleep(cfg.poll_seconds)
             continue
+
+        sched_cfg = _load_scheduler_config()
+        start_services = _build_start_services(sched_cfg)
+        stop_services = list(dict.fromkeys(cfg.stop_services + ZERO_DTE_SERVICES + TERM_SERVICES + EXEC_SERVICES))
 
         now = datetime.now(TZ)
         weekday = now.weekday() < 5  # Mon-Fri
@@ -151,21 +189,23 @@ def main() -> None:
         stop_deadline = close_dt + timedelta(minutes=cfg.stop_grace_minutes)
 
         if weekday and now >= start_dt and st.get("last_started_day") != dayk:
-            for svc in cfg.start_services:
+            for svc in start_services:
                 _run_systemctl("start", svc)
             st["last_started_day"] = dayk
             st["last_start_at"] = datetime.now(TZ).isoformat()
+            st["last_start_count"] = len(start_services)
             _save_state(st)
 
         should_try_stop = weekday and now >= close_dt and st.get("last_stopped_day") != dayk
         if should_try_stop:
             idle = _is_pipeline_idle(cfg.api_base)
             if now >= stop_deadline or idle:
-                for svc in cfg.stop_services:
+                for svc in stop_services:
                     _run_systemctl("stop", svc)
                 st["last_stopped_day"] = dayk
                 st["last_stop_at"] = datetime.now(TZ).isoformat()
                 st["last_stop_reason"] = "idle" if idle else "grace_elapsed"
+                st["last_stop_count"] = len(stop_services)
                 _save_state(st)
 
         time.sleep(cfg.poll_seconds)
