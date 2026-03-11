@@ -1,0 +1,19 @@
+[Unit]
+Description=OptionsPredicator Market Hours Scheduler
+After=network-online.target options_ai_dashboard_api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.market_hours_scheduler_main
+Restart=always
+RestartSec=5
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

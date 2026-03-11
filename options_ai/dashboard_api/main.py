@@ -4018,6 +4018,8 @@ def create_app() -> FastAPI:
             return ('Control', 'control', True)
         if n.startswith('options_ai_storage_monitor'):
             return ('Control', 'control', True)
+        if n.startswith('options_ai_market_scheduler'):
+            return ('Control', 'control', True)
         if n.startswith('options_predicator'):
             return ('Control', 'control', True)
         if n.startswith('strategy_factory_daily'):
@@ -4367,6 +4369,7 @@ def create_app() -> FastAPI:
             keep_set = {
                 'options_ai_dashboard_api',
                 'options_ai_storage_monitor',
+                'options_ai_market_scheduler',
             }
             targets = [
                 x for x in items
