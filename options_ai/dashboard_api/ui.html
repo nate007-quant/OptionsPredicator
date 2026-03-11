@@ -4468,9 +4468,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         opsStorageTrendChart.update();
       }
       const cur = storage?.latest || {};
-      const set = (id, txt) => { const el=document.getElementById(id); if (el) el.textContent = txt; };
-      set('opsStoragePg', `PostgreSQL: ${fmtBytes(cur.postgres_bytes)}`);
-      set('opsStorageTs', `Timescale: ${fmtBytes(cur.timescale_bytes)}`);
+      const pgName = storage?.postgres_db ? ` (${storage.postgres_db})` : '';
+      const tsName = storage?.timescale_db ? ` (${storage.timescale_db})` : '';
+      const set = (id, txt, title='') => { const el=document.getElementById(id); if (!el) return; el.textContent = txt; if (title) el.title = title; };
+      set('opsStoragePg', `PostgreSQL${pgName}: ${fmtBytes(cur.postgres_bytes)}`, storage?.postgres_dsn_configured ? 'Measured from POSTGRES_DATABASE_URL (or postgres DATABASE_URL fallback)' : 'POSTGRES_DATABASE_URL not configured');
+      set('opsStorageTs', `Timescale${tsName}: ${fmtBytes(cur.timescale_bytes)}`, storage?.timescale_dsn_configured ? 'Measured from TIMESCALE_DATABASE_URL (or SPX_CHAIN_DATABASE_URL fallback)' : 'TIMESCALE_DATABASE_URL/SPX_CHAIN_DATABASE_URL not configured');
       set('opsStorageDisk', `Disk used: ${fmtBytes(cur.disk_used_bytes)}`);
       set('opsStorageFree', `Free: ${fmtBytes(cur.disk_free_bytes)}`);
     }

@@ -4469,7 +4469,29 @@ def create_app() -> FastAPI:
         now = _now_utc().replace(second=0, microsecond=0)
         now_iso = now.isoformat()
 
-        dsn = _pg_dsn()
+        postgres_dsn = os.getenv('POSTGRES_DATABASE_URL', '').strip() or os.getenv('PRIMARY_POSTGRES_DATABASE_URL', '').strip()
+        if not postgres_dsn:
+            du = os.getenv('DATABASE_URL', '').strip()
+            if du.startswith('postgres'):
+                postgres_dsn = du
+        timescale_dsn = os.getenv('TIMESCALE_DATABASE_URL', '').strip() or _pg_dsn() or ''
+
+        def _fetch_db_size(dsn: str) -> tuple[int | None, str | None]:
+            if not dsn:
+                return None, None
+            try:
+                with _pg_connect(dsn) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute('SELECT current_database()')
+                        rn = cur.fetchone()
+                        dbn = str(rn[0]) if rn and rn[0] is not None else None
+                        cur.execute('SELECT pg_database_size(current_database())')
+                        rr = cur.fetchone()
+                        b = int(rr[0] or 0) if rr else 0
+                        return b, dbn
+            except Exception:
+                return None, None
+
         with _connect(db_path) as con:
             con.execute(
                 """
@@ -4498,59 +4520,37 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
 
-            row = con.execute(
-                "SELECT sample_minute_utc FROM storage_metrics_samples WHERE sample_minute_utc=?",
-                (now_iso,),
-            ).fetchone()
-            if row is None:
-                postgres_b = timescale_b = None
-                if dsn:
-                    try:
-                        with _pg_connect(dsn) as pg:
-                            with pg.cursor() as cur:
-                                cur.execute("SELECT pg_database_size(current_database())")
-                                rr = cur.fetchone()
-                                postgres_b = int(rr[0] or 0) if rr else 0
-                                cur.execute(
-                                    """
-                                    SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0)
-                                    FROM pg_class c
-                                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                                    WHERE n.nspname LIKE '_timescaledb%'
-                                      AND c.relkind IN ('r','m','t')
-                                    """
-                                )
-                                rr2 = cur.fetchone()
-                                timescale_b = int(rr2[0] or 0) if rr2 else 0
-                    except Exception:
-                        postgres_b = None
-                        timescale_b = None
-                else:
-                    try:
-                        postgres_b = int(Path(db_path).stat().st_size)
-                    except Exception:
-                        postgres_b = None
-                    timescale_b = None
+            latest_postgres_name = None
+            latest_timescale_name = None
+            postgres_b = timescale_b = None
+            postgres_b, latest_postgres_name = _fetch_db_size(postgres_dsn)
+            timescale_b, latest_timescale_name = _fetch_db_size(timescale_dsn)
 
-                used_b = free_b = None
+            if (postgres_b is None) and (not postgres_dsn):
                 try:
-                    st = os.statvfs(str(data_root))
-                    total_b = int(st.f_frsize * st.f_blocks)
-                    free_b = int(st.f_frsize * st.f_bavail)
-                    used_b = int(total_b - free_b)
+                    postgres_b = int(Path(db_path).stat().st_size)
                 except Exception:
-                    pass
+                    postgres_b = None
 
-                con.execute(
-                    """
-                    INSERT OR REPLACE INTO storage_metrics_samples(
-                      sample_minute_utc, postgres_bytes, timescale_bytes,
-                      disk_used_bytes, disk_free_bytes
-                    ) VALUES(?,?,?,?,?)
-                    """,
-                    (now_iso, postgres_b, timescale_b, used_b, free_b),
-                )
-                con.commit()
+            used_b = free_b = None
+            try:
+                st = os.statvfs(str(data_root))
+                total_b = int(st.f_frsize * st.f_blocks)
+                free_b = int(st.f_frsize * st.f_bavail)
+                used_b = int(total_b - free_b)
+            except Exception:
+                pass
+
+            con.execute(
+                """
+                INSERT OR REPLACE INTO storage_metrics_samples(
+                  sample_minute_utc, postgres_bytes, timescale_bytes,
+                  disk_used_bytes, disk_free_bytes
+                ) VALUES(?,?,?,?,?)
+                """,
+                (now_iso, postgres_b, timescale_b, used_b, free_b),
+            )
+            con.commit()
 
             cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
             rows = con.execute(
@@ -4568,34 +4568,38 @@ def create_app() -> FastAPI:
         last_keep_ts = None
         for r in rows:
             ts = str(r['sample_minute_utc'])
-            keep = True
-            try:
-                dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                unix = int(dt.timestamp())
-                if (last_keep_ts is not None) and (unix - last_keep_ts < res_sec):
-                    keep = False
-                if keep:
-                    last_keep_ts = unix
-            except Exception:
-                pass
-            if not keep:
-                continue
-            series.append({
+            cur = {
                 'sample_minute_utc': _to_central_iso(ts),
                 'postgres_bytes': (int(r['postgres_bytes']) if r['postgres_bytes'] is not None else None),
                 'timescale_bytes': (int(r['timescale_bytes']) if r['timescale_bytes'] is not None else None),
                 'disk_used_bytes': (int(r['disk_used_bytes']) if r['disk_used_bytes'] is not None else None),
                 'disk_free_bytes': (int(r['disk_free_bytes']) if r['disk_free_bytes'] is not None else None),
-            })
+            }
+            try:
+                dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                unix = int(dt.timestamp())
+                if (last_keep_ts is not None) and (unix - last_keep_ts < res_sec):
+                    # keep latest sample in current bucket
+                    if series:
+                        series[-1] = cur
+                    continue
+                last_keep_ts = unix
+            except Exception:
+                pass
+            series.append(cur)
 
         latest = series[-1] if series else None
         return {
             'window': window,
             'resolution': resolution,
-            'engine': ('postgres' if dsn else 'sqlite'),
+            'engine': ('postgres' if (postgres_dsn or timescale_dsn) else 'sqlite'),
             'generated_at': _now_central_iso(),
             'series': series,
             'latest': latest,
+            'postgres_db': latest_postgres_name,
+            'timescale_db': latest_timescale_name,
+            'postgres_dsn_configured': bool(postgres_dsn),
+            'timescale_dsn_configured': bool(timescale_dsn),
         }
 
     @app.get('/api/metrics/database/summary')
