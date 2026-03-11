@@ -4434,6 +4434,31 @@ def create_app() -> FastAPI:
     def services_global_action(action: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
         return _service_global_action(str(action), str(x_role or 'viewer').lower(), body)
 
+    @app.get('/api/scheduler/status')
+    def scheduler_status() -> dict[str, Any]:
+        svc = next((x for x in _collect_services() if str(x.get('id')) == 'options_ai_market_scheduler'), None)
+        enabled = bool(svc and str(svc.get('status')) in {'active', 'activating'})
+        return {
+            'service_id': 'options_ai_market_scheduler',
+            'enabled': enabled,
+            'status': (svc.get('status') if svc else 'unknown'),
+            'status_color': (svc.get('status_color') if svc else 'yellow'),
+            'updated_at': _now_central_iso(),
+        }
+
+    @app.post('/api/scheduler/enabled')
+    def scheduler_set_enabled(body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        role = str(x_role or 'viewer').lower()
+        _require_role(role, {'operator', 'admin'})
+        want = bool((body or {}).get('enabled'))
+        cmd = ['sudo', '-n', 'systemctl', 'start' if want else 'stop', 'options_ai_market_scheduler']
+        p = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=20)
+        if p.returncode != 0:
+            msg = ((p.stderr or '').strip() or (p.stdout or '').strip() or f'rc={p.returncode}')
+            raise HTTPException(status_code=500, detail=f'scheduler toggle failed: {msg}')
+        _audit_execution(actor=f'dashboard_api:{role}', action=('scheduler_enabled' if want else 'scheduler_disabled'), entity_type='service', entity_id='options_ai_market_scheduler', details={})
+        return scheduler_status()
+
     @app.get('/api/metrics/dependencies')
     def metrics_dependencies(window: str = Query('15m')) -> dict[str, Any]:
         db_ok = True

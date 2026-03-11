@@ -937,6 +937,10 @@
                 <button onclick="serviceGlobalAction('start-execution')">Start Execution</button>
                 <button onclick="serviceGlobalAction('stop-processing-execution')">Stop Processing &amp; Executions</button>
               </div>
+              <div class="row" style="margin-bottom:8px;">
+                <label><input id="opsSchedEnabled" type="checkbox" /> Scheduler ON</label>
+                <span id="opsSchedStatus" class="hint ex-last-mini">scheduler: —</span>
+              </div>
               <div style="overflow:auto; max-height:320px;">
                 <table>
                   <thead><tr><th>Service</th><th>Stage</th><th>Status</th><th>Uptime</th><th>Heartbeat</th><th>CPU</th><th>Mem</th><th>Restarts</th><th>OOM</th><th>Version</th><th>Actions</th></tr></thead>
@@ -4421,6 +4425,25 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await refreshProcessing();
     }
 
+    async function refreshSchedulerStatus() {
+      const d = await jget('/api/scheduler/status');
+      const cb = document.getElementById('opsSchedEnabled');
+      const st = document.getElementById('opsSchedStatus');
+      if (cb) cb.checked = !!d.enabled;
+      if (st) st.textContent = `scheduler: ${d.enabled ? 'ON' : 'OFF'} (${d.status || 'unknown'})`;
+      return d;
+    }
+
+    async function setSchedulerEnabled(on) {
+      const d = await jpost('/api/scheduler/enabled', {enabled: !!on}, {'X-Role': 'admin'});
+      const cb = document.getElementById('opsSchedEnabled');
+      if (cb) cb.checked = !!d.enabled;
+      const st = document.getElementById('opsSchedStatus');
+      if (st) st.textContent = `scheduler: ${d.enabled ? 'ON' : 'OFF'} (${d.status || 'unknown'})`;
+      toast(`scheduler ${d.enabled ? 'enabled' : 'disabled'}`, d.enabled ? 'success' : 'warn');
+      return d;
+    }
+
 
     let opsStorageTrendChart = null;
 
@@ -4619,11 +4642,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       opsBoxLoading('Svc', true);
       try {
         const window = document.getElementById('opsWindow')?.value || '15m';
-        const [services, longQ, idxRec] = await Promise.all([
+        const [services, longQ, idxRec, sched] = await Promise.all([
           jget(`/api/services?window=${encodeURIComponent(window)}`),
           jget(`/api/metrics/database/queries/long-running?window=${encodeURIComponent(window)}`),
           jget(`/api/metrics/database/index-recommendations?window=24h`),
+          jget('/api/scheduler/status'),
         ]);
+
+        const scb = document.getElementById('opsSchedEnabled');
+        const sst = document.getElementById('opsSchedStatus');
+        if (scb) scb.checked = !!(sched && sched.enabled);
+        if (sst) sst.textContent = `scheduler: ${(sched && sched.enabled) ? 'ON' : 'OFF'} (${(sched && sched.status) || 'unknown'})`;
 
         const st = document.getElementById('opsServicesTable');
         if (st) {
@@ -5955,6 +5984,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       // processing controls
       document.getElementById('opsWindow')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
       document.getElementById('opsMode')?.addEventListener('change', () => safe('processing', () => refreshProcessingPipeline()));
+      document.getElementById('opsSchedEnabled')?.addEventListener('change', (ev) => safe('scheduler_toggle', () => setSchedulerEnabled(!!ev.target.checked)));
       document.getElementById('opsPipeRefresh')?.addEventListener('click', () => safe('processing_pipe', () => refreshProcessingPipeline()));
       document.getElementById('opsSvcRefresh')?.addEventListener('click', () => safe('processing_svc', () => refreshProcessingServices()));
       document.getElementById('opsStorageRefresh')?.addEventListener('click', () => safe('processing_storage', () => refreshProcessingStorage()));
