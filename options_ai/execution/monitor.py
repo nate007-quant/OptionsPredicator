@@ -268,10 +268,14 @@ class ExecutionMonitor:
         row = con.execute(
             """
             SELECT COUNT(*)
-            FROM broker_reconciliation_log
-            WHERE environment=? AND broker_name=? AND resolved_bool=0
-            ORDER BY id DESC
-            LIMIT 200
+            FROM (
+              SELECT resolved_bool
+              FROM broker_reconciliation_log
+              WHERE environment=? AND broker_name=?
+              ORDER BY id DESC
+              LIMIT 200
+            ) t
+            WHERE COALESCE(t.resolved_bool, 0)=0
             """,
             (self.environment, self.broker_name),
         ).fetchone()
@@ -400,9 +404,9 @@ class ExecutionMonitor:
                 except Exception:
                     pass
 
-            # mismatch breaker threshold
+            # mismatch breaker threshold (only escalate while currently mismatched)
             mm_count = self._recent_unresolved_mismatch_count(con)
-            if mm_count >= self.max_position_mismatch_count:
+            if mismatch and (mm_count >= self.max_position_mismatch_count):
                 self._incident(
                     con,
                     severity='error',
