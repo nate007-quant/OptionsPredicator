@@ -469,6 +469,22 @@ class ExecutionMonitor:
                 )
                 st.position_events_written += 1
 
+                tr_status = str(tr["status"] or "")
+                if tr_status == 'closing' and len(scoped_positions) == 0:
+                    con.execute(
+                        "UPDATE trade_runs SET status='closed', close_reason=COALESCE(close_reason,'operator_flatten_complete'), closed_at_utc=COALESCE(closed_at_utc, ?), updated_at_utc=? WHERE id=?",
+                        (_now_utc_iso(), _now_utc_iso(), trade_run_id),
+                    )
+                    self._record_order_event(
+                        con,
+                        trade_run_id=trade_run_id,
+                        execution_intent_id=intent_id,
+                        order_id=None,
+                        event_type="close_detected_from_positions",
+                        status="filled",
+                        payload={"positions_count": 0},
+                    )
+
                 if (not self._has_protective_exit(con, trade_run_id)) and (not self._already_alerted_missing_protection(con, trade_run_id)):
                     self._audit(
                         con,

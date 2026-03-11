@@ -3102,17 +3102,94 @@ def create_app() -> FastAPI:
 
     @app.post('/api/execution/flatten-all')
     def execution_flatten_all() -> dict[str, Any]:
+        from options_ai.brokers.tastytrade.client import TastytradeClient, OrderDTO, OptionLeg
+
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+        env = str(cfg.broker_env or 'sandbox').strip().lower()
+        if env == 'sandbox':
+            base_url = str(cfg.tasty_sandbox_base_url or cfg.tasty_base_url).strip()
+            account_number = str(cfg.tasty_sandbox_account_number or os.getenv('TASTY_ACCOUNT_NUMBER', '') or '').strip()
+        else:
+            base_url = str(cfg.tasty_live_base_url or cfg.tasty_base_url).strip()
+            account_number = str(cfg.tasty_live_account_number or os.getenv('TASTY_ACCOUNT_NUMBER', '') or '').strip()
+
+        client = None
+        auth_error: str | None = None
+        if account_number:
+            try:
+                client = TastytradeClient(
+                    base_url=base_url,
+                    environment=env,
+                    account_number=account_number,
+                    dry_run=(not bool(cfg.trading_enabled)),
+                    target_api_version=None,
+                )
+                if bool(cfg.trading_enabled):
+                    client.authenticate()
+            except Exception as e:
+                auth_error = str(e)
+                client = None
+
         with _connect(db_path) as con:
             rows = con.execute(
-                "SELECT id, execution_intent_id FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
+                "SELECT id, execution_intent_id, qty, underlying, run_payload_json FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
                 (str(cfg.broker_env), str(cfg.broker_name)),
             ).fetchall()
             n = 0
+            submitted = 0
+            errors = 0
             for r in rows:
+                rid = int(r['id'])
+                iid = (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None)
+                qty = max(1, int(r['qty'] or 1))
+                underlying = str(r['underlying'] or 'SPX')
+                payload = _json.loads(r['run_payload_json'] or '{}')
+                params = (payload.get('params') or {}) if isinstance(payload, dict) else {}
+                long_sym = str(params.get('long_symbol') or '').strip()
+                short_sym = str(params.get('short_symbol') or '').strip()
+
+                exit_order_id = None
+                event_type = 'operator_flatten_all'
+                status = 'accepted'
+                raw = {'note': 'operator flatten-all requested'}
+
+                try:
+                    if auth_error:
+                        raise RuntimeError(f'broker auth unavailable: {auth_error}')
+                    if (client is None) or (not account_number):
+                        raise RuntimeError('broker client unavailable or missing account number')
+                    if (not long_sym) or (not short_sym):
+                        raise RuntimeError('missing long_symbol/short_symbol in trade run payload')
+
+                    close_dto = OrderDTO(
+                        account_number=account_number,
+                        underlying=underlying,
+                        quantity=qty,
+                        price_effect='CREDIT',
+                        limit_price=0.05,
+                        legs=[
+                            OptionLeg(symbol=long_sym, quantity=qty, side='SELL', effect='CLOSE'),
+                            OptionLeg(symbol=short_sym, quantity=qty, side='BUY', effect='CLOSE'),
+                        ],
+                        client_order_id=f'flatten-{rid}-{int(datetime.now(timezone.utc).timestamp())}',
+                    )
+                    resp = client.place_order_with_warning_reconfirm(close_dto, dry_run=(not bool(cfg.trading_enabled)))
+                    data = (resp.get('data') if isinstance(resp, dict) else None) or {}
+                    od = (data.get('order') if isinstance(data, dict) else None) or {}
+                    exit_order_id = (data.get('id') or od.get('id') or (resp.get('order-id') if isinstance(resp, dict) else None))
+                    raw = {'response': resp, 'submitted': True}
+                    event_type = 'operator_flatten_submit'
+                    submitted += 1
+                except Exception as e:
+                    raw = {'error': str(e), 'submitted': False}
+                    event_type = 'operator_flatten_submit_error'
+                    status = 'error'
+                    errors += 1
+
                 con.execute(
-                    "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', updated_at_utc=? WHERE id=?",
-                    (now, int(r['id'])),
+                    "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', exit_order_id=COALESCE(?, exit_order_id), updated_at_utc=? WHERE id=?",
+                    ((str(exit_order_id) if exit_order_id is not None else None), now, rid),
                 )
                 con.execute(
                     """
@@ -3123,18 +3200,18 @@ def create_app() -> FastAPI:
                         now,
                         str(cfg.broker_env),
                         str(cfg.broker_name),
-                        int(r['id']),
-                        (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
-                        None,
-                        'operator_flatten_all',
-                        'accepted',
-                        _json.dumps({'note': 'operator flatten-all requested; risk_guard/worker should close positions'}, separators=(',', ':'), sort_keys=True),
+                        rid,
+                        iid,
+                        (str(exit_order_id) if exit_order_id is not None else None),
+                        event_type,
+                        status,
+                        _json.dumps(raw, separators=(',', ':'), sort_keys=True),
                     ),
                 )
                 n += 1
             con.commit()
-        _audit_execution(actor='dashboard_api', action='flatten_all_requested', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'affected_trades': n})
-        return {'ok': True, 'affected_trades': n}
+        _audit_execution(actor='dashboard_api', action='flatten_all_requested', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'affected_trades': n, 'submitted': submitted, 'errors': errors})
+        return {'ok': True, 'affected_trades': n, 'submitted': submitted, 'errors': errors}
 
     @app.get('/api/execution/kpis')
     def execution_kpis(days: int = Query(7, ge=1, le=60)) -> dict[str, Any]:
