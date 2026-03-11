@@ -4381,6 +4381,14 @@ def create_app() -> FastAPI:
                 and str(x.get('status')) not in {'active', 'activating'}
             ]
             svc_action = 'start'
+        elif action == 'start-execution':
+            exec_set = {
+                'options_ai_execution',
+                'options_ai_execution_monitor',
+                'options_ai_risk_guard',
+            }
+            targets = [x for x in items if str(x.get('id')) in exec_set and str(x.get('status')) not in {'active', 'activating'}]
+            svc_action = 'start'
         else:
             raise HTTPException(status_code=404, detail='unknown global action')
 
