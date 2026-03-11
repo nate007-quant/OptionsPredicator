@@ -953,7 +953,7 @@
           <div class="card">
             <div class="card-h"><h2>Storage Trends</h2><div class="hint">PostgreSQL + Timescale used bytes over time</div></div>
             <div class="card-b">
-              <div class="row" style="margin-bottom:8px;"><button id="opsStorageRefresh" class="btn-primary">Refresh</button><label><input id="opsStorageAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsStorageSec" type="number" min="3" max="300" value="20" style="width:70px;" /></label><span id="opsStorageLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsStorageLast" class="hint ex-last-mini">—</span></div>
+              <div class="row" style="margin-bottom:8px;"><button id="opsStorageRefresh" class="btn-primary">Refresh</button><label><input id="opsStorageAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsStorageSec" type="number" min="3" max="300" value="20" style="width:70px;" /></label><label>history <select id="opsStorageWindow"><option value="1h">1h</option><option value="24h" selected>24h</option><option value="7d">7d</option><option value="90d">3mo</option><option value="365d">1y</option><option value="all">all</option></select></label><label>res <select id="opsStorageRes"><option value="1m">1m</option><option value="5m" selected>5m</option><option value="15m">15m</option><option value="1h">1h</option></select></label><span id="opsStorageLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsStorageLast" class="hint ex-last-mini">—</span></div>
               <div class="row" style="margin-bottom:8px;">
                 <span class="pill" id="opsStoragePg">PostgreSQL: —</span>
                 <span class="pill" id="opsStorageTs">Timescale: —</span>
@@ -4672,7 +4672,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     async function refreshProcessingStorage() {
       opsBoxLoading('Storage', true);
       try {
-        const storageTrend = await jget(`/api/metrics/storage/trends?window=24h&resolution=5m`);
+        const w = document.getElementById('opsStorageWindow')?.value || '24h';
+        const r = document.getElementById('opsStorageRes')?.value || '5m';
+        const storageTrend = await jget(`/api/metrics/storage/trends?window=${encodeURIComponent(w)}&resolution=${encodeURIComponent(r)}`);
         renderStorageTrendChart(storageTrend || {});
         opsBoxLast('Storage', true);
         return storageTrend;
@@ -5958,7 +5960,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById('opsPipeRefresh')?.addEventListener('click', () => safe('processing_pipe', () => refreshProcessingPipeline()));
       document.getElementById('opsSvcRefresh')?.addEventListener('click', () => safe('processing_svc', () => refreshProcessingServices()));
       document.getElementById('opsStorageRefresh')?.addEventListener('click', () => safe('processing_storage', () => refreshProcessingStorage()));
-      ['opsPipeAuto','opsPipeSec','opsSvcAuto','opsSvcSec','opsStorageAuto','opsStorageSec'].forEach((id) => {
+      ['opsPipeAuto','opsPipeSec','opsSvcAuto','opsSvcSec','opsStorageAuto','opsStorageSec','opsStorageWindow','opsStorageRes'].forEach((id) => {
         document.getElementById(id)?.addEventListener('change', () => setupProcessingAreaRefresh());
       });
 

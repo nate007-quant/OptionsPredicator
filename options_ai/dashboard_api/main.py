@@ -4016,6 +4016,8 @@ def create_app() -> FastAPI:
             return ('Control', 'control', True)
         if n.startswith('options_ai_dashboard_api'):
             return ('Control', 'control', True)
+        if n.startswith('options_ai_storage_monitor'):
+            return ('Control', 'control', True)
         if n.startswith('options_predicator'):
             return ('Control', 'control', True)
         if n.startswith('strategy_factory_daily'):
@@ -4031,6 +4033,7 @@ def create_app() -> FastAPI:
             'options_ai_execution',
             'options_ai_execution_monitor',
             'options_ai_risk_guard',
+            'options_ai_storage_monitor',
             'spx_chain_ingester',
             'spx_chain_phase2',
             'spx_chain_phase2_term_dte7t2',
@@ -4375,6 +4378,7 @@ def create_app() -> FastAPI:
                 'options_ai_execution',
                 'options_ai_execution_monitor',
                 'options_ai_risk_guard',
+            'options_ai_storage_monitor',
             }
             targets = [
                 x for x in items
@@ -4464,33 +4468,7 @@ def create_app() -> FastAPI:
 
     @app.get('/api/metrics/storage/trends')
     def metrics_storage_trends(window: str = Query('24h'), resolution: str = Query('5m')) -> dict[str, Any]:
-        ws = _parse_window_seconds(window)
         res_sec = max(60, _parse_window_seconds(resolution))
-        now = _now_utc().replace(second=0, microsecond=0)
-        now_iso = now.isoformat()
-
-        postgres_dsn = os.getenv('POSTGRES_DATABASE_URL', '').strip() or os.getenv('PRIMARY_POSTGRES_DATABASE_URL', '').strip()
-        if not postgres_dsn:
-            du = os.getenv('DATABASE_URL', '').strip()
-            if du.startswith('postgres'):
-                postgres_dsn = du
-        timescale_dsn = os.getenv('TIMESCALE_DATABASE_URL', '').strip() or _pg_dsn() or ''
-
-        def _fetch_db_size(dsn: str) -> tuple[int | None, str | None]:
-            if not dsn:
-                return None, None
-            try:
-                with _pg_connect(dsn) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute('SELECT current_database()')
-                        rn = cur.fetchone()
-                        dbn = str(rn[0]) if rn and rn[0] is not None else None
-                        cur.execute('SELECT pg_database_size(current_database())')
-                        rr = cur.fetchone()
-                        b = int(rr[0] or 0) if rr else 0
-                        return b, dbn
-            except Exception:
-                return None, None
 
         with _connect(db_path) as con:
             con.execute(
@@ -4501,67 +4479,32 @@ def create_app() -> FastAPI:
                   postgres_bytes INTEGER,
                   timescale_bytes INTEGER,
                   disk_used_bytes INTEGER,
-                  disk_free_bytes INTEGER
+                  disk_free_bytes INTEGER,
+                  postgres_db_name TEXT,
+                  timescale_db_name TEXT
                 )
                 """
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_storage_metrics_samples_minute ON storage_metrics_samples(sample_minute_utc DESC)")
-            # lightweight forward-migration for older table shape
-            try:
-                cols = {str(r[1]) for r in con.execute("PRAGMA table_info(storage_metrics_samples)").fetchall()}
-                if 'postgres_bytes' not in cols:
-                    con.execute("ALTER TABLE storage_metrics_samples ADD COLUMN postgres_bytes INTEGER")
-                if 'timescale_bytes' not in cols:
-                    con.execute("ALTER TABLE storage_metrics_samples ADD COLUMN timescale_bytes INTEGER")
-                if 'disk_used_bytes' not in cols:
-                    con.execute("ALTER TABLE storage_metrics_samples ADD COLUMN disk_used_bytes INTEGER")
-                if 'disk_free_bytes' not in cols:
-                    con.execute("ALTER TABLE storage_metrics_samples ADD COLUMN disk_free_bytes INTEGER")
-            except Exception:
-                pass
 
-            latest_postgres_name = None
-            latest_timescale_name = None
-            postgres_b = timescale_b = None
-            postgres_b, latest_postgres_name = _fetch_db_size(postgres_dsn)
-            timescale_b, latest_timescale_name = _fetch_db_size(timescale_dsn)
+            cutoff_clause = ""
+            params: tuple[Any, ...] = ()
+            if str(window).lower() != 'all':
+                ws = _parse_window_seconds(window)
+                cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+                cutoff_clause = "WHERE sample_minute_utc >= ?"
+                params = (cutoff,)
 
-            if (postgres_b is None) and (not postgres_dsn):
-                try:
-                    postgres_b = int(Path(db_path).stat().st_size)
-                except Exception:
-                    postgres_b = None
-
-            used_b = free_b = None
-            try:
-                st = os.statvfs(str(data_root))
-                total_b = int(st.f_frsize * st.f_blocks)
-                free_b = int(st.f_frsize * st.f_bavail)
-                used_b = int(total_b - free_b)
-            except Exception:
-                pass
-
-            con.execute(
-                """
-                INSERT OR REPLACE INTO storage_metrics_samples(
-                  sample_minute_utc, postgres_bytes, timescale_bytes,
-                  disk_used_bytes, disk_free_bytes
-                ) VALUES(?,?,?,?,?)
-                """,
-                (now_iso, postgres_b, timescale_b, used_b, free_b),
-            )
-            con.commit()
-
-            cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
             rows = con.execute(
-                """
+                f"""
                 SELECT sample_minute_utc, postgres_bytes, timescale_bytes,
-                       disk_used_bytes, disk_free_bytes
+                       disk_used_bytes, disk_free_bytes,
+                       postgres_db_name, timescale_db_name
                 FROM storage_metrics_samples
-                WHERE sample_minute_utc >= ?
+                {cutoff_clause}
                 ORDER BY sample_minute_utc ASC
                 """,
-                (cutoff,),
+                params,
             ).fetchall()
 
         series = []
@@ -4574,12 +4517,13 @@ def create_app() -> FastAPI:
                 'timescale_bytes': (int(r['timescale_bytes']) if r['timescale_bytes'] is not None else None),
                 'disk_used_bytes': (int(r['disk_used_bytes']) if r['disk_used_bytes'] is not None else None),
                 'disk_free_bytes': (int(r['disk_free_bytes']) if r['disk_free_bytes'] is not None else None),
+                'postgres_db_name': (str(r['postgres_db_name']) if r['postgres_db_name'] is not None else None),
+                'timescale_db_name': (str(r['timescale_db_name']) if r['timescale_db_name'] is not None else None),
             }
             try:
                 dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
                 unix = int(dt.timestamp())
                 if (last_keep_ts is not None) and (unix - last_keep_ts < res_sec):
-                    # keep latest sample in current bucket
                     if series:
                         series[-1] = cur
                     continue
@@ -4592,14 +4536,13 @@ def create_app() -> FastAPI:
         return {
             'window': window,
             'resolution': resolution,
-            'engine': ('postgres' if (postgres_dsn or timescale_dsn) else 'sqlite'),
             'generated_at': _now_central_iso(),
             'series': series,
             'latest': latest,
-            'postgres_db': latest_postgres_name,
-            'timescale_db': latest_timescale_name,
-            'postgres_dsn_configured': bool(postgres_dsn),
-            'timescale_dsn_configured': bool(timescale_dsn),
+            'postgres_db': (latest.get('postgres_db_name') if latest else None),
+            'timescale_db': (latest.get('timescale_db_name') if latest else None),
+            'postgres_dsn_configured': bool(os.getenv('POSTGRES_DATABASE_URL', '').strip() or os.getenv('PRIMARY_POSTGRES_DATABASE_URL', '').strip() or os.getenv('DATABASE_URL', '').strip().startswith('postgres')),
+            'timescale_dsn_configured': bool(os.getenv('TIMESCALE_DATABASE_URL', '').strip() or _pg_dsn()),
         }
 
     @app.get('/api/metrics/database/summary')
