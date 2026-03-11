@@ -4354,16 +4354,31 @@ def create_app() -> FastAPI:
     def _service_global_action(action: str, role: str, body: dict[str, Any] | None) -> dict[str, Any]:
         _require_role(role, {'operator', 'admin'})
         items = _collect_services()
+        by_id = {str(x.get('id')): x for x in items}
+
+        def _inactive(svc_id: str) -> bool:
+            svc = by_id.get(svc_id)
+            if not svc:
+                return False
+            return str(svc.get('status')) not in {'active', 'activating'}
+
+        def _ordered_targets(service_ids: list[str], dependencies: list[str] | None = None) -> list[dict[str, Any]]:
+            ordered_ids: list[str] = []
+            for sid in list(dependencies or []) + list(service_ids):
+                if sid not in ordered_ids:
+                    ordered_ids.append(sid)
+            return [by_id[sid] for sid in ordered_ids if _inactive(sid)]
 
         if action == 'start-zero-dte':
-            zero_set = {
+            zero_ids = [
                 'options_predicator',
                 'spx_chain_ingester',
                 'spx_chain_phase2',
                 'spx_debit_spreads',
                 'spx_debit_ml',
-            }
-            targets = [x for x in items if str(x.get('id')) in zero_set and str(x.get('status')) not in {'active', 'activating'}]
+            ]
+            deps = ['optionspredicator-stack']
+            targets = _ordered_targets(zero_ids, deps)
             svc_action = 'start'
         elif action in {'stop-all-processing', 'stop-processing-execution'}:
             keep_set = {
@@ -4378,19 +4393,18 @@ def create_app() -> FastAPI:
             ]
             svc_action = 'stop'
         elif action == 'start-term-services':
-            targets = [
-                x for x in items
-                if ('_term_' in str(x.get('id')))
-                and str(x.get('status')) not in {'active', 'activating'}
-            ]
+            term_ids = [str(x.get('id')) for x in items if '_term_' in str(x.get('id'))]
+            deps = ['optionspredicator-stack']
+            targets = _ordered_targets(term_ids, deps)
             svc_action = 'start'
         elif action == 'start-execution':
-            exec_set = {
+            exec_ids = [
                 'options_ai_execution',
                 'options_ai_execution_monitor',
                 'options_ai_risk_guard',
-            }
-            targets = [x for x in items if str(x.get('id')) in exec_set and str(x.get('status')) not in {'active', 'activating'}]
+            ]
+            deps = ['optionspredicator-stack', 'options_ai_dashboard_api']
+            targets = _ordered_targets(exec_ids, deps)
             svc_action = 'start'
         else:
             raise HTTPException(status_code=404, detail='unknown global action')
