@@ -4590,7 +4590,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
         const mode = document.getElementById('opsMode')?.value || 'operator';
         const overallColor = summary.overall_health || 'yellow';
-        setHealthBadge(document.getElementById('opsOverallHealth'), overallColor, overallColor);
+        const overallBadgeColor = (overallColor === 'yellow') ? 'green' : overallColor;
+        setHealthBadge(document.getElementById('opsOverallHealth'), overallBadgeColor, overallBadgeColor);
         const fresh = summary.freshness || {};
         const fm = document.getElementById('opsFreshnessMeta');
         if (fm) {
