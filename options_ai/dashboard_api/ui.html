@@ -4495,7 +4495,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (!c) return;
       const rows = Array.isArray(storage?.series) ? storage.series : [];
       const labels = rows.map(r => String(r.sample_minute_utc || '').replace('T',' ').slice(5,16));
-      const gb = (x) => Number(x || 0) / (1024*1024*1024);
+      const gb = (x) => (x === null || x === undefined || Number.isNaN(Number(x))) ? null : (Number(x) / (1024*1024*1024));
       const data = {
         labels,
         datasets: [
@@ -4514,7 +4514,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const tsName = storage?.timescale_db ? ` (${storage.timescale_db})` : '';
       const set = (id, txt, title='') => { const el=document.getElementById(id); if (!el) return; el.textContent = txt; if (title) el.title = title; };
       set('opsStoragePg', `PostgreSQL${pgName}: ${fmtBytes(cur.postgres_bytes)}`, storage?.postgres_dsn_configured ? 'Measured from POSTGRES_DATABASE_URL (or postgres DATABASE_URL fallback)' : 'POSTGRES_DATABASE_URL not configured');
-      set('opsStorageTs', `Timescale${tsName}: ${fmtBytes(cur.timescale_bytes)}`, storage?.timescale_dsn_configured ? 'Measured from TIMESCALE_DATABASE_URL (or SPX_CHAIN_DATABASE_URL fallback)' : 'TIMESCALE_DATABASE_URL/SPX_CHAIN_DATABASE_URL not configured');
+      set('opsStorageTs', `Timescale${tsName}: ${(cur.timescale_bytes == null) ? 'unavailable' : fmtBytes(cur.timescale_bytes)}`, storage?.timescale_dsn_configured ? 'Measured from TIMESCALE_DATABASE_URL (or SPX_CHAIN_DATABASE_URL fallback)' : 'TIMESCALE_DATABASE_URL/SPX_CHAIN_DATABASE_URL not configured');
       set('opsStorageDisk', `Disk used: ${fmtBytes(cur.disk_used_bytes)}`);
       set('opsStorageFree', `Free: ${fmtBytes(cur.disk_free_bytes)}`);
     }
