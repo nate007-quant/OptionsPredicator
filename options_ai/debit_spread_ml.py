@@ -276,7 +276,7 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
             ORDER BY l.snapshot_ts DESC
             LIMIT %s
             """,
-            (int(horizon_minutes), str(model_version), int(limit)),
+            (int(horizon_minutes), int(limit)),
         )
         rows = []
         for r in cur.fetchall():
