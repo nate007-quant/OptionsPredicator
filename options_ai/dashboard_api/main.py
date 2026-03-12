@@ -4275,6 +4275,27 @@ def create_app() -> FastAPI:
             return out
         return out
 
+
+    def _app_version() -> str:
+        v = os.getenv('OPTIONS_AI_VERSION', '').strip()
+        if v:
+            return v
+        try:
+            repo = Path(__file__).resolve().parents[2]
+            r = subprocess.run(
+                ['git', '-C', str(repo), 'rev-parse', '--short', 'HEAD'],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            g = (r.stdout or '').strip()
+            if r.returncode == 0 and g:
+                return g
+        except Exception:
+            pass
+        return 'unknown'
+
     def _service_color(active_state: str, sub_state: str | None, heartbeat_age_sec: float | None, restarts_24h: int, oom_events_24h: int) -> str:
         if oom_events_24h > 0:
             return 'red'
@@ -4318,7 +4339,7 @@ def create_app() -> FastAPI:
                 'status_color': color,
                 'heartbeat_age_sec': hb_age,
                 'uptime_sec': uptime_sec,
-                'version': os.getenv('OPTIONS_AI_VERSION', 'unknown'),
+                'version': _app_version(),
                 'instance_count': 1,
                 'cpu_util_pct': usage.get('cpu_pct'),
                 'memory_util_pct': usage.get('mem_pct'),
