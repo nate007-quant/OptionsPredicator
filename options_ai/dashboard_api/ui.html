@@ -1124,9 +1124,12 @@ Choose which spread types are allowed: CALL and/or PUT.">i</span>
 
                   <div class="row" style="margin-top:10px;" id="btMlFilters">
                     <label>Min p(bigwin) <input id="btMinP" type="number" step="0.01" min="0" max="1" value="0.00" style="width:110px;" /></label>
-                    <label>Min pred(change) <span class="tip" data-tip="Anchor-based only.
+                    <label>Min pred(change) <span class="tip" data-tip="Anchor-based/flow-regime.
 
-Filter candidates by ML predicted change (if ML score exists for the selected horizon).">i</span> <input id="btMinPred" type="number" step="0.01" value="0.00" style="width:110px;" /></label>
+Filter candidates by ML predicted debit change points.">i</span> <input id="btMinPred" type="number" step="0.01" value="0.00" style="width:110px;" /></label>
+                    <label>Min pred(return) <span class="tip" data-tip="Anchor-based/flow-regime.
+
+Filter candidates by ML predicted return ratio (e.g. 0.10 = +10%).">i</span> <input id="btMinPredRet" type="number" step="0.01" value="0.00" style="width:110px;" /></label>
                   </div>
 
                   <div class="row" style="margin-top:10px;" id="btFlowGateControls">
@@ -1922,7 +1925,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const ml = document.getElementById('btMlFilters');
       if (am) am.style.display = flowMode ? 'none' : '';
       if (ap) ap.style.display = flowMode ? 'none' : '';
-      if (ml) ml.style.display = (show || flowMode) ? 'none' : '';
+      if (ml) ml.style.display = show ? 'none' : '';
       // expiration/tenor controls
       const em = document.getElementById('btExpMode')?.value || '0dte';
       const showTerm = (em === 'target_dte');
@@ -2034,8 +2037,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           anchor_mode: flowMode ? 'ALL' : (document.getElementById('btAnchorMode')?.value || 'ATM'),
           anchor_policy: flowMode ? 'any' : (document.getElementById('btAnchorPolicy')?.value || 'any'),
           allowed_spreads: btReadAllowedSpreads(),
-          min_p_bigwin: flowMode ? 0.0 : parseFloat(document.getElementById('btMinP')?.value || '0'),
-          min_pred_change: flowMode ? 0.0 : parseFloat(document.getElementById('btMinPred')?.value || '0'),
+          min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
+          min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
+          min_pred_return: parseFloat(document.getElementById('btMinPredRet')?.value || '0'),
           flow_gate_enabled: flowMode ? true : !!document.getElementById('btFlowGateEnabled')?.checked,
           flow_live_ok_filter_enabled: !!document.getElementById('btFlowLiveOk')?.checked,
           flow_gate_min_bucket_z: parseFloat(document.getElementById('btFlowMinBucketZ')?.value || '1.5'),
@@ -2109,6 +2113,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btAnchorPolicy', p.anchor_policy);
       setv('btMinP', p.min_p_bigwin);
       setv('btMinPred', p.min_pred_change);
+      setv('btMinPredRet', p.min_pred_return);
       btSetAllowedSpreads(p.allowed_spreads);
       setc('btFlowGateEnabled', p.flow_gate_enabled);
       setc('btFlowLiveOk', p.flow_live_ok_filter_enabled);
@@ -5905,6 +5910,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     });
 
     document.getElementById('btStrategyMode')?.addEventListener('change', () => {
+      const modeNow = document.getElementById('btStrategyMode')?.value || 'anchor_based';
+      if (modeNow === 'flow_regime') {
+        // Flow-regime starter defaults (can be overridden by user/preset)
+        const setv = (id, v) => { const el = document.getElementById(id); if (el) el.value = String(v); };
+        setv('btEntryStart', '10:30');
+        setv('btEntryEnd', '13:00');
+        setv('btFlowMinBucketZ', 1.0);
+        setv('btFlowMinBreadth', 0.50);
+        setv('btFlowMinConf', 0.40);
+        const live = document.getElementById('btFlowLiveOk'); if (live) live.checked = false;
+      }
       updateBtMode();
       // Presets are keyed by strategy_mode; reload when strategy changes.
       safe('bt_presets', () => btReloadPresets());

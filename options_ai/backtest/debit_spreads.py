@@ -69,6 +69,7 @@ class DebitBacktestConfig:
     anchor_policy: AnchorPolicy = "any"
     min_p_bigwin: float = 0.0
     min_pred_change: float = 0.0
+    min_pred_return: float = 0.0
     allowed_spreads: tuple[str, ...] = ("CALL", "PUT")
 
     # Optional flow gate (disabled by default)
@@ -551,6 +552,7 @@ def _fetch_candidates_for_window(
     max_debit_points: float,
     min_p_bigwin: float,
     min_pred_change: float,
+    min_pred_return: float,
     allowed_anchors: list[str],
     allowed_spreads: tuple[str, ...],
     call_anchors: list[str] | None,
@@ -579,6 +581,7 @@ def _fetch_candidates_for_window(
               c.short_symbol,
               c.debit_points,
               s.pred_change,
+              s.pred_return,
               s.p_bigwin,
               f.flow_bias_summary,
               f.flow_bucket_robust_z,
@@ -603,6 +606,8 @@ def _fetch_candidates_for_window(
               AND (%s <= 0 OR (s.p_bigwin IS NOT NULL AND s.p_bigwin >= %s))
               AND (%s <= 0 OR (s.pred_change IS NOT NULL AND s.pred_change >= %s))
               AND (%s <= 0 OR (s.pred_change IS NOT NULL AND s.pred_change > 0))
+              AND (%s <= 0 OR (s.pred_return IS NOT NULL AND s.pred_return >= %s))
+              AND (%s <= 0 OR (s.pred_return IS NOT NULL AND s.pred_return > 0))
               AND (
                 (%s::text[] IS NULL AND %s::text[] IS NULL)
                 OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
@@ -627,6 +632,9 @@ def _fetch_candidates_for_window(
                 float(min_pred_change),
                 float(min_pred_change),
                 float(min_pred_change),
+                float(min_pred_return),
+                float(min_pred_return),
+                float(min_pred_return),
                 call_anchors,
                 put_anchors,
                 call_anchors,
@@ -650,12 +658,13 @@ def _fetch_candidates_for_window(
                     "short_symbol": r[8],
                     "debit_points": float(r[9]) if r[9] is not None else None,
                     "pred_change": float(r[10]) if r[10] is not None else None,
-                    "p_bigwin": float(r[11]) if r[11] is not None else None,
-                    "flow_bias_summary": r[12],
-                    "flow_bucket_robust_z": float(r[13]) if r[13] is not None else None,
-                    "flow_breadth": float(r[14]) if r[14] is not None else None,
-                    "flow_confidence": float(r[15]) if r[15] is not None else None,
-                    "flow_live_ok_default": bool(r[16]) if r[16] is not None else None,
+                    "pred_return": float(r[11]) if r[11] is not None else None,
+                    "p_bigwin": float(r[12]) if r[12] is not None else None,
+                    "flow_bias_summary": r[13],
+                    "flow_bucket_robust_z": float(r[14]) if r[14] is not None else None,
+                    "flow_breadth": float(r[15]) if r[15] is not None else None,
+                    "flow_confidence": float(r[16]) if r[16] is not None else None,
+                    "flow_live_ok_default": bool(r[17]) if r[17] is not None else None,
                 }
             )
 
@@ -1006,8 +1015,9 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     snapshots=snaps,
                     horizon_minutes=cfg.horizon_minutes,
                     max_debit_points=cfg.max_debit_points,
-                    min_p_bigwin=(0.0 if flow_mode else cfg.min_p_bigwin),
-                    min_pred_change=(0.0 if flow_mode else cfg.min_pred_change),
+                    min_p_bigwin=cfg.min_p_bigwin,
+                    min_pred_change=cfg.min_pred_change,
+                    min_pred_return=cfg.min_pred_return,
                     allowed_anchors=(['ATM', 'CALL_WALL', 'PUT_WALL', 'MAGNET'] if flow_mode else allowed_anchors),
                     allowed_spreads=cfg.allowed_spreads,
                     call_anchors=(None if flow_mode else call_anchors),
