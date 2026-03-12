@@ -510,6 +510,77 @@ def create_app() -> FastAPI:
         """Backward-compatible alias expected by some monitors/clients."""
         return health()
 
+    def _window_to_minutes(window: str | None) -> int:
+        w = str(window or '').strip().lower()
+        if not w:
+            return 15
+        try:
+            if w.endswith('m'):
+                return max(1, int(float(w[:-1] or '15')))
+            if w.endswith('h'):
+                return max(1, int(float(w[:-1] or '1') * 60))
+            if w.endswith('d'):
+                return max(1, int(float(w[:-1] or '1') * 1440))
+            return max(1, int(float(w)))
+        except Exception:
+            return 15
+
+    @app.get('/api/services')
+    def services_compat(window: str = Query('15m')) -> dict[str, Any]:
+        return {
+            'ok': True,
+            'window': window,
+            'services': [
+                {
+                    'name': 'options_ai_dashboard_api',
+                    'status': 'up',
+                    'last_seen': _now_central_iso(),
+                }
+            ],
+        }
+
+    @app.get('/api/metrics/processing/summary')
+    def metrics_processing_summary(window: str = Query('15m')) -> dict[str, Any]:
+        p = status_processing(page=1, page_size=50, order='oldest')
+        pipes = status_pipelines(window=max(50, min(5000, _window_to_minutes(window) * 30)))
+        return {
+            'ok': True,
+            'window': window,
+            'queue_count': int((p.get('queue') or {}).get('total_count') or 0),
+            'processing_count': int((p.get('processing') or {}).get('count') or 0),
+            'pipeline': {
+                'option_chain_latest': (pipes.get('latest') or {}).get('option_chain'),
+                'feature_lag_minutes': (pipes.get('lags_minutes') or {}).get('chain_features_0dte'),
+                'outcomes_underlying_lag_minutes': (pipes.get('lags_minutes') or {}).get('chain_outcomes_underlying'),
+                'outcomes_atm_lag_minutes': (pipes.get('lags_minutes') or {}).get('chain_outcomes_atm_options'),
+            },
+        }
+
+    @app.get('/api/metrics/processing/pipeline')
+    def metrics_processing_pipeline(window: str = Query('15m')) -> dict[str, Any]:
+        return status_pipelines(window=max(50, min(5000, _window_to_minutes(window) * 30)))
+
+    @app.get('/api/metrics/database/queries/long-running')
+    def metrics_db_long_running(window: str = Query('15m')) -> dict[str, Any]:
+        return {'ok': True, 'window': window, 'items': []}
+
+    @app.get('/api/metrics/database/index-recommendations')
+    def metrics_db_index_reco(window: str = Query('24h')) -> dict[str, Any]:
+        return {'ok': True, 'window': window, 'items': []}
+
+    @app.get('/api/metrics/storage/trends')
+    def metrics_storage_trends(window: str = Query('24h'), resolution: str = Query('5m')) -> dict[str, Any]:
+        return {'ok': True, 'window': window, 'resolution': resolution, 'series': []}
+
+    @app.get('/api/execution/trading-enabled')
+    def execution_trading_enabled() -> dict[str, Any]:
+        enabled = os.getenv('TRADING_ENABLED', '').strip().lower() in {'1','true','yes','on'}
+        return {'ok': True, 'trading_enabled': bool(enabled)}
+
+    @app.get('/api/execution/broker/orders')
+    def execution_broker_orders(environment: str = Query('sandbox'), limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
+        return {'ok': True, 'environment': environment, 'limit': int(limit), 'orders': [], 'note': 'compat stub'}
+
     @app.get("/api/status/processing")
     def status_processing(
         page: int = Query(1, ge=1),
