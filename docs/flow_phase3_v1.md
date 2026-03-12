@@ -125,3 +125,21 @@ python -m options_ai.debit_spread_ml_main
 ```bash
 pytest -q tests/test_flow_engine.py
 ```
+
+
+## Validation + monitoring scripts
+
+- Validate schema/sanity/no-leak checks:
+```bash
+python scripts/validate_flow_phase3_v1.py --dsn "$SPX_CHAIN_DATABASE_URL"
+```
+
+- One-shot progress snapshot:
+```bash
+python scripts/monitor_flow_phase3_progress.py --dsn "$SPX_CHAIN_DATABASE_URL" --once
+```
+
+- Continuous progress monitor:
+```bash
+python scripts/monitor_flow_phase3_progress.py --dsn "$SPX_CHAIN_DATABASE_URL" --interval 10
+```

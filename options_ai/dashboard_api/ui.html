@@ -779,7 +779,14 @@
               <div style="margin-top:10px;" class="row">
                 <div class="badge">Live option_chain: <strong id="liveChainTs2">—</strong></div>
                 <div class="badge">Feature lag: <strong id="featureLag2">—</strong></div>
+                <div class="badge">OUT_U lag: <strong id="outULag2">—</strong></div>
+                <div class="badge">OUT_ATM lag: <strong id="outAtmLag2">—</strong></div>
                 <div class="badge">Pipeline state: <strong id="pipelineFresh2">—</strong></div>
+              </div>
+              <div style="margin-top:10px;" class="row">
+                <div class="badge">OUT align: <strong id="outAlign2">—</strong></div>
+                <div class="badge">OUT_U missing(window): <strong id="outUMiss2">—</strong></div>
+                <div class="badge">OUT_ATM missing(window): <strong id="outAtmMiss2">—</strong></div>
               </div>
 
               <div style="margin-top:12px;" class="badge">Currently processing: <strong id="processingBox2">—</strong></div>
@@ -3423,11 +3430,31 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const lagN = Number(lagRaw);
         stateTxt = (lagN <= 20) ? 'live' : ((lagN <= 120) ? 'warming' : 'stale');
       }
+      const outULagRaw = pipes?.lags_minutes?.chain_outcomes_underlying;
+      const outAtmLagRaw = pipes?.lags_minutes?.chain_outcomes_atm_options;
+      const outULagTxt = (outULagRaw === null || outULagRaw === undefined || !Number.isFinite(Number(outULagRaw))) ? '—' : `${Number(outULagRaw).toFixed(1)}m`;
+      const outAtmLagTxt = (outAtmLagRaw === null || outAtmLagRaw === undefined || !Number.isFinite(Number(outAtmLagRaw))) ? '—' : `${Number(outAtmLagRaw).toFixed(1)}m`;
+      const outAlign = pipes?.outcome_align || '—';
+      const outUM = pipes?.counts_recent?.outcomes_underlying_missing_any;
+      const outAM = pipes?.counts_recent?.outcomes_atm_missing_any;
+      const outUMTxt = outUM ? `${outUM.missing}/${outUM.n}` : '—';
+      const outAMTxt = outAM ? `${outAM.missing}/${outAM.n}` : '—';
+
       const l2 = document.getElementById('liveChainTs2');
       const f2 = document.getElementById('featureLag2');
+      const ou2 = document.getElementById('outULag2');
+      const oa2 = document.getElementById('outAtmLag2');
+      const al2 = document.getElementById('outAlign2');
+      const um2 = document.getElementById('outUMiss2');
+      const am2 = document.getElementById('outAtmMiss2');
       const ps2 = document.getElementById('pipelineFresh2');
       if (l2) l2.textContent = liveTs;
       if (f2) f2.textContent = lagTxt;
+      if (ou2) ou2.textContent = outULagTxt;
+      if (oa2) oa2.textContent = outAtmLagTxt;
+      if (al2) al2.textContent = outAlign;
+      if (um2) um2.textContent = outUMTxt;
+      if (am2) am2.textContent = outAMTxt;
       if (ps2) ps2.textContent = stateTxt;
 
       return data;

@@ -612,6 +612,10 @@ def create_app() -> FastAPI:
         """
         dsn = _pg_dsn()
         tz_local = os.getenv('TZ_LOCAL', 'America/Chicago').strip() or 'America/Chicago'
+        outcome_align = (os.getenv('OUTCOME_ALIGN', 'FirstOfDay').strip() or 'FirstOfDay')
+        out_h_s = (os.getenv('OUTCOME_HORIZONS_TD', '5,10,21').strip() or '5,10,21')
+        out_h = [int(x) for x in out_h_s.split(',') if x.strip().isdigit()]
+
         out: dict[str, Any] = {
             'ok': True,
             'window': int(window),
@@ -623,6 +627,8 @@ def create_app() -> FastAPI:
             'labels_by_horizon': {},
             'scores_by_horizon': {},
             'state_files': {},
+            'outcome_align': outcome_align,
+            'outcome_horizons_td': out_h,
         }
 
         def _try_load_json_file(path: Path) -> Any:
@@ -683,6 +689,8 @@ def create_app() -> FastAPI:
                     latest_cand_term = max_ts_le('spx.debit_spread_candidates_term', latest_chain)
                     latest_dlbl_term = max_ts_le('spx.debit_spread_labels_term', latest_chain)
                     latest_score_term = max_ts_le('spx.debit_spread_scores_term', latest_chain)
+                    latest_out_u = max_ts_le('spx.chain_outcomes_underlying', latest_chain)
+                    latest_out_atm = max_ts_le('spx.chain_outcomes_atm_options', latest_chain)
 
                     out['latest'] = {
                         'option_chain': latest_chain,
@@ -696,6 +704,8 @@ def create_app() -> FastAPI:
                         'debit_candidates_term': latest_cand_term,
                         'debit_labels_term': latest_dlbl_term,
                         'debit_scores_term': latest_score_term,
+                        'chain_outcomes_underlying': latest_out_u,
+                        'chain_outcomes_atm_options': latest_out_atm,
                     }
 
                     # horizon breakdowns
@@ -751,6 +761,56 @@ def create_app() -> FastAPI:
                     )
                     r = cur.fetchone()
                     out['counts_recent']['labels_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
+
+                    # Missing underlying outcomes for newest N feature snapshots (selected align mode)
+                    cur.execute(
+                        """
+                        WITH f AS (
+                          SELECT snapshot_ts
+                          FROM spx.chain_features_0dte
+                          ORDER BY snapshot_ts DESC
+                          LIMIT %s
+                        )
+                        SELECT
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN o.snapshot_ts IS NULL THEN 1 ELSE 0 END) AS missing
+                        FROM f
+                        LEFT JOIN (
+                          SELECT DISTINCT snapshot_ts
+                          FROM spx.chain_outcomes_underlying
+                          WHERE align_mode = %s
+                        ) o
+                          ON o.snapshot_ts = f.snapshot_ts
+                        """,
+                        (int(window), outcome_align),
+                    )
+                    r = cur.fetchone()
+                    out['counts_recent']['outcomes_underlying_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0), 'align_mode': outcome_align}
+
+                    # Missing ATM options outcomes for newest N feature snapshots (selected align mode)
+                    cur.execute(
+                        """
+                        WITH f AS (
+                          SELECT snapshot_ts
+                          FROM spx.chain_features_0dte
+                          ORDER BY snapshot_ts DESC
+                          LIMIT %s
+                        )
+                        SELECT
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN o.snapshot_ts IS NULL THEN 1 ELSE 0 END) AS missing
+                        FROM f
+                        LEFT JOIN (
+                          SELECT DISTINCT snapshot_ts
+                          FROM spx.chain_outcomes_atm_options
+                          WHERE align_mode = %s
+                        ) o
+                          ON o.snapshot_ts = f.snapshot_ts
+                        """,
+                        (int(window), outcome_align),
+                    )
+                    r = cur.fetchone()
+                    out['counts_recent']['outcomes_atm_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0), 'align_mode': outcome_align}
 
                     # Missing any debit candidates for newest N feature snapshots
                     cur.execute(
@@ -818,6 +878,8 @@ def create_app() -> FastAPI:
                         'debit_candidates_term': lag_minutes(latest_cand_term),
                         'debit_labels_term': lag_minutes(latest_dlbl_term),
                         'debit_scores_term': lag_minutes(latest_score_term),
+                        'chain_outcomes_underlying': lag_minutes(latest_out_u),
+                        'chain_outcomes_atm_options': lag_minutes(latest_out_atm),
                     }
 
 
@@ -884,6 +946,10 @@ def create_app() -> FastAPI:
                     if fk == 'phase2_0dte_backfill.json':
                         add_cursor('phase2_features_0dte', fk, 'features_cursor_ts', j.get('features_cursor_ts'))
                         add_cursor('phase2_labels_0dte', fk, 'labels_cursor_ts', j.get('labels_cursor_ts'))
+                    if fk == 'task_phase2.json':
+                        stage = str(j.get('stage') or '')
+                        if stage in {'phase2_features', 'phase2_labels', 'phase3_outcomes'}:
+                            add_cursor(stage, fk, 'snapshot_ts', j.get('snapshot_ts'))
                     # Debit candidates 0DTE
                     if fk == 'debit_0dte_backfill.json':
                         add_cursor('debit_candidates_0dte', fk, 'candidates_cursor_ts', j.get('candidates_cursor_ts'))
