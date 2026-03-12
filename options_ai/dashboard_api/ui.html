@@ -1084,10 +1084,19 @@ credit: sell the vertical (receive credit). Uses Option A exits: TP capture % an
                   </label>
                   <label>Max trades/day <span class="tip" data-tip="Maximum entries per day in the backtest.">i</span> <input id="btMaxPerDay" type="number" min="1" max="50" value="1" style="width:110px;" /></label>
                   <label><input id="btOneAtATime" type="checkbox" checked /> One trade at a time <span class="tip" data-tip="If checked: the strategy will not enter a new trade until the previous trade has exited.">i</span></label>
-                  <label><input id="btContrarian" type="checkbox" /> Contrarian (flip direction) <span class="tip" data-tip="Use opposite direction logic.
+                  <label><input id="btContrarian" type="checkbox" /> Contrarian <span class="tip" data-tip="Enable contrarian behavior.
 
-Anchor/no-flow: flips selected CALL<->PUT at each timestamp.
-Flow gate / Flow Regime: inverts bullish/bearish flow gating rules.">i</span></label>
+direction_only: flip CALL<->PUT direction selection.
+ml_invert: invert ML ranking/filter semantics.
+full: both direction flip and ML inversion.">i</span></label>
+                  <label id="btContrarianModeWrap" style="display:none;">Contrarian mode
+                    <select id="btContrarianMode">
+                      <option value="direction_only" selected>direction_only</option>
+                      <option value="ml_invert">ml_invert</option>
+                      <option value="full">full</option>
+                    </select>
+                  </label>
+                  <label id="btContrarianFallbackWrap" style="display:none;"><input id="btContrarianFallback" type="checkbox" checked /> Fallback same direction if opposite missing</label>
                 </div>
 
                 <div id="btAnchorControls" style="margin-top:10px;">
@@ -1936,10 +1945,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const ap = document.getElementById('btAnchorPolicy')?.closest('label');
       const ml = document.getElementById('btMlFilters');
       const fp = document.getElementById('btFlowProfile')?.closest('label');
+      const cmw = document.getElementById('btContrarianModeWrap');
+      const cfw = document.getElementById('btContrarianFallbackWrap');
+      const cOn = !!document.getElementById('btContrarian')?.checked;
       if (am) am.style.display = flowMode ? 'none' : '';
       if (ap) ap.style.display = flowMode ? 'none' : '';
       if (ml) ml.style.display = show ? 'none' : '';
       if (fp) fp.style.display = flowMode ? '' : 'none';
+      if (cmw) cmw.style.display = cOn ? '' : 'none';
+      if (cfw) cfw.style.display = (cOn && (document.getElementById('btContrarianMode')?.value || 'direction_only') !== 'ml_invert') ? '' : 'none';
       // expiration/tenor controls
       const em = document.getElementById('btExpMode')?.value || '0dte';
       const showTerm = (em === 'target_dte');
@@ -2001,6 +2015,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         setv('btMinPredRet', '0.02');
         setc('btFlowLiveOk', true);
         setc('btContrarian', false);
+        setv('btContrarianMode', 'direction_only');
+        setc('btContrarianFallback', true);
         return;
       }
       if (p === 'aggressive') {
@@ -2014,6 +2030,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         setv('btMinPredRet', '0.00');
         setc('btFlowLiveOk', false);
         setc('btContrarian', false);
+        setv('btContrarianMode', 'direction_only');
+        setc('btContrarianFallback', true);
         return;
       }
       // balanced default
@@ -2027,6 +2045,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btMinPredRet', '0.00');
       setc('btFlowLiveOk', false);
       setc('btContrarian', false);
+      setv('btContrarianMode', 'direction_only');
+      setc('btContrarianFallback', true);
     }
 
     function btReadFormPayload() {
@@ -2098,6 +2118,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
           min_pred_return: parseFloat(document.getElementById('btMinPredRet')?.value || '0'),
           contrarian_enabled: !!document.getElementById('btContrarian')?.checked,
+          contrarian_mode: document.getElementById('btContrarianMode')?.value || 'direction_only',
+          contrarian_fallback_same_direction: !!document.getElementById('btContrarianFallback')?.checked,
           flow_gate_enabled: flowMode ? true : !!document.getElementById('btFlowGateEnabled')?.checked,
           flow_live_ok_filter_enabled: !!document.getElementById('btFlowLiveOk')?.checked,
           flow_gate_min_bucket_z: parseFloat(document.getElementById('btFlowMinBucketZ')?.value || '1.5'),
@@ -2176,6 +2198,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btMinPred', p.min_pred_change);
       setv('btMinPredRet', p.min_pred_return);
       setc('btContrarian', p.contrarian_enabled);
+      setv('btContrarianMode', p.contrarian_mode);
+      setc('btContrarianFallback', (p.contrarian_fallback_same_direction !== false));
       btSetAllowedSpreads(p.allowed_spreads);
       setc('btFlowGateEnabled', p.flow_gate_enabled);
       setc('btFlowLiveOk', p.flow_live_ok_filter_enabled);
@@ -6005,6 +6029,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         btApplyFlowProfile(document.getElementById('btFlowProfile')?.value || 'balanced');
       }
     });
+    document.getElementById('btContrarian')?.addEventListener('change', () => { updateBtMode(); });
+    document.getElementById('btContrarianMode')?.addEventListener('change', () => { updateBtMode(); });
     document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
     document.getElementById('clearReprocess')?.addEventListener('click', () => safe('clearReprocess', () => clearReprocess()));
     document.getElementById('runReset')?.addEventListener('click', () => safe('runReset', () => runFullReset()));

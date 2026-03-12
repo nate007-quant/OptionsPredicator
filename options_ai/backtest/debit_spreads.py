@@ -71,6 +71,8 @@ class DebitBacktestConfig:
     min_pred_change: float = 0.0
     min_pred_return: float = 0.0
     contrarian_enabled: bool = False
+    contrarian_mode: str = "direction_only"  # direction_only|ml_invert|full
+    contrarian_fallback_same_direction: bool = True
     allowed_spreads: tuple[str, ...] = ("CALL", "PUT")
 
     # Optional flow gate (disabled by default)
@@ -564,6 +566,7 @@ def _fetch_candidates_for_window(
     flow_gate_min_breadth: float,
     flow_gate_min_confidence: float,
     contrarian_enabled: bool,
+    contrarian_ml_invert: bool,
 ) -> dict[datetime, list[dict[str, Any]]]:
     if not snapshots:
         return {}
@@ -670,54 +673,93 @@ def _fetch_candidates_for_window(
                 }
             )
 
-        if flow_gate_enabled or flow_live_ok_filter_enabled:
-            for ts in list(by_ts.keys()):
-                filt: list[dict[str, Any]] = []
-                for c in by_ts[ts]:
-                    if flow_live_ok_filter_enabled and c.get("flow_live_ok_default") is False:
+        for ts in list(by_ts.keys()):
+            filt: list[dict[str, Any]] = []
+            for c in by_ts[ts]:
+                if flow_live_ok_filter_enabled and c.get("flow_live_ok_default") is False:
+                    continue
+
+                if flow_gate_enabled:
+                    st = str(c.get("spread_type") or "").upper()
+                    bias = str(c.get("flow_bias_summary") or "")
+                    z = float(c.get("flow_bucket_robust_z") or 0.0)
+                    breadth = float(c.get("flow_breadth") or 0.0)
+                    conf = float(c.get("flow_confidence") or 0.0)
+
+                    if st == "CALL":
+                        gate_ok = (
+                            (
+                                bias in ({"Moderate Bearish", "Strong Bearish"} if contrarian_enabled else {"Moderate Bullish", "Strong Bullish"})
+                            )
+                            and (
+                                z <= -float(flow_gate_min_bucket_z) if contrarian_enabled else z >= float(flow_gate_min_bucket_z)
+                            )
+                            and breadth >= float(flow_gate_min_breadth)
+                            and conf >= float(flow_gate_min_confidence)
+                        )
+                    else:
+                        gate_ok = (
+                            (
+                                bias in ({"Moderate Bullish", "Strong Bullish"} if contrarian_enabled else {"Moderate Bearish", "Strong Bearish"})
+                            )
+                            and (
+                                z >= float(flow_gate_min_bucket_z) if contrarian_enabled else z <= -float(flow_gate_min_bucket_z)
+                            )
+                            and breadth >= float(flow_gate_min_breadth)
+                            and conf >= float(flow_gate_min_confidence)
+                        )
+                    if not gate_ok:
                         continue
 
-                    if flow_gate_enabled:
-                        st = str(c.get("spread_type") or "").upper()
-                        bias = str(c.get("flow_bias_summary") or "")
-                        z = float(c.get("flow_bucket_robust_z") or 0.0)
-                        breadth = float(c.get("flow_breadth") or 0.0)
-                        conf = float(c.get("flow_confidence") or 0.0)
+                if contrarian_ml_invert:
+                    pb = c.get("p_bigwin")
+                    pc = c.get("pred_change")
+                    pr = c.get("pred_return")
+                    if float(min_p_bigwin) > 0 and (pb is None or float(pb) > float(min_p_bigwin)):
+                        continue
+                    if float(min_pred_change) > 0 and (pc is None or float(pc) > -abs(float(min_pred_change))):
+                        continue
+                    if float(min_pred_return) > 0 and (pr is None or float(pr) > -abs(float(min_pred_return))):
+                        continue
 
-                        if st == "CALL":
-                            gate_ok = (
-                                (
-                                    bias in ({"Moderate Bearish", "Strong Bearish"} if contrarian_enabled else {"Moderate Bullish", "Strong Bullish"})
-                                )
-                                and (
-                                    z <= -float(flow_gate_min_bucket_z) if contrarian_enabled else z >= float(flow_gate_min_bucket_z)
-                                )
-                                and breadth >= float(flow_gate_min_breadth)
-                                and conf >= float(flow_gate_min_confidence)
-                            )
-                        else:
-                            gate_ok = (
-                                (
-                                    bias in ({"Moderate Bullish", "Strong Bullish"} if contrarian_enabled else {"Moderate Bearish", "Strong Bearish"})
-                                )
-                                and (
-                                    z >= float(flow_gate_min_bucket_z) if contrarian_enabled else z <= -float(flow_gate_min_bucket_z)
-                                )
-                                and breadth >= float(flow_gate_min_breadth)
-                                and conf >= float(flow_gate_min_confidence)
-                            )
-                        if not gate_ok:
-                            continue
-
-                    filt.append(c)
-                by_ts[ts] = filt
+                filt.append(c)
+            by_ts[ts] = _rank_candidates(filt, contrarian_ml_invert=bool(contrarian_ml_invert))
         return by_ts
+
+
+def _rank_candidates(cands: list[dict[str, Any]], *, contrarian_ml_invert: bool) -> list[dict[str, Any]]:
+    if not cands:
+        return []
+    def k_norm(c: dict[str, Any]):
+        pb = c.get("p_bigwin")
+        pr = c.get("pred_return")
+        pc = c.get("pred_change")
+        d = float(c.get("debit_points") or 1e9)
+        return (
+            pb is None, -(float(pb) if pb is not None else -1e9),
+            pr is None, -(float(pr) if pr is not None else -1e9),
+            pc is None, -(float(pc) if pc is not None else -1e9),
+            d,
+        )
+    def k_inv(c: dict[str, Any]):
+        pb = c.get("p_bigwin")
+        pr = c.get("pred_return")
+        pc = c.get("pred_change")
+        d = float(c.get("debit_points") or 1e9)
+        return (
+            pb is None, (float(pb) if pb is not None else 1e9),
+            pr is None, (float(pr) if pr is not None else 1e9),
+            pc is None, (float(pc) if pc is not None else 1e9),
+            d,
+        )
+    key = k_inv if contrarian_ml_invert else k_norm
+    return sorted(cands, key=key)
 
 
 def _select_best_candidate(cands: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not cands:
         return None
-    return cands[0]  # pre-sorted by SQL
+    return cands[0]  # ranked upstream
 
 
 def _select_opposite_candidate(base: dict[str, Any], cands: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1033,14 +1075,15 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
         if cfg.strategy_mode in {"anchor_based", "flow_regime"}:
             if cfg.expiration_mode == "0dte":
                 flow_mode = (cfg.strategy_mode == "flow_regime")
+                contrarian_ml_invert = bool(cfg.contrarian_enabled and str(cfg.contrarian_mode).lower() in {"ml_invert", "full"})
                 by_ts = _fetch_candidates_for_window(
                     conn,
                     snapshots=snaps,
                     horizon_minutes=cfg.horizon_minutes,
                     max_debit_points=cfg.max_debit_points,
-                    min_p_bigwin=cfg.min_p_bigwin,
-                    min_pred_change=cfg.min_pred_change,
-                    min_pred_return=cfg.min_pred_return,
+                    min_p_bigwin=(0.0 if contrarian_ml_invert else cfg.min_p_bigwin),
+                    min_pred_change=(0.0 if contrarian_ml_invert else cfg.min_pred_change),
+                    min_pred_return=(0.0 if contrarian_ml_invert else cfg.min_pred_return),
                     allowed_anchors=(['ATM', 'CALL_WALL', 'PUT_WALL', 'MAGNET'] if flow_mode else allowed_anchors),
                     allowed_spreads=cfg.allowed_spreads,
                     call_anchors=(None if flow_mode else call_anchors),
@@ -1051,6 +1094,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     flow_gate_min_breadth=cfg.flow_gate_min_breadth,
                     flow_gate_min_confidence=cfg.flow_gate_min_confidence,
                     contrarian_enabled=cfg.contrarian_enabled,
+                    contrarian_ml_invert=contrarian_ml_invert,
                 )
             else:
                 by_ts = _fetch_candidates_term_anchor_based(
@@ -1086,11 +1130,13 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 cand = _select_best_candidate(cands_now)
                 if not cand:
                     continue
-                if cfg.contrarian_enabled and not (cfg.flow_gate_enabled or cfg.strategy_mode == "flow_regime"):
+                if cfg.contrarian_enabled and str(cfg.contrarian_mode).lower() in {"direction_only", "full"} and not (cfg.flow_gate_enabled or cfg.strategy_mode == "flow_regime"):
                     inv = _select_opposite_candidate(cand, cands_now)
                     if inv is None:
-                        continue
-                    cand = inv
+                        if not bool(cfg.contrarian_fallback_same_direction):
+                            continue
+                    else:
+                        cand = inv
                 entry_debit = float(cand["debit_points"]) if cand.get("debit_points") is not None else None
                 if entry_debit is None or entry_debit <= 0:
                     continue
@@ -1425,6 +1471,10 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             "anchor_policy": cfg.anchor_policy,
             "min_p_bigwin": float(cfg.min_p_bigwin),
             "min_pred_change": float(cfg.min_pred_change),
+            "min_pred_return": float(cfg.min_pred_return),
+            "contrarian_enabled": bool(cfg.contrarian_enabled),
+            "contrarian_mode": str(cfg.contrarian_mode),
+            "contrarian_fallback_same_direction": bool(cfg.contrarian_fallback_same_direction),
             "allowed_spreads": list(cfg.allowed_spreads),
             "flow_gate_enabled": bool(cfg.flow_gate_enabled),
             "flow_live_ok_filter_enabled": bool(cfg.flow_live_ok_filter_enabled),
