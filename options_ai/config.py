@@ -155,6 +155,31 @@ class Config:
     chart_local_enabled: bool = False
     chart_remote_enabled: bool = True
 
+    # Flow phase3 v1 knobs
+    flow_max_strike_dist_pct: float = 0.40
+    flow_use_moneyness_weight: bool = True
+    flow_use_gaussian: bool = True
+    flow_winsorize_bucket: bool = True
+    flow_confirm_fast_win: int = 10
+    flow_confirm_slow_win: int = 60
+    flow_history_per_strike: int = 600
+    flow_bucket_z_window: int = 60
+    flow_min_breadth: float = 0.60
+    flow_min_bucket_z: float = 1.5
+    flow_conf_min: float = 0.60
+    flow_atm_corridor_pct: float = 0.01
+
+    outcome_align: str = "FirstOfDay"
+    outcome_horizons_td: str = "5,10,21"
+    flat_pct_band: float = 0.0025
+
+    # Backtest strategy gate (flow-based; disabled by default)
+    backtest_flow_gate_enabled: bool = False
+    backtest_flow_live_ok_filter_enabled: bool = False
+    backtest_flow_gate_min_bucket_z: float = 1.5
+    backtest_flow_gate_min_breadth: float = 0.60
+    backtest_flow_gate_min_confidence: float = 0.60
+
     codex_model: str = "gpt-5.2-codex"
     prompt_version: str = "v2.3.0"
 
@@ -306,6 +331,26 @@ def load_config() -> Config:
         chart_enabled=_get_bool("CHART_ENABLED", False),
         chart_local_enabled=_get_bool("CHART_LOCAL_ENABLED", False),
         chart_remote_enabled=_get_bool("CHART_REMOTE_ENABLED", True),
+        flow_max_strike_dist_pct=float(os.getenv("FLOW_MAX_STRIKE_DIST_PCT", "0.40")),
+        flow_use_moneyness_weight=_get_bool("FLOW_USE_MONEYNESS_WEIGHT", True),
+        flow_use_gaussian=_get_bool("FLOW_USE_GAUSSIAN", True),
+        flow_winsorize_bucket=_get_bool("FLOW_WINSORIZE_BUCKET", True),
+        flow_confirm_fast_win=int(os.getenv("FLOW_CONFIRM_FAST_WIN", "10")),
+        flow_confirm_slow_win=int(os.getenv("FLOW_CONFIRM_SLOW_WIN", "60")),
+        flow_history_per_strike=int(os.getenv("FLOW_HISTORY_PER_STRIKE", "600")),
+        flow_bucket_z_window=int(os.getenv("FLOW_BUCKET_Z_WINDOW", "60")),
+        flow_min_breadth=float(os.getenv("FLOW_MIN_BREADTH", "0.60")),
+        flow_min_bucket_z=float(os.getenv("FLOW_MIN_BUCKET_Z", "1.5")),
+        flow_conf_min=float(os.getenv("FLOW_CONF_MIN", "0.60")),
+        flow_atm_corridor_pct=float(os.getenv("FLOW_ATM_CORRIDOR_PCT", "0.01")),
+        outcome_align=os.getenv("OUTCOME_ALIGN", "FirstOfDay").strip() or "FirstOfDay",
+        outcome_horizons_td=os.getenv("OUTCOME_HORIZONS_TD", "5,10,21").strip() or "5,10,21",
+        flat_pct_band=float(os.getenv("FLAT_PCT_BAND", "0.0025")),
+        backtest_flow_gate_enabled=_get_bool("BACKTEST_FLOW_GATE_ENABLED", False),
+        backtest_flow_live_ok_filter_enabled=_get_bool("BACKTEST_FLOW_LIVE_OK_FILTER_ENABLED", False),
+        backtest_flow_gate_min_bucket_z=float(os.getenv("BACKTEST_FLOW_GATE_MIN_BUCKET_Z", "1.5")),
+        backtest_flow_gate_min_breadth=float(os.getenv("BACKTEST_FLOW_GATE_MIN_BREADTH", "0.60")),
+        backtest_flow_gate_min_confidence=float(os.getenv("BACKTEST_FLOW_GATE_MIN_CONFIDENCE", "0.60")),
         codex_model=os.getenv("CODEX_MODEL", "gpt-5.2-codex").strip(),
         prompt_version=os.getenv("PROMPT_VERSION", "v2.3.0").strip(),
     )
