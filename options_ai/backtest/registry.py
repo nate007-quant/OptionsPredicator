@@ -182,6 +182,12 @@ class DebitSpreadsStrategy(StrategyDefinition):
             v = payload.get(key, default)
             return bool(v) if v is not None else bool(default)
 
+        def e(key: str, default: str, choices: list[str]) -> str:
+            v = s(key, default)
+            vv = str(v).strip().lower()
+            norm = {str(c).strip().lower(): c for c in choices}
+            return norm.get(vv, default)
+
         start_day = s("start_day", "")
         end_day = s("end_day", "")
         if strict and (not start_day or not end_day):
