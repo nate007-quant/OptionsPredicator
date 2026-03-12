@@ -71,6 +71,13 @@ class DebitBacktestConfig:
     min_pred_change: float = 0.0
     allowed_spreads: tuple[str, ...] = ("CALL", "PUT")
 
+    # Optional flow gate (disabled by default)
+    flow_gate_enabled: bool = False
+    flow_live_ok_filter_enabled: bool = False
+    flow_gate_min_bucket_z: float = 1.5
+    flow_gate_min_breadth: float = 0.60
+    flow_gate_min_confidence: float = 0.60
+
     # --- structural walls mode knobs ---
     enable_pw_trade: bool = True
     enable_cw_trade: bool = True
@@ -548,6 +555,11 @@ def _fetch_candidates_for_window(
     allowed_spreads: tuple[str, ...],
     call_anchors: list[str] | None,
     put_anchors: list[str] | None,
+    flow_gate_enabled: bool,
+    flow_live_ok_filter_enabled: bool,
+    flow_gate_min_bucket_z: float,
+    flow_gate_min_breadth: float,
+    flow_gate_min_confidence: float,
 ) -> dict[datetime, list[dict[str, Any]]]:
     if not snapshots:
         return {}
@@ -567,7 +579,12 @@ def _fetch_candidates_for_window(
               c.short_symbol,
               c.debit_points,
               s.pred_change,
-              s.p_bigwin
+              s.p_bigwin,
+              f.flow_bias_summary,
+              f.flow_bucket_robust_z,
+              f.flow_breadth,
+              f.flow_confidence,
+              f.flow_live_ok_default
             FROM spx.debit_spread_candidates_0dte c
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
@@ -634,8 +651,47 @@ def _fetch_candidates_for_window(
                     "debit_points": float(r[9]) if r[9] is not None else None,
                     "pred_change": float(r[10]) if r[10] is not None else None,
                     "p_bigwin": float(r[11]) if r[11] is not None else None,
+                    "flow_bias_summary": r[12],
+                    "flow_bucket_robust_z": float(r[13]) if r[13] is not None else None,
+                    "flow_breadth": float(r[14]) if r[14] is not None else None,
+                    "flow_confidence": float(r[15]) if r[15] is not None else None,
+                    "flow_live_ok_default": bool(r[16]) if r[16] is not None else None,
                 }
             )
+
+        if flow_gate_enabled or flow_live_ok_filter_enabled:
+            for ts in list(by_ts.keys()):
+                filt: list[dict[str, Any]] = []
+                for c in by_ts[ts]:
+                    if flow_live_ok_filter_enabled and c.get("flow_live_ok_default") is False:
+                        continue
+
+                    if flow_gate_enabled:
+                        st = str(c.get("spread_type") or "").upper()
+                        bias = str(c.get("flow_bias_summary") or "")
+                        z = float(c.get("flow_bucket_robust_z") or 0.0)
+                        breadth = float(c.get("flow_breadth") or 0.0)
+                        conf = float(c.get("flow_confidence") or 0.0)
+
+                        if st == "CALL":
+                            gate_ok = (
+                                bias in {"Moderate Bullish", "Strong Bullish"}
+                                and z >= float(flow_gate_min_bucket_z)
+                                and breadth >= float(flow_gate_min_breadth)
+                                and conf >= float(flow_gate_min_confidence)
+                            )
+                        else:
+                            gate_ok = (
+                                bias in {"Moderate Bearish", "Strong Bearish"}
+                                and z <= -float(flow_gate_min_bucket_z)
+                                and breadth >= float(flow_gate_min_breadth)
+                                and conf >= float(flow_gate_min_confidence)
+                            )
+                        if not gate_ok:
+                            continue
+
+                    filt.append(c)
+                by_ts[ts] = filt
         return by_ts
 
 
@@ -955,6 +1011,11 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     allowed_spreads=cfg.allowed_spreads,
                     call_anchors=call_anchors,
                     put_anchors=put_anchors,
+                    flow_gate_enabled=cfg.flow_gate_enabled,
+                    flow_live_ok_filter_enabled=cfg.flow_live_ok_filter_enabled,
+                    flow_gate_min_bucket_z=cfg.flow_gate_min_bucket_z,
+                    flow_gate_min_breadth=cfg.flow_gate_min_breadth,
+                    flow_gate_min_confidence=cfg.flow_gate_min_confidence,
                 )
             else:
                 by_ts = _fetch_candidates_term_anchor_based(
@@ -1324,6 +1385,11 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             "min_p_bigwin": float(cfg.min_p_bigwin),
             "min_pred_change": float(cfg.min_pred_change),
             "allowed_spreads": list(cfg.allowed_spreads),
+            "flow_gate_enabled": bool(cfg.flow_gate_enabled),
+            "flow_live_ok_filter_enabled": bool(cfg.flow_live_ok_filter_enabled),
+            "flow_gate_min_bucket_z": float(cfg.flow_gate_min_bucket_z),
+            "flow_gate_min_breadth": float(cfg.flow_gate_min_breadth),
+            "flow_gate_min_confidence": float(cfg.flow_gate_min_confidence),
             "enable_pw_trade": bool(cfg.enable_pw_trade),
             "enable_cw_trade": bool(cfg.enable_cw_trade),
             "long_leg_moneyness": cfg.long_leg_moneyness,
