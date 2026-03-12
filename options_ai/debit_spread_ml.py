@@ -276,7 +276,7 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
             ORDER BY l.snapshot_ts DESC
             LIMIT %s
             """,
-            (int(horizon_minutes), int(limit)),
+            (int(horizon_minutes), str(model_version), int(limit)),
         )
         rows = []
         for r in cur.fetchall():
@@ -595,8 +595,8 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
     return upserted
 
 
-def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int, limit: int) -> list[datetime]:
-    """Return recent snapshot_ts values that have tradable candidates but no scores yet."""
+def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int, model_version: str, limit: int) -> list[datetime]:
+    """Return recent snapshot_ts values that need scores for the active model version."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -611,11 +611,12 @@ def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int,
                 FROM spx.debit_spread_scores_0dte s
                 WHERE s.snapshot_ts = c.snapshot_ts
                   AND s.horizon_minutes = %s
+                  AND s.model_version = %s
               )
             ORDER BY c.snapshot_ts DESC
             LIMIT %s
             """,
-            (int(horizon_minutes), int(limit)),
+            (int(horizon_minutes), str(model_version), int(limit)),
         )
         return [r[0] for r in cur.fetchall()]
 
@@ -744,7 +745,7 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
 def score_recent_backfill(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedModel, *, limit: int = 200) -> int:
     """Backfill scores for recent snapshots that are missing scores."""
     total = 0
-    for ts in _snapshots_missing_scores(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(limit)):
+    for ts in _snapshots_missing_scores(conn, horizon_minutes=int(cfg.horizon_minutes), model_version=str(cfg.model_version), limit=int(limit)):
         total += _score_snapshot(conn, cfg, tm, snapshot_ts=ts)
     return total
 
