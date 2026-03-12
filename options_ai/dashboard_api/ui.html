@@ -1084,6 +1084,10 @@ credit: sell the vertical (receive credit). Uses Option A exits: TP capture % an
                   </label>
                   <label>Max trades/day <span class="tip" data-tip="Maximum entries per day in the backtest.">i</span> <input id="btMaxPerDay" type="number" min="1" max="50" value="1" style="width:110px;" /></label>
                   <label><input id="btOneAtATime" type="checkbox" checked /> One trade at a time <span class="tip" data-tip="If checked: the strategy will not enter a new trade until the previous trade has exited.">i</span></label>
+                  <label><input id="btContrarian" type="checkbox" /> Contrarian (flip direction) <span class="tip" data-tip="Use opposite direction logic.
+
+Anchor/no-flow: flips selected CALL<->PUT at each timestamp.
+Flow gate / Flow Regime: inverts bullish/bearish flow gating rules.">i</span></label>
                 </div>
 
                 <div id="btAnchorControls" style="margin-top:10px;">
@@ -1996,6 +2000,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         setv('btMinPred', '0.00');
         setv('btMinPredRet', '0.02');
         setc('btFlowLiveOk', true);
+        setc('btContrarian', false);
         return;
       }
       if (p === 'aggressive') {
@@ -2008,6 +2013,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         setv('btMinPred', '0.00');
         setv('btMinPredRet', '0.00');
         setc('btFlowLiveOk', false);
+        setc('btContrarian', false);
         return;
       }
       // balanced default
@@ -2020,6 +2026,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btMinPred', '0.00');
       setv('btMinPredRet', '0.00');
       setc('btFlowLiveOk', false);
+      setc('btContrarian', false);
     }
 
     function btReadFormPayload() {
@@ -2090,6 +2097,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
           min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
           min_pred_return: parseFloat(document.getElementById('btMinPredRet')?.value || '0'),
+          contrarian_enabled: !!document.getElementById('btContrarian')?.checked,
           flow_gate_enabled: flowMode ? true : !!document.getElementById('btFlowGateEnabled')?.checked,
           flow_live_ok_filter_enabled: !!document.getElementById('btFlowLiveOk')?.checked,
           flow_gate_min_bucket_z: parseFloat(document.getElementById('btFlowMinBucketZ')?.value || '1.5'),
@@ -2167,6 +2175,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btMinP', p.min_p_bigwin);
       setv('btMinPred', p.min_pred_change);
       setv('btMinPredRet', p.min_pred_return);
+      setc('btContrarian', p.contrarian_enabled);
       btSetAllowedSpreads(p.allowed_spreads);
       setc('btFlowGateEnabled', p.flow_gate_enabled);
       setc('btFlowLiveOk', p.flow_live_ok_filter_enabled);

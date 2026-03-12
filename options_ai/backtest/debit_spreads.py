@@ -70,6 +70,7 @@ class DebitBacktestConfig:
     min_p_bigwin: float = 0.0
     min_pred_change: float = 0.0
     min_pred_return: float = 0.0
+    contrarian_enabled: bool = False
     allowed_spreads: tuple[str, ...] = ("CALL", "PUT")
 
     # Optional flow gate (disabled by default)
@@ -562,6 +563,7 @@ def _fetch_candidates_for_window(
     flow_gate_min_bucket_z: float,
     flow_gate_min_breadth: float,
     flow_gate_min_confidence: float,
+    contrarian_enabled: bool,
 ) -> dict[datetime, list[dict[str, Any]]]:
     if not snapshots:
         return {}
@@ -684,15 +686,23 @@ def _fetch_candidates_for_window(
 
                         if st == "CALL":
                             gate_ok = (
-                                bias in {"Moderate Bullish", "Strong Bullish"}
-                                and z >= float(flow_gate_min_bucket_z)
+                                (
+                                    bias in ({"Moderate Bearish", "Strong Bearish"} if contrarian_enabled else {"Moderate Bullish", "Strong Bullish"})
+                                )
+                                and (
+                                    z <= -float(flow_gate_min_bucket_z) if contrarian_enabled else z >= float(flow_gate_min_bucket_z)
+                                )
                                 and breadth >= float(flow_gate_min_breadth)
                                 and conf >= float(flow_gate_min_confidence)
                             )
                         else:
                             gate_ok = (
-                                bias in {"Moderate Bearish", "Strong Bearish"}
-                                and z <= -float(flow_gate_min_bucket_z)
+                                (
+                                    bias in ({"Moderate Bullish", "Strong Bullish"} if contrarian_enabled else {"Moderate Bearish", "Strong Bearish"})
+                                )
+                                and (
+                                    z >= float(flow_gate_min_bucket_z) if contrarian_enabled else z <= -float(flow_gate_min_bucket_z)
+                                )
                                 and breadth >= float(flow_gate_min_breadth)
                                 and conf >= float(flow_gate_min_confidence)
                             )
@@ -708,6 +718,19 @@ def _select_best_candidate(cands: list[dict[str, Any]]) -> dict[str, Any] | None
     if not cands:
         return None
     return cands[0]  # pre-sorted by SQL
+
+
+def _select_opposite_candidate(base: dict[str, Any], cands: list[dict[str, Any]]) -> dict[str, Any] | None:
+    st = str(base.get("spread_type") or "").upper()
+    target = "PUT" if st == "CALL" else "CALL"
+    a = str(base.get("anchor_type") or "")
+    for c in cands:
+        if str(c.get("spread_type") or "").upper() == target and str(c.get("anchor_type") or "") == a:
+            return c
+    for c in cands:
+        if str(c.get("spread_type") or "").upper() == target:
+            return c
+    return None
 
 
 def _fetch_path_snapshots(
@@ -1027,6 +1050,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     flow_gate_min_bucket_z=cfg.flow_gate_min_bucket_z,
                     flow_gate_min_breadth=cfg.flow_gate_min_breadth,
                     flow_gate_min_confidence=cfg.flow_gate_min_confidence,
+                    contrarian_enabled=cfg.contrarian_enabled,
                 )
             else:
                 by_ts = _fetch_candidates_term_anchor_based(
@@ -1058,9 +1082,15 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             cand: dict[str, Any] | None = None
 
             if cfg.strategy_mode in {"anchor_based", "flow_regime"}:
-                cand = _select_best_candidate(by_ts.get(ts, []))
+                cands_now = by_ts.get(ts, [])
+                cand = _select_best_candidate(cands_now)
                 if not cand:
                     continue
+                if cfg.contrarian_enabled and not (cfg.flow_gate_enabled or cfg.strategy_mode == "flow_regime"):
+                    inv = _select_opposite_candidate(cand, cands_now)
+                    if inv is None:
+                        continue
+                    cand = inv
                 entry_debit = float(cand["debit_points"]) if cand.get("debit_points") is not None else None
                 if entry_debit is None or entry_debit <= 0:
                     continue
