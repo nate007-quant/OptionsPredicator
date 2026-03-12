@@ -3442,7 +3442,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const l2 = document.getElementById('liveChainTs2');
       const f2 = document.getElementById('featureLag2');
-      const ou2 = document.getElementById('outULag2');
+      const outUlagEl = document.getElementById('outULag2');
       const oa2 = document.getElementById('outAtmLag2');
       const al2 = document.getElementById('outAlign2');
       const um2 = document.getElementById('outUMiss2');
@@ -3450,7 +3450,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const ps2 = document.getElementById('pipelineFresh2');
       if (l2) l2.textContent = liveTs;
       if (f2) f2.textContent = lagTxt;
-      if (ou2) ou2.textContent = outULagTxt;
+      if (outUlagEl) outUlagEl.textContent = outULagTxt;
       if (oa2) oa2.textContent = outAtmLagTxt;
       if (al2) al2.textContent = outAlign;
       if (um2) um2.textContent = outUMTxt;
