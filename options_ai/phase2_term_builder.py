@@ -412,9 +412,14 @@ def _rsi(values: list[float], period: int = 14) -> float | None:
 
 def ensure_schema(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
-        cur.execute(SCHEMA_SQL)
-        cur.execute(ALTER_SQL)
-        conn.commit()
+        # Protect concurrent term daemons (multiple buckets) from DDL races.
+        cur.execute("SELECT pg_advisory_lock(902103120173)")
+        try:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(ALTER_SQL)
+            conn.commit()
+        finally:
+            cur.execute("SELECT pg_advisory_unlock(902103120173)")
 
 
 def _fetch_chain_rows(cur: psycopg.Cursor, snapshot_ts: datetime, expiration_date: Any) -> list[dict[str, Any]]:
