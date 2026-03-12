@@ -505,6 +505,11 @@ def create_app() -> FastAPI:
             "service": "options_ai_dashboard_api",
         }
 
+    @app.get("/api/status")
+    def status_alias() -> dict[str, Any]:
+        """Backward-compatible alias expected by some monitors/clients."""
+        return health()
+
     @app.get("/api/status/processing")
     def status_processing(
         page: int = Query(1, ge=1),
