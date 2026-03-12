@@ -1133,6 +1133,14 @@ Filter candidates by ML predicted return ratio (e.g. 0.10 = +10%).">i</span> <in
                   </div>
 
                   <div class="row" style="margin-top:10px;" id="btFlowGateControls">
+                    <label>Flow profile <span class="tip" data-tip="Quick tuning presets for Flow Regime mode.">i</span>
+                      <select id="btFlowProfile">
+                        <option value="balanced" selected>balanced</option>
+                        <option value="conservative">conservative</option>
+                        <option value="aggressive">aggressive</option>
+                        <option value="custom">custom</option>
+                      </select>
+                    </label>
                     <label><input id="btFlowGateEnabled" type="checkbox" /> Flow gate enabled <span class="tip" data-tip="Anchor-based only.
 
 Enable flow_phase3 gating (bias + bucket z + breadth + confidence).">i</span></label>
@@ -1923,9 +1931,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const am = document.getElementById('btAnchorMode')?.closest('label');
       const ap = document.getElementById('btAnchorPolicy')?.closest('label');
       const ml = document.getElementById('btMlFilters');
+      const fp = document.getElementById('btFlowProfile')?.closest('label');
       if (am) am.style.display = flowMode ? 'none' : '';
       if (ap) ap.style.display = flowMode ? 'none' : '';
       if (ml) ml.style.display = show ? 'none' : '';
+      if (fp) fp.style.display = flowMode ? '' : 'none';
       // expiration/tenor controls
       const em = document.getElementById('btExpMode')?.value || '0dte';
       const showTerm = (em === 'target_dte');
@@ -1970,6 +1980,47 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         if (opt.selected) out.push(opt.value);
       }
       return out.length ? out : ['CALL','PUT'];
+    }
+
+    function btApplyFlowProfile(profile) {
+      const p = String(profile || 'balanced').toLowerCase();
+      const setv = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = String(v); };
+      const setc = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+
+      if (p === 'conservative') {
+        setv('btEntryStart', '10:45');
+        setv('btEntryEnd', '12:15');
+        setv('btFlowMinBucketZ', '1.5');
+        setv('btFlowMinBreadth', '0.60');
+        setv('btFlowMinConf', '0.60');
+        setv('btMinP', '0.05');
+        setv('btMinPred', '0.00');
+        setv('btMinPredRet', '0.02');
+        setc('btFlowLiveOk', true);
+        return;
+      }
+      if (p === 'aggressive') {
+        setv('btEntryStart', '08:40');
+        setv('btEntryEnd', '13:30');
+        setv('btFlowMinBucketZ', '0.8');
+        setv('btFlowMinBreadth', '0.45');
+        setv('btFlowMinConf', '0.35');
+        setv('btMinP', '0.00');
+        setv('btMinPred', '0.00');
+        setv('btMinPredRet', '0.00');
+        setc('btFlowLiveOk', false);
+        return;
+      }
+      // balanced default
+      setv('btEntryStart', '10:30');
+      setv('btEntryEnd', '13:00');
+      setv('btFlowMinBucketZ', '1.0');
+      setv('btFlowMinBreadth', '0.50');
+      setv('btFlowMinConf', '0.40');
+      setv('btMinP', '0.00');
+      setv('btMinPred', '0.00');
+      setv('btMinPredRet', '0.00');
+      setc('btFlowLiveOk', false);
     }
 
     function btReadFormPayload() {
@@ -2120,6 +2171,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btFlowMinBucketZ', p.flow_gate_min_bucket_z);
       setv('btFlowMinBreadth', p.flow_gate_min_breadth);
       setv('btFlowMinConf', p.flow_gate_min_confidence);
+      const strategyMode = String(p.strategy_mode || 'anchor_based').toLowerCase();
+      if (strategyMode === 'flow_regime') setv('btFlowProfile', 'custom');
 
       setc('btEnablePW', p.enable_pw_trade);
       setc('btEnableCW', p.enable_cw_trade);
@@ -5912,14 +5965,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('btStrategyMode')?.addEventListener('change', () => {
       const modeNow = document.getElementById('btStrategyMode')?.value || 'anchor_based';
       if (modeNow === 'flow_regime') {
-        // Flow-regime starter defaults (can be overridden by user/preset)
-        const setv = (id, v) => { const el = document.getElementById(id); if (el) el.value = String(v); };
-        setv('btEntryStart', '10:30');
-        setv('btEntryEnd', '13:00');
-        setv('btFlowMinBucketZ', 1.0);
-        setv('btFlowMinBreadth', 0.50);
-        setv('btFlowMinConf', 0.40);
-        const live = document.getElementById('btFlowLiveOk'); if (live) live.checked = false;
+        const prof = document.getElementById('btFlowProfile')?.value || 'balanced';
+        btApplyFlowProfile(prof);
       }
       updateBtMode();
       // Presets are keyed by strategy_mode; reload when strategy changes.
@@ -5940,6 +5987,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('btDteTol')?.addEventListener('change', () => {
       safe('bt_presets', () => btReloadPresets());
       safe('bt_runs', () => btRefreshRuns());
+    });
+    document.getElementById('btFlowProfile')?.addEventListener('change', () => {
+      const modeNow = document.getElementById('btStrategyMode')?.value || 'anchor_based';
+      if (modeNow === 'flow_regime') {
+        btApplyFlowProfile(document.getElementById('btFlowProfile')?.value || 'balanced');
+      }
     });
     document.getElementById('applyOverrides')?.addEventListener('click', () => safe('applyOverrides', () => applyOverrides()));
     document.getElementById('clearReprocess')?.addEventListener('click', () => safe('clearReprocess', () => clearReprocess()));
