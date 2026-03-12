@@ -14,7 +14,7 @@ AnchorMode = Literal["ATM", "WALLS", "MAGNET", "ALL"]
 AnchorPolicy = Literal["any", "opposite_wall", "same_wall"]
 PriceMode = Literal["mid"]
 
-StrategyMode = Literal["anchor_based", "structural_walls"]
+StrategyMode = Literal["anchor_based", "flow_regime", "structural_walls"]
 LongLegMoneyness = Literal["ATM", "1_ITM"]
 RotationFilter = Literal["none", "spot_delta_5m"]
 ExpirationMode = Literal["0dte", "target_dte"]
@@ -998,7 +998,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
         snaps = _fetch_snapshots_in_window(conn, day_local=day_local, start_t=start_t, end_t=end_t, tz_local=tz_local)
 
         by_ts: dict[datetime, list[dict[str, Any]]] = {}
-        if cfg.strategy_mode == "anchor_based":
+        if cfg.strategy_mode in {"anchor_based", "flow_regime"}:
             if cfg.expiration_mode == "0dte":
                 by_ts = _fetch_candidates_for_window(
                     conn,
@@ -1011,7 +1011,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     allowed_spreads=cfg.allowed_spreads,
                     call_anchors=call_anchors,
                     put_anchors=put_anchors,
-                    flow_gate_enabled=cfg.flow_gate_enabled,
+                    flow_gate_enabled=(cfg.flow_gate_enabled or cfg.strategy_mode == "flow_regime"),
                     flow_live_ok_filter_enabled=cfg.flow_live_ok_filter_enabled,
                     flow_gate_min_bucket_z=cfg.flow_gate_min_bucket_z,
                     flow_gate_min_breadth=cfg.flow_gate_min_breadth,
@@ -1046,7 +1046,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             direction: str | None = None
             cand: dict[str, Any] | None = None
 
-            if cfg.strategy_mode == "anchor_based":
+            if cfg.strategy_mode in {"anchor_based", "flow_regime"}:
                 cand = _select_best_candidate(by_ts.get(ts, []))
                 if not cand:
                     continue

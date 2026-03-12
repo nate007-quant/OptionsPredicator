@@ -1070,6 +1070,7 @@ How many minutes after Session start to consider for entries.">i</span> <input i
 structural_walls: build trades around walls on-the-fly (anchor filters do not apply).">i</span>
                     <select id="btStrategyMode">
                       <option value="anchor_based" selected>Anchor-based</option>
+                      <option value="flow_regime">Flow Regime</option>
                       <option value="structural_walls">Structural Walls</option>
                     </select>
                   </label>
@@ -2019,7 +2020,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         base.credit_take_profit_pct = parseFloat(document.getElementById('btCreditTPCapture')?.value || '0.5');
       }
 
-      if (strategy_mode === 'anchor_based') {
+      if (strategy_mode === 'anchor_based' || strategy_mode === 'flow_regime') {
         return {
           ...base,
           anchor_mode: document.getElementById('btAnchorMode')?.value || 'ATM',
@@ -2027,7 +2028,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           allowed_spreads: btReadAllowedSpreads(),
           min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
           min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
-          flow_gate_enabled: !!document.getElementById('btFlowGateEnabled')?.checked,
+          flow_gate_enabled: (strategy_mode === 'flow_regime') ? true : !!document.getElementById('btFlowGateEnabled')?.checked,
           flow_live_ok_filter_enabled: !!document.getElementById('btFlowLiveOk')?.checked,
           flow_gate_min_bucket_z: parseFloat(document.getElementById('btFlowMinBucketZ')?.value || '1.5'),
           flow_gate_min_breadth: parseFloat(document.getElementById('btFlowMinBreadth')?.value || '0.60'),
@@ -2193,7 +2194,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       try { p = btReadFormPayload(); } catch { p = {}; }
 
       const ss = (p.spread_style === 'credit') ? 'cr' : 'db';
-      const sm = (p.strategy_mode === 'structural_walls') ? 'sw' : 'ab';
+      const sm = (p.strategy_mode === 'structural_walls') ? 'sw' : ((p.strategy_mode === 'flow_regime') ? 'fr' : 'ab');
       let exp = '0dte';
       if (p.expiration_mode && p.expiration_mode !== '0dte') {
         const td = (p.target_dte_days ?? 'x');
