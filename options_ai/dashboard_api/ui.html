@@ -1112,13 +1112,13 @@ same_wall: CALL spreads prefer CALL_WALL (and vice versa)">i</span>
                         <option value="same_wall">same_wall</option>
                       </select>
                     </label>
-                    <label>Allowed spreads <span class="tip" data-tip="Used only when Strategy = anchor_based.
+                    <label>Allowed spreads <span class="tip" data-tip="Used in anchor-based and flow-regime modes.
 
-Choose which spread types are allowed: CALL and/or PUT.">i</span>
-                      <select id="btAllowedSpreads" multiple size="2" style="min-width:140px;">
-                        <option value="CALL" selected>CALL</option>
-                        <option value="PUT" selected>PUT</option>
-                      </select>
+Choose which spread types are allowed.">i</span>
+                      <span id="btAllowedSpreads" style="display:inline-flex; gap:10px; align-items:center; min-width:160px;">
+                        <label style="display:inline-flex; align-items:center; gap:4px; margin:0;"><input id="btAllowedCall" type="checkbox" checked /> CALL</label>
+                        <label style="display:inline-flex; align-items:center; gap:4px; margin:0;"><input id="btAllowedPut" type="checkbox" checked /> PUT</label>
+                      </span>
                     </label>
                   </div>
 
@@ -1973,12 +1973,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     function btReadAllowedSpreads() {
-      const sel = document.getElementById('btAllowedSpreads');
-      if (!sel) return ['CALL','PUT'];
+      const call = !!document.getElementById('btAllowedCall')?.checked;
+      const put = !!document.getElementById('btAllowedPut')?.checked;
       const out = [];
-      for (const opt of Array.from(sel.options || [])) {
-        if (opt.selected) out.push(opt.value);
-      }
+      if (call) out.push('CALL');
+      if (put) out.push('PUT');
       return out.length ? out : ['CALL','PUT'];
     }
 
@@ -2116,11 +2115,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     }
 
     function btSetAllowedSpreads(vals) {
-      const sel = document.getElementById('btAllowedSpreads');
-      if (!sel) return;
       const want = new Set((vals || []).map(x => String(x).toUpperCase()));
-      for (const opt of Array.from(sel.options || [])) {
-        opt.selected = want.has(String(opt.value).toUpperCase());
+      const callEl = document.getElementById('btAllowedCall');
+      const putEl = document.getElementById('btAllowedPut');
+      if (callEl) callEl.checked = want.has('CALL');
+      if (putEl) putEl.checked = want.has('PUT');
+      if (callEl && putEl && !callEl.checked && !putEl.checked) {
+        callEl.checked = true;
+        putEl.checked = true;
       }
     }
 
