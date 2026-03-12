@@ -1916,6 +1916,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const mf = document.getElementById('btMlFilters');
       if (ac) ac.style.display = show ? 'none' : '';
       if (mf) mf.style.display = show ? 'none' : '';
+      const flowMode = (mode === 'flow_regime');
+      const am = document.getElementById('btAnchorMode')?.closest('label');
+      const ap = document.getElementById('btAnchorPolicy')?.closest('label');
+      const ml = document.getElementById('btMlFilters');
+      if (am) am.style.display = flowMode ? 'none' : '';
+      if (ap) ap.style.display = flowMode ? 'none' : '';
+      if (ml) ml.style.display = (show || flowMode) ? 'none' : '';
       // expiration/tenor controls
       const em = document.getElementById('btExpMode')?.value || '0dte';
       const showTerm = (em === 'target_dte');
@@ -2021,14 +2028,15 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
 
       if (strategy_mode === 'anchor_based' || strategy_mode === 'flow_regime') {
+        const flowMode = (strategy_mode === 'flow_regime');
         return {
           ...base,
-          anchor_mode: document.getElementById('btAnchorMode')?.value || 'ATM',
-          anchor_policy: document.getElementById('btAnchorPolicy')?.value || 'any',
+          anchor_mode: flowMode ? 'ALL' : (document.getElementById('btAnchorMode')?.value || 'ATM'),
+          anchor_policy: flowMode ? 'any' : (document.getElementById('btAnchorPolicy')?.value || 'any'),
           allowed_spreads: btReadAllowedSpreads(),
-          min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
-          min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
-          flow_gate_enabled: (strategy_mode === 'flow_regime') ? true : !!document.getElementById('btFlowGateEnabled')?.checked,
+          min_p_bigwin: flowMode ? 0.0 : parseFloat(document.getElementById('btMinP')?.value || '0'),
+          min_pred_change: flowMode ? 0.0 : parseFloat(document.getElementById('btMinPred')?.value || '0'),
+          flow_gate_enabled: flowMode ? true : !!document.getElementById('btFlowGateEnabled')?.checked,
           flow_live_ok_filter_enabled: !!document.getElementById('btFlowLiveOk')?.checked,
           flow_gate_min_bucket_z: parseFloat(document.getElementById('btFlowMinBucketZ')?.value || '1.5'),
           flow_gate_min_breadth: parseFloat(document.getElementById('btFlowMinBreadth')?.value || '0.60'),

@@ -1000,18 +1000,19 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
         by_ts: dict[datetime, list[dict[str, Any]]] = {}
         if cfg.strategy_mode in {"anchor_based", "flow_regime"}:
             if cfg.expiration_mode == "0dte":
+                flow_mode = (cfg.strategy_mode == "flow_regime")
                 by_ts = _fetch_candidates_for_window(
                     conn,
                     snapshots=snaps,
                     horizon_minutes=cfg.horizon_minutes,
                     max_debit_points=cfg.max_debit_points,
-                    min_p_bigwin=cfg.min_p_bigwin,
-                    min_pred_change=cfg.min_pred_change,
-                    allowed_anchors=allowed_anchors,
+                    min_p_bigwin=(0.0 if flow_mode else cfg.min_p_bigwin),
+                    min_pred_change=(0.0 if flow_mode else cfg.min_pred_change),
+                    allowed_anchors=(['ATM', 'CALL_WALL', 'PUT_WALL', 'MAGNET'] if flow_mode else allowed_anchors),
                     allowed_spreads=cfg.allowed_spreads,
-                    call_anchors=call_anchors,
-                    put_anchors=put_anchors,
-                    flow_gate_enabled=(cfg.flow_gate_enabled or cfg.strategy_mode == "flow_regime"),
+                    call_anchors=(None if flow_mode else call_anchors),
+                    put_anchors=(None if flow_mode else put_anchors),
+                    flow_gate_enabled=(True if flow_mode else cfg.flow_gate_enabled),
                     flow_live_ok_filter_enabled=cfg.flow_live_ok_filter_enabled,
                     flow_gate_min_bucket_z=cfg.flow_gate_min_bucket_z,
                     flow_gate_min_breadth=cfg.flow_gate_min_breadth,
