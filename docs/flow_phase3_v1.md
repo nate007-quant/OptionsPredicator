@@ -143,3 +143,10 @@ python scripts/monitor_flow_phase3_progress.py --dsn "$SPX_CHAIN_DATABASE_URL" -
 ```bash
 python scripts/monitor_flow_phase3_progress.py --dsn "$SPX_CHAIN_DATABASE_URL" --interval 10
 ```
+
+- Baseline vs gated canary backtest comparison:
+```bash
+/opt/OptionsPredicator/.venv/bin/python /opt/OptionsPredicator/scripts/run_flow_phase3_canary.py   --dsn "$SPX_CHAIN_DATABASE_URL" --auto-days 30 --horizon 30 --gate-live-ok
+```
+
+See `docs/flow_phase3_canary_rollout.md` for rollout/rollback details.
