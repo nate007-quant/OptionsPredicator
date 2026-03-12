@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from options_ai.features.flow_engine import compute_options_flow, robust_z, sigmoid, window_robust_z
 
 
@@ -67,3 +69,37 @@ def test_compute_options_flow_smoke_and_parity_flags() -> None:
         assert out["flow_bucket_robust_z"] < 2.0
         assert out["flow_skew"] < 0.20
         assert (out["flow_pct_bullish"] - out["flow_pct_bearish"]) < 0.20
+
+
+def test_compute_options_flow_deterministic_for_same_inputs() -> None:
+    contracts = [
+        {"side": "call", "strike": 5000, "volume": 25, "mid": 6.0},
+        {"side": "put", "strike": 5000, "volume": 30, "mid": 5.0},
+        {"side": "call", "strike": 5010, "volume": 10, "mid": 3.0},
+        {"side": "put", "strike": 4990, "volume": 15, "mid": 3.5},
+    ]
+    hist = {5000.0: [10.0, 12.0], 5010.0: [4.0, 5.0], 4990.0: [-3.0, -4.0]}
+    bucket = [1.0, 2.0, 3.0]
+
+    out1 = compute_options_flow(contracts, 5000.0, _Args(), deepcopy(hist), list(bucket))
+    out2 = compute_options_flow(contracts, 5000.0, _Args(), deepcopy(hist), list(bucket))
+
+    keys = [
+        "flow_total_strikes",
+        "flow_pct_bullish",
+        "flow_pct_bearish",
+        "flow_breadth",
+        "flow_bucket_net_flow",
+        "flow_bucket_robust_z",
+        "flow_skew",
+        "flow_confidence",
+        "flow_atm_corridor_net",
+        "flow_atm_corridor_frac",
+        "flow_top3_share",
+        "flow_top5_share",
+        "flow_bias_summary",
+        "flow_breadth_pass",
+        "flow_bucketz_pass",
+        "flow_live_ok_default",
+    ]
+    assert {k: out1[k] for k in keys} == {k: out2[k] for k in keys}
