@@ -8,7 +8,6 @@ import re
 import time
 
 import httpx
-import requests
 
 
 PriceEffect = Literal["DEBIT", "CREDIT"]
@@ -291,27 +290,6 @@ class TastytradeClient:
                     raise
                 # try next path variant
                 continue
-
-        # Final fallback using requests (helps diagnose edge proxy/httpx inconsistencies).
-        try:
-            for path in ("/sessions", "/sessions/"):
-                url = f"{self.base_url}{path}"
-                r = requests.post(url, json=payload, timeout=self.timeout_seconds, headers={"Accept": "application/json", "Content-Type": "application/json"})
-                if r.status_code in (404, 405):
-                    continue
-                r.raise_for_status()
-                body = r.json()
-                data = body.get("data") if isinstance(body, dict) else None
-                token = None
-                if isinstance(data, dict):
-                    token = data.get("session-token") or data.get("session_token")
-                if not token and isinstance(body, dict):
-                    token = body.get("session-token")
-                if token:
-                    self.session_token = str(token)
-                return body if isinstance(body, dict) else {"ok": True}
-        except Exception as e:
-            last_exc = e
 
         if last_exc:
             raise last_exc
