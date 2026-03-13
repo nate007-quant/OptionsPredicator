@@ -618,6 +618,15 @@
 
       <!-- EXECUTION -->
       <section class="view" id="view-execution">
+        <div id="exWorkerBanner" class="card" style="margin-bottom: var(--space-4); display:none; border-color: rgba(239,68,68,.55); background: rgba(127,29,29,.18);">
+          <div class="card-b" style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+            <div>
+              <strong>Execution worker alert</strong>
+              <div class="hint" id="exWorkerBannerText">Execution worker health check pending…</div>
+            </div>
+            <button id="exWorkerBannerRefresh">Recheck</button>
+          </div>
+        </div>
         <div class="card" style="margin-bottom: var(--space-4);">
           <div class="card-h"><h2>Execution KPIs (Sandbox rollout)</h2><div class="hint">Week-1 validation metrics</div></div>
           <div class="card-b">
@@ -5021,6 +5030,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exAccountsEnabled: 'Count of accounts currently enabled for emission.',
         exTradingEnabled: 'Master execution gate for signal emission (runtime override).',
         exTradingEnabledText: 'Current Trading Enabled state (ON/OFF).',
+        exWorkerBanner: 'Warns when execution worker services are not running.',
+        exWorkerBannerText: 'Execution worker service status summary.',
+        exWorkerBannerRefresh: 'Recheck execution worker health now.',
 
         exRefreshTrades: 'Refresh currently open/opening/closing trades table.',
         exTradesTable: 'Open trades view including protection status and P&L fields.',
@@ -5080,6 +5092,39 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const hh = Math.floor(m / 60);
       const mm = m % 60;
       el.textContent = `${hh}h ${mm}m`;
+    }
+
+    async function exRefreshWorkerBanner() {
+      const box = document.getElementById('exWorkerBanner');
+      const txt = document.getElementById('exWorkerBannerText');
+      if (!box || !txt) return null;
+      try {
+        const d = await jget('/api/services');
+        const items = Array.isArray(d.items) ? d.items : [];
+        const need = ['options_ai_execution', 'options_ai_execution_monitor'];
+        const st = {};
+        for (const id of need) {
+          const it = items.find(x => String(x.id||'')===id || String(x.name||'')===id);
+          st[id] = it ? String(it.status||'unknown') : 'missing';
+        }
+        const down = Object.entries(st).filter(([,v]) => v !== 'active');
+        if (down.length) {
+          box.style.display = '';
+          box.style.borderColor = 'rgba(239,68,68,.55)';
+          box.style.background = 'rgba(127,29,29,.18)';
+          txt.textContent = `Execution automation degraded: ${down.map(([k,v]) => `${k}=${v}`).join(', ')}. Flatten/Cancel/Reconcile may not progress until workers are running.`;
+          return { ok:false, statuses: st };
+        }
+        box.style.display = 'none';
+        txt.textContent = 'Execution workers healthy.';
+        return { ok:true, statuses: st };
+      } catch (e) {
+        box.style.display = '';
+        box.style.borderColor = 'rgba(245,158,11,.45)';
+        box.style.background = 'rgba(120,53,15,.16)';
+        txt.textContent = 'Execution worker health check failed. Retrying automatically.';
+        return { ok:false, error: String(e && e.message ? e.message : e) };
+      }
     }
 
     async function exRefreshKpis() {
@@ -5858,6 +5903,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     document.getElementById('exRefreshTrades')?.addEventListener('click', () => safe('ex_trades', () => exRefreshOpenTrades()));
     document.getElementById('exRefreshHistory')?.addEventListener('click', () => safe('ex_trade_history', () => exRefreshTradeHistory()));
     document.getElementById('exRefreshKpis')?.addEventListener('click', () => safe('ex_kpis', () => exRefreshKpis()));
+    document.getElementById('exWorkerBannerRefresh')?.addEventListener('click', () => safe('ex_workers', () => exRefreshWorkerBanner()));
     document.getElementById('exRefreshAccounts')?.addEventListener('click', () => safe('ex_accounts', () => exRefreshAccounts()));
     document.getElementById('exTradingEnabled')?.addEventListener('change', (ev) => safe('ex_trading_enabled_set', () => exSetTradingEnabled(!!ev.target.checked)));
     document.getElementById('exRefreshIntents')?.addEventListener('click', () => safe('ex_intents', () => exRefreshIntents()));
@@ -6082,6 +6128,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       await safe('config', () => refreshConfig());
       exApplyTooltips();
       await safe('ex_risk', () => exRefreshRiskSession());
+      await safe('ex_workers', () => exRefreshWorkerBanner());
       await safe('ex_kpis', () => exRefreshKpis());
       await safe('ex_accounts', () => exRefreshAccounts());
       await safe('ex_trading_enabled', () => exRefreshTradingEnabled());
@@ -6121,6 +6168,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setInterval(() => safe('health', () => refreshHealth()), 5000);
       setInterval(() => safe('config', () => refreshConfig()), 5000);
       setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
+      setInterval(() => safe('ex_workers', () => exRefreshWorkerBanner()), 10000);
       setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
       setupExecutionAutoRefresh({ triggerNow: false });
       setInterval(() => exRefreshLastStamps(), 5000);
