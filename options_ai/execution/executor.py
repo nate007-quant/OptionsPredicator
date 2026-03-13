@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+import httpx
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -85,6 +86,31 @@ def compute_reprice_limit(
     return out
 
 
+
+
+def _format_exception_details(e: Exception) -> dict[str, Any]:
+    out: dict[str, Any] = {"error": str(e), "error_type": type(e).__name__}
+    if isinstance(e, httpx.HTTPStatusError):
+        req = e.request
+        resp = e.response
+        try:
+            body_text = resp.text if resp is not None else None
+        except Exception:
+            body_text = None
+        body_json = None
+        if resp is not None:
+            try:
+                body_json = resp.json()
+            except Exception:
+                body_json = None
+        out.update({
+            "http_status": int(resp.status_code) if resp is not None else None,
+            "request_method": str(req.method) if req is not None else None,
+            "request_url": str(req.url) if req is not None else None,
+            "response_body": (body_text[:4000] if isinstance(body_text, str) else body_text),
+            "response_json": body_json,
+        })
+    return out
 @dataclass
 class RepricePolicy:
     max_attempts: int
@@ -988,7 +1014,8 @@ class ExecutionExecutor:
 
                     out["processed"] += 1
                 except Exception as e:
-                    self._mark_intent(con, intent_id=iid, status="error", error=str(e))
+                    details = _format_exception_details(e)
+                    self._mark_intent(con, intent_id=iid, status="error", error=str(details.get("error") or str(e)))
                     self._record_order_event(
                         con,
                         trade_run_id=None,
@@ -996,7 +1023,7 @@ class ExecutionExecutor:
                         order_id=None,
                         event_type="executor_error",
                         status="error",
-                        payload={"error": str(e)},
+                        payload=details,
                     )
                     out["errors"] += 1
                     out["processed"] += 1
