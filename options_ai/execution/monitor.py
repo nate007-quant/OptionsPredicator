@@ -139,21 +139,25 @@ class ExecutionMonitor:
         )
 
     def _audit(self, con: sqlite3.Connection, *, action: str, entity_type: str, entity_id: str, details: dict[str, Any]) -> None:
-        con.execute(
-            """
-            INSERT INTO audit_log(created_at_utc, environment, actor, action, entity_type, entity_id, details_json)
-            VALUES(?,?,?,?,?,?,?)
-            """,
-            (
-                _now_utc_iso(),
-                self.environment,
-                "execution_monitor",
-                str(action),
-                str(entity_type),
-                str(entity_id),
-                _json(details),
-            ),
-        )
+        try:
+            con.execute(
+                """
+                INSERT INTO audit_log(created_at_utc, environment, actor, action, entity_type, entity_id, details_json)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    _now_utc_iso(),
+                    self.environment,
+                    "execution_monitor",
+                    str(action),
+                    str(entity_type),
+                    str(entity_id),
+                    _json(details),
+                ),
+            )
+        except sqlite3.OperationalError:
+            # Do not crash monitor on transient SQLite lock contention.
+            pass
 
     def _incident(
         self,
