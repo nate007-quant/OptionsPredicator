@@ -1,0 +1,79 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Model Tuning Control Center</title>
+<style>body{font-family:Arial;margin:20px;background:#0f1115;color:#e8eaed} .card{border:1px solid #2a2f3a;padding:12px;border-radius:8px;margin-bottom:12px;background:#151922} label{display:block;margin:6px 0} input,select{background:#0f1115;color:#e8eaed;border:1px solid #374151;padding:4px 6px;border-radius:4px} button{margin-right:8px;padding:6px 10px} .row{display:grid;grid-template-columns:280px 1fr 1fr 1fr;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #262b36}.err{color:#ff7b7b}.ok{color:#8be28b}.small{font-size:12px;color:#aab0b7}</style>
+</head><body>
+<h2>Model Tuning Control Center (No Execution Access)</h2>
+<div class="small">This panel is model-only. Execution controls are intentionally excluded.</div>
+
+<div class="card"><h3>Realtime Model Status</h3>
+<div id="status"></div><div class="small" id="updated"></div></div>
+
+<div class="card"><h3>Tuning Parameters</h3>
+<div id="fields"></div>
+<div id="pending" class="small"></div>
+<button id="applyBtn">Apply Changes</button>
+<button id="reloadBtn">Reload Current</button>
+<div id="applyErr" class="err"></div></div>
+
+<div class="card"><h3>Model Actions</h3>
+<button id="retrainBtn">Retrain Now</button>
+<button id="rescoreBtn">Rescore Now</button>
+<label><input id="autoRetrain" type="checkbox"> Auto-Retrain (ML service)</label>
+<div id="actionMsg" class="small"></div></div>
+
+<div class="card"><h3>Profiles / Rollback</h3>
+<select id="profileSelect"></select>
+<button id="loadProfileBtn">Load Profile</button>
+<button id="applyProfileBtn">Apply Profile</button>
+<input id="saveProfileName" placeholder="new profile name">
+<button id="saveProfileBtn">Save Profile</button>
+<input id="rollbackVersion" type="number" placeholder="version">
+<button id="rollbackBtn">Rollback</button>
+<div id="profileMsg" class="small"></div></div>
+
+<div class="card"><h3>Audit Log</h3><pre id="audit" style="max-height:260px;overflow:auto"></pre></div>
+
+<script>
+let specs={}, current={}, draft={};
+async function j(url, opt){const r=await fetch(url,opt); const t=await r.text(); let d={}; try{d=JSON.parse(t)}catch{} if(!r.ok) throw new Error((d&&d.detail)||t||r.statusText); return d;}
+function esc(s){return String(s??'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+function renderFields(){
+  const c=document.getElementById('fields'); c.innerHTML='';
+  for(const [k,m] of Object.entries(specs.fields||{})){
+    const v=draft[k] ?? '';
+    const row=document.createElement('div'); row.className='row';
+    let input='';
+    if(m.type==='enum'){ input=`<select data-k="${k}">${m.choices.map(x=>`<option ${String(v).toLowerCase()===String(x).toLowerCase()?'selected':''}>${x}</option>`).join('')}</select>`; }
+    else input=`<input data-k="${k}" value="${esc(v)}">`;
+    row.innerHTML=`<div><b>${k}</b></div><div>${input}<div class='small'>Safe default: ${esc(m.default)}</div></div><div class='small'>${esc(m.what||'')}</div><div class='small'>↑ ${esc(m.up||'')}<br>↓ ${esc(m.down||'')}</div>`;
+    c.appendChild(row);
+  }
+  c.querySelectorAll('[data-k]').forEach(el=>el.addEventListener('change',()=>{draft[el.dataset.k]=el.value; refreshPending();}));
+}
+function refreshPending(){
+  const ch=[]; for(const k of Object.keys(specs.fields||{})){ if(String(current[k])!==String(draft[k])) ch.push(k);} 
+  document.getElementById('pending').textContent = ch.length?`Pending changes: ${ch.join(', ')}`:'No pending changes';
+}
+async function loadConfig(){ const d=await j('/config/current'); current=d.current; draft=JSON.parse(JSON.stringify(current)); specs=d.specs; renderFields(); refreshPending(); }
+async function loadProfiles(){ const d=await j('/config/profiles'); const sel=document.getElementById('profileSelect'); sel.innerHTML=''; (d.profiles||[]).forEach(p=>{const o=document.createElement('option'); o.value=p.name; o.textContent=`${p.name} (v${p.version})`; sel.appendChild(o);}); }
+async function loadAudit(){ const d=await j('/config/audit-log'); document.getElementById('audit').textContent=JSON.stringify(d.items||[],null,2); }
+async function loadStatus(){ try{ const d=await j('/ml/status'); document.getElementById('status').innerHTML=`State: <b>${esc(d.model_state)}</b> | Version: ${esc(d.model_version)} | Last retrain: ${esc(d.last_retrain_ts)} | Duration: ${esc(d.last_retrain_duration_sec)}s | Train rows: ${esc(d.training_rows)}<br>Job: ${esc(d.job?.status)} ${esc(d.job?.progress||'')} | Next retrain in: ${esc(d.next_retrain_countdown_sec)}s<br>Pipeline freshness: ${esc(JSON.stringify(d.pipeline_freshness||{}))}<br><span class='err'>${esc(d.last_error||'')}</span>`;
+    document.getElementById('autoRetrain').checked=!!d.auto_retrain_enabled;
+    document.getElementById('updated').textContent='Last updated: '+new Date().toLocaleTimeString();
+    document.getElementById('retrainBtn').disabled=(d.model_state==='Training');
+  }catch(e){ document.getElementById('status').innerHTML='<span class="err">Refresh failed (auto-retrying)</span>'; }
+}
+
+document.getElementById('applyBtn').onclick=async()=>{document.getElementById('applyErr').textContent=''; try{const d=await j('/config/profiles/apply-current',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({config:draft})}); await loadConfig(); await loadAudit(); alert('Applied version '+d.version);}catch(e){document.getElementById('applyErr').textContent=e.message;}};
+document.getElementById('reloadBtn').onclick=loadConfig;
+document.getElementById('retrainBtn').onclick=async()=>{ if(!confirm('Confirm retrain now?')) return; try{await j('/ml/retrain-now',{method:'POST',headers:{'x-actor':'operator'}}); document.getElementById('actionMsg').textContent='Retrain started';}catch(e){document.getElementById('actionMsg').textContent=e.message;} };
+document.getElementById('rescoreBtn').onclick=async()=>{ try{await j('/ml/rescore-now',{method:'POST',headers:{'x-actor':'operator'}}); document.getElementById('actionMsg').textContent='Rescore started';}catch(e){document.getElementById('actionMsg').textContent=e.message;} };
+document.getElementById('autoRetrain').onchange=async(e)=>{ try{await j('/ml/auto-retrain',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({enabled:e.target.checked})});}catch(err){alert(err.message);} };
+document.getElementById('loadProfileBtn').onclick=async()=>{const d=await j('/config/profiles'); const p=(d.profiles||[]).find(x=>x.name===document.getElementById('profileSelect').value); if(p){draft=JSON.parse(JSON.stringify(p.config)); renderFields(); refreshPending();}}
+document.getElementById('applyProfileBtn').onclick=async()=>{ try{await j('/config/profiles/'+encodeURIComponent(document.getElementById('profileSelect').value)+'/apply',{method:'POST',headers:{'x-actor':'operator'}}); await loadConfig(); await loadAudit();}catch(e){document.getElementById('profileMsg').textContent=e.message;}}
+document.getElementById('saveProfileBtn').onclick=async()=>{const n=document.getElementById('saveProfileName').value.trim(); if(!n) return; try{await j('/config/profiles',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({name:n,config:draft})}); await loadProfiles(); await loadAudit();}catch(e){document.getElementById('profileMsg').textContent=e.message;}}
+document.getElementById('rollbackBtn').onclick=async()=>{const v=parseInt(document.getElementById('rollbackVersion').value||'0'); if(!v) return; try{await j('/config/rollback/'+v,{method:'POST',headers:{'x-actor':'operator'}}); await loadConfig(); await loadAudit();}catch(e){document.getElementById('profileMsg').textContent=e.message;}}
+
+(async()=>{await loadConfig(); await loadProfiles(); await loadAudit(); await loadStatus(); setInterval(loadStatus,4000);})();
+</script>
+</body></html>

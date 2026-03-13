@@ -41,6 +41,7 @@ from options_ai.backtest.portfolio_backtest_service import PortfolioBacktestServ
 from options_ai.backtest.portfolio_group_backtest_service import PortfolioGroupBacktestService
 from options_ai.backtest.sqlite_migrations import migrate_backtest_schema, backfill_params_hash
 from options_ai.execution.schema import ensure_execution_hardening_schema
+from options_ai.dashboard_api import tuning_control as tc
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -540,6 +541,9 @@ def create_app() -> FastAPI:
         return nm
 
     _ensure_backtest_tables()
+    with _connect(db_path) as _con:
+        tc.ensure_schema(_con)
+        tc.seed_builtin_profiles(_con)
 
     # Backtest services
     strategy_registry = StrategyRegistry()
@@ -562,6 +566,14 @@ def create_app() -> FastAPI:
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         html_path = Path(__file__).with_name("ui.html")
+        return html_path.read_text(encoding="utf-8")
+
+    @app.get("/tuning", response_class=HTMLResponse)
+    def tuning_ui(response: Response) -> str:
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        html_path = Path(__file__).with_name("tuning_ui.html")
         return html_path.read_text(encoding="utf-8")
 
     @app.get("/api/health")
@@ -5018,6 +5030,294 @@ def create_app() -> FastAPI:
         app.state.signal_engine_thread = t
     except Exception:
         logging.getLogger('options_ai.signal_engine').exception('failed to start signal engine thread')
+
+
+    # ---------------- Model Tuning Control Center (model-only, no execution writes) ----------------
+    _ml_job_lock = threading.Lock()
+
+    def _actor(v: str | None) -> str:
+        a = str(v or "operator").strip()
+        return a[:80] if a else "operator"
+
+    def _pipeline_health() -> dict[str, Any]:
+        dsn = _pg_dsn()
+        if not dsn:
+            return {"ok": False, "error": "SPX_CHAIN_DATABASE_URL not configured"}
+        try:
+            with _pg_connect(dsn) as conn, conn.cursor() as cur:
+                cur.execute("SELECT max(snapshot_ts) FROM spx.chain_features_0dte")
+                feat = cur.fetchone()[0]
+                cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_scores_0dte")
+                scr = cur.fetchone()[0]
+                return {"ok": True, "latest_feature_ts": _to_central_iso(feat), "latest_score_ts": _to_central_iso(scr)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def _training_rows_estimate(horizon_minutes: int = 30) -> int | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        try:
+            with _pg_connect(dsn) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT count(*)
+                    FROM spx.debit_spread_labels_0dte l
+                    JOIN spx.debit_spread_candidates_0dte c
+                      ON c.snapshot_ts=l.snapshot_ts AND c.anchor_type=l.anchor_type AND c.spread_type=l.spread_type
+                    JOIN spx.chain_features_0dte f ON f.snapshot_ts=l.snapshot_ts
+                    WHERE l.horizon_minutes=%s AND l.is_missing_future=false AND l.change IS NOT NULL AND c.tradable=true AND f.low_quality=false
+                    """,
+                    (int(horizon_minutes),),
+                )
+                return int(cur.fetchone()[0])
+        except Exception:
+            return None
+
+    def _run_ml_job(action: str, actor: str) -> None:
+        started = datetime.now(timezone.utc)
+        job_id = str(uuid.uuid4())
+        with _connect(db_path) as con:
+            tc.set_job_state(con, job_id=job_id, action=action, status="running", progress="starting", started_at=started.isoformat().replace("+00:00", "Z"), finished_at=None, duration_sec=None, error_text=None)
+        try:
+            dsn = _pg_dsn()
+            if not dsn:
+                raise RuntimeError("SPX_CHAIN_DATABASE_URL not configured")
+            with _connect(db_path) as con:
+                cfg = tc.get_current_config(con)
+            overrides = tc.config_to_env_overrides(cfg)
+
+            from options_ai.debit_spread_ml import load_config_from_env, train_if_needed, _latest_candidate_snapshot_ts, _score_snapshot, score_recent_backfill
+            import psycopg as _ps
+
+            old_env = {}
+            for k, v in overrides.items():
+                old_env[k] = os.environ.get(k)
+                os.environ[k] = str(v)
+            try:
+                ml_cfg = load_config_from_env()
+                with _ps.connect(ml_cfg.db_dsn) as conn:
+                    with _connect(db_path) as con:
+                        tc.set_job_state(con, progress="training")
+                    tm = train_if_needed(conn, ml_cfg, force=(action == "retrain"))
+                    if tm is None:
+                        raise RuntimeError("insufficient training rows for retrain")
+                    with _connect(db_path) as con:
+                        tc.set_job_state(con, progress="scoring latest")
+                    latest = _latest_candidate_snapshot_ts(conn)
+                    n1 = _score_snapshot(conn, ml_cfg, tm, snapshot_ts=latest) if latest else 0
+                    with _connect(db_path) as con:
+                        tc.set_job_state(con, progress="backfill scoring")
+                    n2 = score_recent_backfill(conn, ml_cfg, tm, limit=500)
+                details = {"latest_scored": int(n1), "backfill_scored": int(n2)}
+            finally:
+                for k, old in old_env.items():
+                    if old is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = old
+
+            finished = datetime.now(timezone.utc)
+            dur = (finished - started).total_seconds()
+            with _connect(db_path) as con:
+                tc.set_job_state(con, status="success", progress="done", finished_at=finished.isoformat().replace("+00:00", "Z"), duration_sec=float(dur), error_text=None)
+                tc.audit(con, actor=actor, action=f"ml.{action}", old_values=None, new_values=details, result="success")
+        except Exception as e:
+            finished = datetime.now(timezone.utc)
+            dur = (finished - started).total_seconds()
+            with _connect(db_path) as con:
+                tc.set_job_state(con, status="failed", progress="error", finished_at=finished.isoformat().replace("+00:00", "Z"), duration_sec=float(dur), error_text=str(e)[:300])
+                tc.audit(con, actor=actor, action=f"ml.{action}", old_values=None, new_values=None, result="fail", error_detail=str(e)[:300])
+
+    def _launch_ml_job(action: str, actor: str) -> dict[str, Any]:
+        if _ml_job_lock.locked():
+            raise HTTPException(status_code=409, detail="ML job already running")
+        def _worker() -> None:
+            with _ml_job_lock:
+                _run_ml_job(action, actor)
+        t = threading.Thread(target=_worker, name=f"ml-{action}", daemon=True)
+        t.start()
+        return {"ok": True, "action": action, "status": "started"}
+
+    @app.get('/config/current')
+    def tuning_config_current() -> dict[str, Any]:
+        with _connect(db_path) as con:
+            return {"ok": True, "current": tc.get_current_config(con), "specs": tc.field_specs()}
+
+    @app.get('/config/profiles')
+    def tuning_profiles() -> dict[str, Any]:
+        with _connect(db_path) as con:
+            return {"ok": True, "profiles": tc.list_profiles(con)}
+
+    @app.post('/config/profiles')
+    def tuning_profile_create(body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        payload = dict(body or {})
+        bad = tc.reject_forbidden(payload)
+        if bad:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="profile.create", old_values=None, new_values=payload, result="fail", error_detail=f"forbidden keys: {bad}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad}")
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        cfg_raw = dict(payload.get("config") or {})
+        bad_cfg = tc.reject_forbidden(cfg_raw)
+        if bad_cfg:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="profile.create", old_values=None, new_values=cfg_raw, result="fail", error_detail=f"forbidden keys: {bad_cfg}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad_cfg}")
+        cfg, errs = tc.normalize_config(cfg_raw)
+        if errs:
+            raise HTTPException(status_code=400, detail={"errors": errs})
+        with _connect(db_path) as con:
+            tc.upsert_profile(con, name=name, config=cfg, actor=actor)
+        return {"ok": True}
+
+    @app.put('/config/profiles/{name}')
+    def tuning_profile_update(name: str, body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        payload = dict(body or {})
+        bad = tc.reject_forbidden(payload)
+        if bad:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="profile.update", old_values=None, new_values=payload, result="fail", error_detail=f"forbidden keys: {bad}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad}")
+        cfg_raw = dict(payload.get("config") or {})
+        bad_cfg = tc.reject_forbidden(cfg_raw)
+        if bad_cfg:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="profile.update", old_values=None, new_values=cfg_raw, result="fail", error_detail=f"forbidden keys: {bad_cfg}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad_cfg}")
+        cfg, errs = tc.normalize_config(cfg_raw)
+        if errs:
+            raise HTTPException(status_code=400, detail={"errors": errs})
+        with _connect(db_path) as con:
+            tc.upsert_profile(con, name=name, config=cfg, actor=actor)
+        return {"ok": True}
+
+    @app.post('/config/profiles/{name}/apply')
+    def tuning_profile_apply(name: str, x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        with _connect(db_path) as con:
+            try:
+                ver = tc.apply_profile(con, name=name, actor=actor)
+                return {"ok": True, "version": ver}
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+
+    @app.post('/config/profiles/apply-current')
+    def tuning_apply_current(body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        payload = dict(body or {})
+        bad = tc.reject_forbidden(payload)
+        if bad:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="config.apply", old_values=None, new_values=payload, result="fail", error_detail=f"forbidden keys: {bad}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad}")
+        cfg_raw = dict(payload.get("config") or {})
+        bad_cfg = tc.reject_forbidden(cfg_raw)
+        if bad_cfg:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="config.apply", old_values=None, new_values=cfg_raw, result="fail", error_detail=f"forbidden keys: {bad_cfg}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad_cfg}")
+        cfg, errs = tc.normalize_config(cfg_raw)
+        if errs:
+            raise HTTPException(status_code=400, detail={"errors": errs})
+        with _connect(db_path) as con:
+            ver = tc.set_current_config(con, cfg, actor=actor, action="config.apply")
+        return {"ok": True, "version": ver}
+
+    @app.post('/config/rollback/{version}')
+    def tuning_rollback(version: int, x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        with _connect(db_path) as con:
+            try:
+                ver = tc.rollback_to_version(con, version=int(version), actor=actor)
+                return {"ok": True, "version": ver}
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+
+    @app.get('/config/audit-log')
+    def tuning_audit(limit: int = Query(200)) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            return {"ok": True, "items": tc.list_audit(con, limit=max(1, min(1000, int(limit))))}
+
+    @app.post('/ml/retrain-now')
+    def ml_retrain_now(x_actor: str | None = Header(None)) -> dict[str, Any]:
+        return _launch_ml_job("retrain", _actor(x_actor))
+
+    @app.post('/ml/rescore-now')
+    def ml_rescore_now(x_actor: str | None = Header(None)) -> dict[str, Any]:
+        return _launch_ml_job("rescore", _actor(x_actor))
+
+    @app.post('/ml/auto-retrain')
+    def ml_auto_retrain(body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        enabled = bool((body or {}).get("enabled", True))
+        try:
+            cmd = ["sudo", "systemctl", "start" if enabled else "stop", "spx_debit_ml.service"]
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except Exception as e:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="ml.auto_retrain", old_values=None, new_values={"enabled": enabled}, result="fail", error_detail=str(e)[:300])
+            raise HTTPException(status_code=500, detail=f"failed to toggle service: {e}")
+        with _connect(db_path) as con:
+            tc.set_auto_retrain_enabled(con, enabled)
+            tc.audit(con, actor=actor, action="ml.auto_retrain", old_values=None, new_values={"enabled": enabled}, result="success")
+        return {"ok": True, "enabled": enabled}
+
+    @app.get('/ml/status')
+    def ml_status() -> dict[str, Any]:
+        model_version = os.getenv("DEBIT_ML_MODEL_VERSION", "debit_ridge_v2_flow")
+        models_dir = os.getenv("DEBIT_ML_MODELS_DIR", "/mnt/options_ai/models/debit_spread")
+        model_path = Path(models_dir) / f"{model_version}_h{int(os.getenv('DEBIT_ML_HORIZON_MINUTES','30'))}.joblib"
+        trained_at = None
+        if model_path.exists():
+            try:
+                import joblib
+                obj = joblib.load(model_path)
+                ta = obj.get("trained_at") if isinstance(obj, dict) else None
+                trained_at = _to_central_iso(ta)
+            except Exception:
+                trained_at = None
+
+        with _connect(db_path) as con:
+            job = tc.get_job_state(con)
+            auto_enabled = tc.get_auto_retrain_enabled(con)
+
+        model_state = "Training" if job.get("status") == "running" else ("Failed" if job.get("status") == "failed" else ("Ready" if trained_at else "Idle"))
+        last_err = job.get("error_text") if job.get("status") == "failed" else None
+
+        retrain_secs = int(os.getenv("DEBIT_ML_RETRAIN_SECONDS", "900"))
+        countdown = None
+        if trained_at:
+            try:
+                dt = datetime.fromisoformat(str(trained_at).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+                countdown = max(0, int(retrain_secs - age))
+            except Exception:
+                countdown = None
+
+        return {
+            "ok": True,
+            "model_state": model_state,
+            "model_version": model_version,
+            "last_retrain_ts": trained_at,
+            "last_retrain_duration_sec": job.get("duration_sec"),
+            "training_rows": _training_rows_estimate(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30"))),
+            "job": job,
+            "next_retrain_countdown_sec": countdown,
+            "last_error": last_err,
+            "auto_retrain_enabled": auto_enabled,
+            "pipeline_freshness": _pipeline_health(),
+        }
+
+    @app.get('/health/pipeline')
+    def health_pipeline() -> dict[str, Any]:
+        return _pipeline_health()
 
 
     return app
