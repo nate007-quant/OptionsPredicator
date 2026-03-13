@@ -8,6 +8,7 @@ import re
 import time
 
 import httpx
+import requests
 
 
 PriceEffect = Literal["DEBIT", "CREDIT"]
@@ -269,21 +270,52 @@ class TastytradeClient:
         if not self.username or not self.password:
             raise RuntimeError("tasty credentials missing (set TASTY_SESSION_TOKEN or TASTY_USERNAME/TASTY_PASSWORD)")
 
-        # Endpoint contract can evolve; keep payload minimal and persist token from known keys.
-        resp = self._request(
-            "POST",
-            "/sessions",
-            json_body={"login": self.username, "password": self.password},
-        )
-        data = resp.get("data") if isinstance(resp, dict) else None
-        token = None
-        if isinstance(data, dict):
-            token = data.get("session-token") or data.get("session_token")
-        if not token:
-            token = resp.get("session-token") if isinstance(resp, dict) else None
-        if token:
-            self.session_token = str(token)
-        return resp
+        payload = {"login": self.username, "password": self.password}
+        last_exc: Exception | None = None
+        for path in ("/sessions", "/sessions/"):
+            try:
+                resp = self._request("POST", path, json_body=payload)
+                data = resp.get("data") if isinstance(resp, dict) else None
+                token = None
+                if isinstance(data, dict):
+                    token = data.get("session-token") or data.get("session_token")
+                if not token:
+                    token = resp.get("session-token") if isinstance(resp, dict) else None
+                if token:
+                    self.session_token = str(token)
+                return resp
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                code = int(e.response.status_code) if e.response is not None else 0
+                if code not in {404, 405}:
+                    raise
+                # try next path variant
+                continue
+
+        # Final fallback using requests (helps diagnose edge proxy/httpx inconsistencies).
+        try:
+            for path in ("/sessions", "/sessions/"):
+                url = f"{self.base_url}{path}"
+                r = requests.post(url, json=payload, timeout=self.timeout_seconds, headers={"Accept": "application/json", "Content-Type": "application/json"})
+                if r.status_code in (404, 405):
+                    continue
+                r.raise_for_status()
+                body = r.json()
+                data = body.get("data") if isinstance(body, dict) else None
+                token = None
+                if isinstance(data, dict):
+                    token = data.get("session-token") or data.get("session_token")
+                if not token and isinstance(body, dict):
+                    token = body.get("session-token")
+                if token:
+                    self.session_token = str(token)
+                return body if isinstance(body, dict) else {"ok": True}
+        except Exception as e:
+            last_exc = e
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("tasty authenticate failed")
 
     def place_order(self, dto: OrderDTO, *, dry_run: bool | None = None) -> dict[str, Any]:
         payload = map_order_dto_to_tasty_payload(dto)
