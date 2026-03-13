@@ -576,43 +576,7 @@
 
         </div>
 
-        <div class="grid2" style="margin-top: var(--space-4);">
-          <div class="card">
-            <div class="card-h"><h2>Circuit Breakers / Incidents</h2><div class="hint">Stream, mismatch, slippage, reject streak</div></div>
-            <div class="card-b">
-              <div class="row"><button class="btn-primary" id="exRefreshIncidents">Refresh</button></div>
-              <div style="margin-top:10px; overflow:auto; max-height:260px;">
-                <table>
-                  <thead><tr><th>time</th><th>type</th><th>severity</th><th>trade</th><th>intent</th></tr></thead>
-                  <tbody id="exIncidentsTable"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="card-h"><h2>Reconciliation + Operator Actions</h2><div class="hint">Diff + control plane history</div></div>
-            <div class="card-b">
-              <div class="row">
-                <button class="btn-primary" id="exRefreshRecon">Refresh Reconciliation</button>
-                <button id="exCancelAll">Cancel All</button>
-                <button class="btn-danger" id="exFlattenAll">Flatten All</button>
-              </div>
-              <div class="row" style="margin-top:10px;">
-                <div>Resolved: <span id="exReconResolved" class="pill">—</span></div>
-                <div>Open orders: <span id="exReconOrders" class="pill">—</span></div>
-                <div>Open positions: <span id="exReconPositions" class="pill">—</span></div>
-              </div>
-              <div id="exReconDiff" style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px;"></div>
-              <div style="margin-top:10px; overflow:auto; max-height:180px;">
-                <table>
-                  <thead><tr><th>time</th><th>action</th><th>entity</th></tr></thead>
-                  <tbody id="exActionsTable"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
+        
       </section>
 
 
@@ -784,6 +748,44 @@
                     </tr>
                   </thead>
                   <tbody id="exIntentsTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+<div class="grid2" style="margin-top: var(--space-4);">
+          <div class="card">
+            <div class="card-h"><h2>Circuit Breakers / Incidents</h2><div class="hint">Stream, mismatch, slippage, reject streak</div></div>
+            <div class="card-b">
+              <div class="row"><button class="btn-primary" id="exRefreshIncidents">Refresh</button></div>
+              <div style="margin-top:10px; overflow:auto; max-height:260px;">
+                <table>
+                  <thead><tr><th>time</th><th>type</th><th>severity</th><th>trade</th><th>intent</th></tr></thead>
+                  <tbody id="exIncidentsTable"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h2>Reconciliation + Operator Actions</h2><div class="hint">Diff + control plane history</div></div>
+            <div class="card-b">
+              <div class="row">
+                <button class="btn-primary" id="exRefreshRecon">Refresh Reconciliation</button>
+                <button id="exCancelAll">Cancel All</button>
+                <button class="btn-danger" id="exFlattenAll">Flatten All</button>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <div>Resolved: <span id="exReconResolved" class="pill">—</span></div>
+                <div>Open orders: <span id="exReconOrders" class="pill">—</span></div>
+                <div>Open positions: <span id="exReconPositions" class="pill">—</span></div>
+              </div>
+              <div id="exReconDiff" style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px;"></div>
+              <div style="margin-top:10px; overflow:auto; max-height:180px;">
+                <table>
+                  <thead><tr><th>time</th><th>action</th><th>entity</th></tr></thead>
+                  <tbody id="exActionsTable"></tbody>
                 </table>
               </div>
             </div>
