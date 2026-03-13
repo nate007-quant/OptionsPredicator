@@ -499,6 +499,7 @@
         <a href="#execution" data-view="execution">Execution</a>
         <a href="#factory" data-view="factory">Strategy Factory</a>
         <a href="#processing" data-view="processing">Processing</a>
+        <a href="#tuning" data-view="tuning">Model Tuning</a>
                 <a href="#logs" data-view="logs">Logs</a>
         <a href="#controls" data-view="controls">Controls & Admin</a>
       </nav>
@@ -1502,6 +1503,16 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         </div>
       </section>
 
+
+      <section class="view" id="view-tuning">
+        <div class="card">
+          <div class="card-h"><h2>Model Tuning</h2><div class="hint">Model-only tuning control center (no execution writes)</div></div>
+          <div class="card-b" style="padding:0;">
+            <iframe src="/tuning" title="Model Tuning" style="width:100%; min-height:78vh; border:0; background:transparent;"></iframe>
+          </div>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -1703,7 +1714,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const h0 = (window.location.hash || '#overview').replace('#','');
       const h = (h0 === 'backtest') ? 'paramtest' : ((h0 === 'portfolio') ? 'paramgroup' : ((h0 === 'debit') ? 'overview' : h0));
-      const allowed = new Set(['overview','paramtest','paramgroup','execution','factory','processing','logs','controls']);
+      const allowed = new Set(['overview','paramtest','paramgroup','execution','factory','processing','tuning','logs','controls']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 
