@@ -543,7 +543,11 @@ def create_app() -> FastAPI:
     _ensure_backtest_tables()
     with _connect(db_path) as _con:
         tc.ensure_schema(_con)
-        tc.seed_builtin_profiles(_con)
+        try:
+            tc.seed_builtin_profiles(_con)
+        except sqlite3.OperationalError:
+            # Non-fatal under write contention; profiles can be seeded on next startup/request.
+            pass
 
     # Backtest services
     strategy_registry = StrategyRegistry()
