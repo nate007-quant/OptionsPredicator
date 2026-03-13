@@ -3197,7 +3197,7 @@ def create_app() -> FastAPI:
 
         with _connect(db_path) as con:
             rows = con.execute(
-                "SELECT id, execution_intent_id, qty, underlying, run_payload_json FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
+                "SELECT id, execution_intent_id, qty, underlying, run_payload_json, entry_order_id, opened_at_utc FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
                 (str(cfg.broker_env), str(cfg.broker_name)),
             ).fetchall()
             n = 0
@@ -3251,10 +3251,23 @@ def create_app() -> FastAPI:
                     status = 'error'
                     errors += 1
 
-                con.execute(
-                    "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', exit_order_id=COALESCE(?, exit_order_id), updated_at_utc=? WHERE id=?",
-                    ((str(exit_order_id) if exit_order_id is not None else None), now, rid),
-                )
+                if status == 'accepted':
+                    con.execute(
+                        "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', exit_order_id=COALESCE(?, exit_order_id), updated_at_utc=? WHERE id=?",
+                        ((str(exit_order_id) if exit_order_id is not None else None), now, rid),
+                    )
+                else:
+                    no_open = (r['entry_order_id'] is None) and (r['opened_at_utc'] is None)
+                    if no_open:
+                        con.execute(
+                            "UPDATE trade_runs SET status='closed', close_mode='operator_flatten', close_reason=COALESCE(close_reason,'operator_flatten_no_open_position'), closed_at_utc=COALESCE(closed_at_utc, ?), updated_at_utc=? WHERE id=?",
+                            (now, now, rid),
+                        )
+                    else:
+                        con.execute(
+                            "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', exit_order_id=COALESCE(?, exit_order_id), updated_at_utc=? WHERE id=?",
+                            ((str(exit_order_id) if exit_order_id is not None else None), now, rid),
+                        )
                 con.execute(
                     """
                     INSERT INTO order_events(created_at_utc, environment, broker_name, trade_run_id, execution_intent_id, order_id, event_type, status, raw_payload_json)
