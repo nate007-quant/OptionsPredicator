@@ -780,7 +780,7 @@
                       <th>strategy</th>
                       <th>symbol</th>
                       <th>candidate_ref</th>
-                      <th>updated</th><th>notes</th>
+                      <th>updated</th><th>notes</th><th>action</th>
                     </tr>
                   </thead>
                   <tbody id="exIntentsTable"></tbody>
@@ -5046,6 +5046,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         exIntentStatus: 'Optional filter for execution intent status.',
         exRefreshIntents: 'Refresh execution intents list.',
         exIntentsTable: 'Recent execution intents and their current state.',
+        exForceIntent: 'Sandbox-only test action: re-queue selected intent to pending for execution worker.',
 
         exRefreshIncidents: 'Refresh incident/circuit-breaker events.',
         exIncidentsTable: 'Recent incidents (stream-down, mismatch, breakers, etc.).',
@@ -5573,6 +5574,17 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       return '';
     }
 
+    async function exForceExecuteIntent(intentId) {
+      const id = Number(intentId || 0);
+      if (!id) return;
+      const ok = confirm(`Force execute intent #${id} in SANDBOX? This bypasses normal gating for testing only.`);
+      if (!ok) return;
+      const d = await jpost(`/api/execution/intents/${encodeURIComponent(String(id))}/force-execute`, {});
+      toast(`intent #${id} re-queued (${d.old_status} -> ${d.new_status})`, 'warn');
+      await exRefreshIntents();
+      return d;
+    }
+
     async function exRefreshIntents() {
       exBoxLoading('Intents', true);
       try {
@@ -5607,6 +5619,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
           const tr = document.createElement('tr');
           if (b.row) tr.classList.add(b.row);
+          const stU = String(it.status || '').toUpperCase();
+          const forceable = ['BLOCKED','QUARANTINED','PRECHECK_FAILED','REJECTED','ERROR','EXPIRED'].includes(stU);
+          const forceBtn = forceable
+            ? `<button class="btn-danger" data-force-intent="${esc(String(it.id || ''))}" title="Sandbox test: force execute this intent">Force Execute</button>`
+            : `<span class="hint">—</span>`;
           tr.innerHTML = `
             <td>${it.id ?? ''}</td>
             <td><span class="intent-status ${b.cls}">${esc(String(it.status || ''))}</span></td>
@@ -5615,9 +5632,16 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
             <td>${it.candidate_ref ?? ''}</td>
             <td>${fmtCentral(it.updated_at_utc)}</td>
             <td>${notesHtml}</td>
+            <td>${forceBtn}</td>
           `;
           tb.appendChild(tr);
         }
+        tb.querySelectorAll('button[data-force-intent]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const iid = btn.getAttribute('data-force-intent') || '';
+            safe(`ex_force_intent_${iid}`, () => exForceExecuteIntent(iid));
+          });
+        });
         exBoxLast('Intents', true);
         return d;
       } catch (e) {

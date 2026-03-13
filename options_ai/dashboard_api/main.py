@@ -2460,6 +2460,58 @@ def create_app() -> FastAPI:
             })
         return {'items': items}
 
+
+    @app.post('/api/execution/intents/{intent_id}/force-execute')
+    def execution_intent_force_execute(intent_id: int) -> dict[str, Any]:
+        # Sandbox-only operator test action: requeue an intent for execution worker.
+        if str(cfg.broker_env).strip().lower() != 'sandbox':
+            _audit_execution(actor='dashboard_api', action='intent_force_execute_denied_non_sandbox', entity_type='execution_intent', entity_id=str(intent_id), details={'reason': 'non_sandbox_env'})
+            raise HTTPException(status_code=403, detail='force execute is sandbox-only')
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id, environment, status, error
+                FROM execution_intents
+                WHERE id=?
+                """,
+                (int(intent_id),),
+            ).fetchone()
+            if not r:
+                _audit_execution(actor='dashboard_api', action='intent_force_execute_not_found', entity_type='execution_intent', entity_id=str(intent_id), details={})
+                raise HTTPException(status_code=404, detail='intent not found')
+
+            env = str(r['environment'] or '')
+            st = str(r['status'] or '')
+            if env.lower() != 'sandbox':
+                _audit_execution(actor='dashboard_api', action='intent_force_execute_denied_env', entity_type='execution_intent', entity_id=str(intent_id), details={'intent_environment': env, 'status': st})
+                raise HTTPException(status_code=403, detail='intent environment is not sandbox')
+
+            terminal = {'filled', 'working', 'submitting', 'PRECHECK_PENDING'}
+            if st in terminal:
+                _audit_execution(actor='dashboard_api', action='intent_force_execute_denied_status', entity_type='execution_intent', entity_id=str(intent_id), details={'status': st})
+                raise HTTPException(status_code=409, detail=f'intent status not forceable: {st}')
+
+            con.execute(
+                """
+                UPDATE execution_intents
+                SET status='pending',
+                    error=NULL,
+                    precheck_status=NULL,
+                    precheck_payload_json=NULL,
+                    risk_gate_status=NULL,
+                    quarantine_reason=NULL,
+                    updated_at_utc=?
+                WHERE id=?
+                """,
+                (now, int(intent_id)),
+            )
+            con.commit()
+
+        _audit_execution(actor='dashboard_api', action='intent_force_execute', entity_type='execution_intent', entity_id=str(intent_id), details={'old_status': st, 'new_status': 'pending', 'environment': env})
+        return {'ok': True, 'intent_id': int(intent_id), 'old_status': st, 'new_status': 'pending'}
+
     @app.get('/api/execution/trades/open')
     def execution_trades_open(limit: int = Query(500, ge=1, le=5000)) -> dict[str, Any]:
         import json as _json
