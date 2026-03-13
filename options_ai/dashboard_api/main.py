@@ -5039,11 +5039,15 @@ def create_app() -> FastAPI:
         for r in rows:
             pid = int(r['id'])
             # load last source marker
-            with _connect(db_path) as con:
-                rr = con.execute("SELECT COALESCE(signal_last_source_ts,'') AS signal_last_source_ts FROM portfolio_defs WHERE id=?", (pid,)).fetchone()
-                last_src = str(rr['signal_last_source_ts'] or '') if rr else ''
-                con.execute("UPDATE portfolio_defs SET signal_last_poll_utc=? WHERE id=?", (now, pid))
-                con.commit()
+            try:
+                with _connect(db_path) as con:
+                    rr = con.execute("SELECT COALESCE(signal_last_source_ts,'') AS signal_last_source_ts FROM portfolio_defs WHERE id=?", (pid,)).fetchone()
+                    last_src = str(rr['signal_last_source_ts'] or '') if rr else ''
+                    con.execute("UPDATE portfolio_defs SET signal_last_poll_utc=? WHERE id=?", (now, pid))
+                    con.commit()
+            except sqlite3.OperationalError:
+                # transient lock contention; skip this cycle for this portfolio
+                continue
 
             if not market_open:
                 continue
