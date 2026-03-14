@@ -1,6 +1,30 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>Model Tuning Control Center</title>
-<style>body{font-family:Arial;margin:20px;background:#0f1115;color:#e8eaed} .card{border:1px solid #2a2f3a;padding:12px;border-radius:8px;margin-bottom:12px;background:#151922} label{display:block;margin:6px 0} input,select{background:#0f1115;color:#e8eaed;border:1px solid #374151;padding:4px 6px;border-radius:4px} button{margin-right:8px;padding:6px 10px} .row{display:grid;grid-template-columns:280px 1fr 1fr 1fr;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #262b36}.err{color:#ff7b7b}.ok{color:#8be28b}.small{font-size:12px;color:#aab0b7}</style>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Model Tuning Control Center</title>
+<style>
+:root{--bg:#0f1115;--panel:#151922;--text:#e8eaed;--muted:#aab0b7;--border:#2a2f3a;}
+*{box-sizing:border-box}
+body{font-family:Arial,sans-serif;margin:0;background:var(--bg);color:var(--text);padding:12px}
+.page{max-width:1380px;margin:0 auto}
+.card{border:1px solid var(--border);padding:12px;border-radius:10px;margin-bottom:12px;background:var(--panel)}
+label{display:block;margin:6px 0}
+input,select{background:#0f1115;color:#e8eaed;border:1px solid #374151;padding:7px 8px;border-radius:6px;max-width:100%}
+button{margin-right:8px;padding:7px 10px;border-radius:6px;border:1px solid #374151;background:#111827;color:#e8eaed;cursor:pointer}
+button:hover{background:#1f2937}
+.row{display:grid;grid-template-columns:240px minmax(220px,1fr) minmax(220px,1fr) minmax(220px,1fr);gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #262b36}
+.err{color:#ff7b7b}.ok{color:#8be28b}.small{font-size:12px;color:var(--muted)}
+#audit{white-space:pre-wrap;word-break:break-word}
+@media (max-width: 1100px){
+  .row{grid-template-columns:1fr 1fr;}
+  .row > div:first-child{grid-column:1 / -1}
+}
+@media (max-width: 760px){
+  body{padding:8px}
+  .card{padding:10px}
+  .row{grid-template-columns:1fr}
+  button{margin:4px 6px 4px 0}
+  input,select{width:100%}
+}
+</style>
 <style>
 .status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:6px}
 .status-cell{border:1px solid #2b3342;border-radius:8px;padding:8px;background:#111827}
@@ -18,6 +42,7 @@
 </style>
 
 </head><body>
+<div class="page">
 <h2>Model Tuning Control Center (No Execution Access)</h2>
 <div class="small" id="tuningBuildStamp">Build: 2026-03-14.2</div>
 <div class="small">This panel is model-only. Execution controls are intentionally excluded.</div>
@@ -43,8 +68,8 @@
 <button id="retrainChainBtn">Refresh Range + Retrain</button>
 <button id="rescoreBtn">Rescore Now</button>
 <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-  <label>Train start (UTC) <input id="trainStartTs" type="text" placeholder="2025-01-01T00:00:00Z" style="min-width:240px"></label>
-  <label>Train end (UTC) <input id="trainEndTs" type="text" placeholder="2026-01-01T00:00:00Z" style="min-width:240px"></label>
+  <label>Train start (UTC) <input id="trainStartTs" type="text" placeholder="2025-01-01T00:00:00Z"></label>
+  <label>Train end (UTC) <input id="trainEndTs" type="text" placeholder="2026-01-01T00:00:00Z"></label>
   <button id="saveTrainRangeBtn">Save Range</button>
   <button id="clearTrainRangeBtn">Clear Range</button>
 </div>
@@ -181,4 +206,5 @@ document.getElementById('statusSec').onchange=startStatusAuto;
 
 (async()=>{await loadConfig(); await loadProfiles(); await loadAudit(); await loadStatus(); startStatusAuto();})();
 </script>
+</div>
 </body></html>
