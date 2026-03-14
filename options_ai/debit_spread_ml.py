@@ -39,6 +39,8 @@ class DebitMLConfig:
     min_train_rows: int = 300
     max_train_rows: int = 50000
     retrain_seconds: int = 15 * 60
+    train_start_ts: str | None = None
+    train_end_ts: str | None = None
 
     # scoring loop
     poll_seconds: float = 20.0
@@ -255,10 +257,24 @@ def _apply_impute(X_raw: np.ndarray, mask: np.ndarray, impute: np.ndarray) -> np
     return X
 
 
-def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limit: int) -> list[dict[str, Any]]:
+def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limit: int, train_start_ts: str | None = None, train_end_ts: str | None = None) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
-        cur.execute(
-            """
+        where = [
+            "l.horizon_minutes = %s",
+            "l.is_missing_future = false",
+            "l.change IS NOT NULL",
+            "c.tradable = true",
+            "f.low_quality = false",
+        ]
+        params: list[Any] = [int(horizon_minutes)]
+        if train_start_ts:
+            where.append("l.snapshot_ts >= %s::timestamptz")
+            params.append(str(train_start_ts))
+        if train_end_ts:
+            where.append("l.snapshot_ts <= %s::timestamptz")
+            params.append(str(train_end_ts))
+
+        q = f"""
             SELECT
               l.change, l.ret_pct, l.debit_t, l.debit_tH,
               c.anchor_type, c.spread_type,
@@ -279,16 +295,12 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
              AND c.spread_type = l.spread_type
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
-            WHERE l.horizon_minutes = %s
-              AND l.is_missing_future = false
-              AND l.change IS NOT NULL
-              AND c.tradable = true
-              AND f.low_quality = false
+            WHERE {' AND '.join(where)}
             ORDER BY l.snapshot_ts DESC
             LIMIT %s
-            """,
-            (int(horizon_minutes), int(limit)),
-        )
+        """
+        params.append(int(limit))
+        cur.execute(q, tuple(params))
         rows = []
         for r in cur.fetchall():
             rows.append(
@@ -382,7 +394,7 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
         except Exception:
             pass
 
-    rows = _fetch_training_rows(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(cfg.max_train_rows))
+    rows = _fetch_training_rows(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(cfg.max_train_rows), train_start_ts=cfg.train_start_ts, train_end_ts=cfg.train_end_ts)
     rows = list(rows)
 
     if len(rows) < int(cfg.min_train_rows):

@@ -296,3 +296,19 @@ def config_to_env_overrides(cfg: dict[str, Any]) -> dict[str, str]:
     out = {k: str(v) for k, v in cfg.items() if k in FIELD_META}
     out.setdefault("DEBIT_ANCHOR_POLICY", str(cfg.get("DEBIT_ANCHOR_POLICY", "any")))
     return out
+
+
+def get_training_range(con: sqlite3.Connection) -> dict[str, str | None]:
+    rs = con.execute("SELECT value FROM tuning_settings WHERE key='ml_train_start_ts'").fetchone()
+    re = con.execute("SELECT value FROM tuning_settings WHERE key='ml_train_end_ts'").fetchone()
+    return {
+        'start_ts': (str(rs[0]).strip() if rs and rs[0] is not None and str(rs[0]).strip() else None),
+        'end_ts': (str(re[0]).strip() if re and re[0] is not None and str(re[0]).strip() else None),
+    }
+
+
+def set_training_range(con: sqlite3.Connection, *, start_ts: str | None, end_ts: str | None) -> None:
+    now = utc_now_iso()
+    con.execute("INSERT OR REPLACE INTO tuning_settings(key, value, updated_at) VALUES('ml_train_start_ts', ?, ?)", (str(start_ts or ''), now))
+    con.execute("INSERT OR REPLACE INTO tuning_settings(key, value, updated_at) VALUES('ml_train_end_ts', ?, ?)", (str(end_ts or ''), now))
+    con.commit()

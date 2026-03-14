@@ -5134,7 +5134,7 @@ def create_app() -> FastAPI:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def _training_rows_estimate(horizon_minutes: int = 30) -> int | None:
+    def _training_rows_estimate(horizon_minutes: int = 30, *, train_start_ts: str | None = None, train_end_ts: str | None = None) -> int | None:
         dsn = _pg_dsn()
         if not dsn:
             return None
@@ -5148,14 +5148,16 @@ def create_app() -> FastAPI:
                       ON c.snapshot_ts=l.snapshot_ts AND c.anchor_type=l.anchor_type AND c.spread_type=l.spread_type
                     JOIN spx.chain_features_0dte f ON f.snapshot_ts=l.snapshot_ts
                     WHERE l.horizon_minutes=%s AND l.is_missing_future=false AND l.change IS NOT NULL AND c.tradable=true AND f.low_quality=false
+                      AND (%s::text = '' OR l.snapshot_ts >= %s::timestamptz)
+                      AND (%s::text = '' OR l.snapshot_ts <= %s::timestamptz)
                     """,
-                    (int(horizon_minutes),),
+                    (int(horizon_minutes), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
                 )
                 return int(cur.fetchone()[0])
         except Exception:
             return None
 
-    def _training_window_info(horizon_minutes: int = 30) -> dict[str, Any] | None:
+    def _training_window_info(horizon_minutes: int = 30, *, train_start_ts: str | None = None, train_end_ts: str | None = None) -> dict[str, Any] | None:
         dsn = _pg_dsn()
         if not dsn:
             return None
@@ -5177,8 +5179,10 @@ def create_app() -> FastAPI:
                       AND l.change IS NOT NULL
                       AND c.tradable=true
                       AND f.low_quality=false
+                      AND (%s::text = '' OR l.snapshot_ts >= %s::timestamptz)
+                      AND (%s::text = '' OR l.snapshot_ts <= %s::timestamptz)
                     """,
-                    (int(horizon_minutes),),
+                    (int(horizon_minutes), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
                 )
                 r = cur.fetchone()
                 if not r:
@@ -5205,7 +5209,10 @@ def create_app() -> FastAPI:
                 raise RuntimeError("SPX_CHAIN_DATABASE_URL not configured")
             with _connect(db_path) as con:
                 cfg = tc.get_current_config(con)
+                tr = tc.get_training_range(con)
             overrides = tc.config_to_env_overrides(cfg)
+            overrides['DEBIT_ML_TRAIN_START_TS'] = str((tr or {}).get('start_ts') or '')
+            overrides['DEBIT_ML_TRAIN_END_TS'] = str((tr or {}).get('end_ts') or '')
 
             from options_ai.debit_spread_ml import load_config_from_env, train_if_needed, _latest_candidate_snapshot_ts, _score_snapshot, score_recent_backfill
             import psycopg as _ps
@@ -5387,6 +5394,31 @@ def create_app() -> FastAPI:
             tc.audit(con, actor=actor, action="ml.auto_retrain", old_values=None, new_values={"enabled": enabled}, result="success")
         return {"ok": True, "enabled": enabled}
 
+
+    @app.post('/ml/training-range')
+    def ml_training_range_set(body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        b = dict(body or {})
+        start_ts = str(b.get('start_ts') or '').strip() or None
+        end_ts = str(b.get('end_ts') or '').strip() or None
+        # lightweight ISO validation
+        try:
+            if start_ts:
+                datetime.fromisoformat(start_ts.replace('Z', '+00:00'))
+            if end_ts:
+                datetime.fromisoformat(end_ts.replace('Z', '+00:00'))
+            if start_ts and end_ts:
+                if datetime.fromisoformat(start_ts.replace('Z', '+00:00')) > datetime.fromisoformat(end_ts.replace('Z', '+00:00')):
+                    raise ValueError('start_ts must be <= end_ts')
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f'invalid training range: {e}')
+        with _connect(db_path) as con:
+            old = tc.get_training_range(con)
+            tc.set_training_range(con, start_ts=start_ts, end_ts=end_ts)
+            tc.audit(con, actor=actor, action='ml.training_range.set', old_values=old, new_values={'start_ts': start_ts, 'end_ts': end_ts}, result='success')
+            cur = tc.get_training_range(con)
+        return {'ok': True, 'training_range_config': cur}
+
     @app.get('/ml/status')
     def ml_status() -> dict[str, Any]:
         model_version = os.getenv("DEBIT_ML_MODEL_VERSION", "debit_ridge_v2_flow")
@@ -5405,6 +5437,7 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             job = tc.get_job_state(con)
             auto_enabled = tc.get_auto_retrain_enabled(con)
+            train_range_cfg = tc.get_training_range(con)
 
         model_state = "Training" if job.get("status") == "running" else ("Failed" if job.get("status") == "failed" else ("Ready" if trained_at else "Idle"))
         last_err = job.get("error_text") if job.get("status") == "failed" else None
@@ -5427,8 +5460,9 @@ def create_app() -> FastAPI:
             "model_version": model_version,
             "last_retrain_ts": trained_at,
             "last_retrain_duration_sec": job.get("duration_sec"),
-            "training_rows": _training_rows_estimate(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30"))),
-            "training_window": _training_window_info(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30"))),
+            "training_rows": _training_rows_estimate(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")), train_start_ts=(train_range_cfg or {}).get('start_ts'), train_end_ts=(train_range_cfg or {}).get('end_ts')),
+            "training_window": _training_window_info(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")), train_start_ts=(train_range_cfg or {}).get('start_ts'), train_end_ts=(train_range_cfg or {}).get('end_ts')),
+            "training_range_config": train_range_cfg,
             "job": job,
             "next_retrain_countdown_sec": countdown,
             "last_error": last_err,
