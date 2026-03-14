@@ -5148,8 +5148,8 @@ def create_app() -> FastAPI:
                       ON c.snapshot_ts=l.snapshot_ts AND c.anchor_type=l.anchor_type AND c.spread_type=l.spread_type
                     JOIN spx.chain_features_0dte f ON f.snapshot_ts=l.snapshot_ts
                     WHERE l.horizon_minutes=%s AND l.is_missing_future=false AND l.change IS NOT NULL AND c.tradable=true AND f.low_quality=false
-                      AND (%s::text = '' OR l.snapshot_ts >= %s::timestamptz)
-                      AND (%s::text = '' OR l.snapshot_ts <= %s::timestamptz)
+                      AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts >= NULLIF(%s::text,'')::timestamptz)
+                      AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts <= NULLIF(%s::text,'')::timestamptz)
                     """,
                     (int(horizon_minutes), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
                 )
@@ -5179,8 +5179,8 @@ def create_app() -> FastAPI:
                       AND l.change IS NOT NULL
                       AND c.tradable=true
                       AND f.low_quality=false
-                      AND (%s::text = '' OR l.snapshot_ts >= %s::timestamptz)
-                      AND (%s::text = '' OR l.snapshot_ts <= %s::timestamptz)
+                      AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts >= NULLIF(%s::text,'')::timestamptz)
+                      AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts <= NULLIF(%s::text,'')::timestamptz)
                     """,
                     (int(horizon_minutes), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
                 )
