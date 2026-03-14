@@ -7,6 +7,10 @@
 <div class="small">This panel is model-only. Execution controls are intentionally excluded.</div>
 
 <div class="card"><h3>Realtime Model Status</h3>
+<div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+  <button id="statusRefreshBtn">Refresh</button>
+  <span class="small" id="statusRefreshMsg"></span>
+</div>
 <div id="status"></div><div class="small" id="updated"></div></div>
 
 <div class="card"><h3>Tuning Parameters</h3>
@@ -65,16 +69,17 @@ function refreshPending(){
 async function loadConfig(){ const d=await j('/config/current'); current=d.current; draft=JSON.parse(JSON.stringify(current)); specs=d.specs; renderFields(); refreshPending(); }
 async function loadProfiles(){ const d=await j('/config/profiles'); const sel=document.getElementById('profileSelect'); sel.innerHTML=''; (d.profiles||[]).forEach(p=>{const o=document.createElement('option'); o.value=p.name; o.textContent=`${p.name} (v${p.version})`; sel.appendChild(o);}); }
 async function loadAudit(){ const d=await j('/config/audit-log'); document.getElementById('audit').textContent=JSON.stringify(d.items||[],null,2); }
-async function loadStatus(){ try{ const d=await j('/ml/status'); document.getElementById('status').innerHTML=`State: <b>${esc(d.model_state)}</b> | Version: ${esc(d.model_version)} | Last retrain: ${esc(d.last_retrain_ts)} | Duration: ${esc(d.last_retrain_duration_sec)}s | Train rows: ${esc(d.training_rows)}<br>Training range: <b>${esc((d.training_window||{}).start_ts||'—')}</b> → <b>${esc((d.training_window||{}).end_ts||'—')}</b> | days: ${esc((d.training_window||{}).days||0)}<br>Job: ${esc(d.job?.status)} ${esc(d.job?.progress||'')} | Next retrain in: ${esc(d.next_retrain_countdown_sec)}s<br>Pipeline freshness: ${esc(JSON.stringify(d.pipeline_freshness||{}))}<br><span class='err'>${esc(d.last_error||((d.training_window||{}).error)||'')}</span>`;
+async function loadStatus(){ const _m=document.getElementById('statusRefreshMsg'); if(_m) _m.textContent='Refreshing…'; try{ const d=await j('/ml/status'); document.getElementById('status').innerHTML=`State: <b>${esc(d.model_state)}</b> | Version: ${esc(d.model_version)} | Last retrain: ${esc(d.last_retrain_ts)} | Duration: ${esc(d.last_retrain_duration_sec)}s | Train rows: ${esc(d.training_rows)}<br>Training range: <b>${esc((d.training_window||{}).start_ts||'—')}</b> → <b>${esc((d.training_window||{}).end_ts||'—')}</b> | days: ${esc((d.training_window||{}).days||0)}<br>Job: ${esc(d.job?.status)} ${esc(d.job?.progress||'')} | Next retrain in: ${esc(d.next_retrain_countdown_sec)}s<br>Pipeline freshness: ${esc(JSON.stringify(d.pipeline_freshness||{}))}<br><span class='err'>${esc(d.last_error||((d.training_window||{}).error)||'')}</span>`;
     document.getElementById('autoRetrain').checked=!!d.auto_retrain_enabled;
     document.getElementById('updated').textContent='Last updated: '+new Date().toLocaleTimeString();
     document.getElementById('retrainBtn').disabled=(d.model_state==='Training');
-    const trc=d.training_range_config||{}; const ss=document.getElementById('trainStartTs'); const ee=document.getElementById('trainEndTs'); if(ss && document.activeElement!==ss) ss.value=(trc.start_ts||''); if(ee && document.activeElement!==ee) ee.value=(trc.end_ts||'');
-  }catch(e){ document.getElementById('status').innerHTML='<span class="err">Refresh failed (auto-retrying)</span>'; }
+    const trc=d.training_range_config||{}; const ss=document.getElementById('trainStartTs'); const ee=document.getElementById('trainEndTs'); if(ss && document.activeElement!==ss) ss.value=(trc.start_ts||''); if(ee && document.activeElement!==ee) ee.value=(trc.end_ts||''); if(_m) _m.textContent='OK';
+  }catch(e){ document.getElementById('status').innerHTML='<span class="err">Refresh failed (auto-retrying)</span>'; if(_m) _m.textContent='Refresh failed'; }
 }
 
 document.getElementById('applyBtn').onclick=async()=>{document.getElementById('applyErr').textContent=''; try{const d=await j('/config/profiles/apply-current',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({config:draft})}); await loadConfig(); await loadAudit(); alert('Applied version '+d.version);}catch(e){document.getElementById('applyErr').textContent=e.message;}};
 document.getElementById('reloadBtn').onclick=loadConfig;
+document.getElementById('statusRefreshBtn').onclick=loadStatus;
 document.getElementById('retrainBtn').onclick=async()=>{ if(!confirm('Confirm retrain now?')) return; try{await j('/ml/retrain-now',{method:'POST',headers:{'x-actor':'operator'}}); document.getElementById('actionMsg').textContent='Retrain started';}catch(e){document.getElementById('actionMsg').textContent=e.message;} };
 document.getElementById('retrainChainBtn').onclick=async()=>{ try{ const s0=(document.getElementById('trainStartTs')?.value||'').trim(); const e0=(document.getElementById('trainEndTs')?.value||'').trim(); await j('/ml/training-range',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({start_ts:s0||null,end_ts:e0||null})}); const d=await j('/ml/status'); const tw=d.training_window||{}; const msg=`Retrain using current training range?\nStart: ${tw.start_ts||'—'}\nEnd: ${tw.end_ts||'—'}\nRows: ${tw.rows||d.training_rows||0}`; if(!confirm(msg)) return; await j('/ml/retrain-now',{method:'POST',headers:{'x-actor':'operator'}}); document.getElementById('actionMsg').textContent='Range saved; retrain started'; }catch(e){document.getElementById('actionMsg').textContent=e.message;} };
 document.getElementById('rescoreBtn').onclick=async()=>{ try{await j('/ml/rescore-now',{method:'POST',headers:{'x-actor':'operator'}}); document.getElementById('actionMsg').textContent='Rescore started';}catch(e){document.getElementById('actionMsg').textContent=e.message;} };
