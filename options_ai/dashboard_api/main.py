@@ -5147,6 +5147,45 @@ def create_app() -> FastAPI:
         except Exception:
             return None
 
+    def _training_window_info(horizon_minutes: int = 30) -> dict[str, Any] | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        try:
+            with _pg_connect(dsn) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      min(l.snapshot_ts) AS min_ts,
+                      max(l.snapshot_ts) AS max_ts,
+                      count(*) AS rows,
+                      count(DISTINCT (l.snapshot_ts AT TIME ZONE 'America/Chicago')::date) AS days
+                    FROM spx.debit_spread_labels_0dte l
+                    JOIN spx.debit_spread_candidates_0dte c
+                      ON c.snapshot_ts=l.snapshot_ts AND c.anchor_type=l.anchor_type AND c.spread_type=l.spread_type
+                    JOIN spx.chain_features_0dte f ON f.snapshot_ts=l.snapshot_ts
+                    WHERE l.horizon_minutes=%s
+                      AND l.is_missing_future=false
+                      AND l.change IS NOT NULL
+                      AND c.tradable=true
+                      AND f.low_quality=false
+                    """,
+                    (int(horizon_minutes),),
+                )
+                r = cur.fetchone()
+                if not r:
+                    return None
+                min_ts, max_ts, rows, days = r
+                return {
+                    'start_ts': _to_central_iso(min_ts),
+                    'end_ts': _to_central_iso(max_ts),
+                    'rows': (int(rows) if rows is not None else 0),
+                    'days': (int(days) if days is not None else 0),
+                }
+        except Exception as e:
+            return {'error': str(e)}
+
+
     def _run_ml_job(action: str, actor: str) -> None:
         started = datetime.now(timezone.utc)
         job_id = str(uuid.uuid4())
@@ -5381,6 +5420,7 @@ def create_app() -> FastAPI:
             "last_retrain_ts": trained_at,
             "last_retrain_duration_sec": job.get("duration_sec"),
             "training_rows": _training_rows_estimate(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30"))),
+            "training_window": _training_window_info(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30"))),
             "job": job,
             "next_retrain_countdown_sec": countdown,
             "last_error": last_err,
