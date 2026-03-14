@@ -96,6 +96,7 @@ async function loadStatus(){
   const minsAgo = (iso)=>{ try{ if(!iso) return null; const d=new Date(String(iso)); if(Number.isNaN(d.getTime())) return null; return (Date.now()-d.getTime())/60000.0; }catch{return null;} };
   const cls = (state)=> state==='good' ? 'status-good' : (state==='warn' ? 'status-warn' : 'status-bad');
   const covState = (v)=>{ const x=Number(v); if(!Number.isFinite(x)) return 'bad'; if(x>=0.98) return 'good'; if(x>=0.90) return 'warn'; return 'bad'; };
+  const rowsState = (rows,minRows)=>{ const r=Number(rows), m=Number(minRows); if(!Number.isFinite(r)||!Number.isFinite(m)||m<=0) return 'bad'; if(r>=m*1.25) return 'good'; if(r>=m) return 'warn'; return 'bad'; };
   const freshState = (mins)=>{ if(mins==null || !Number.isFinite(mins)) return 'bad'; if(mins<=10) return 'good'; if(mins<=30) return 'warn'; return 'bad'; };
   const stateBadge = (st)=>{
     const s=String(st||'Idle');
@@ -117,7 +118,7 @@ async function loadStatus(){
       <div class="status-grid">
         <div class="status-cell"><div class="status-k">Last Retrain</div><div class="status-v mono">${esc(fmtTs(d.last_retrain_ts))}</div></div>
         <div class="status-cell"><div class="status-k">Retrain Duration</div><div class="status-v">${esc(fmtSec(d.last_retrain_duration_sec))}</div></div>
-        <div class="status-cell"><div class="status-k">Training Rows</div><div class="status-v">${esc(d.training_rows ?? '—')}</div></div>
+        <div class="status-cell"><div class="status-k">Training Rows</div><div class="status-v"><span class="${cls(rowsState(d.training_rows,d.min_train_rows))}">${esc(d.training_rows ?? '—')}</span> <span class="small">(min ${esc(d.min_train_rows ?? '—')})</span></div></div>
         <div class="status-cell"><div class="status-k">Training Days</div><div class="status-v">${esc(tw.days ?? '—')}</div></div>
         <div class="status-cell"><div class="status-k">Training Start</div><div class="status-v mono">${esc(fmtTs(tw.start_ts))}</div></div>
         <div class="status-cell"><div class="status-k">Training End</div><div class="status-v mono">${esc(fmtTs(tw.end_ts))}</div></div>

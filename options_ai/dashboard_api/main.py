@@ -5522,6 +5522,7 @@ def create_app() -> FastAPI:
             "last_retrain_ts": trained_at,
             "last_retrain_duration_sec": job.get("duration_sec"),
             "training_rows": _training_rows_estimate(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")), train_start_ts=(train_range_cfg or {}).get('start_ts'), train_end_ts=(train_range_cfg or {}).get('end_ts')),
+            "min_train_rows": int(os.getenv("DEBIT_ML_MIN_TRAIN_ROWS", "300")),
             "training_window": _training_window_info(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")), train_start_ts=(train_range_cfg or {}).get('start_ts'), train_end_ts=(train_range_cfg or {}).get('end_ts')),
             "training_range_config": train_range_cfg,
             "job": job,
