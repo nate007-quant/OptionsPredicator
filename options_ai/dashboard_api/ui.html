@@ -501,7 +501,7 @@
         <a href="#processing" data-view="processing">Processing</a>
         <a href="#tuning" data-view="tuning">Model Tuning</a>
                 <a href="#logs" data-view="logs">Logs</a>
-        <a href="#controls" data-view="controls">Controls & Admin</a>
+        
       </nav>
     </aside>
 
@@ -1725,7 +1725,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const h0 = (window.location.hash || '#overview').replace('#','');
       const h = (h0 === 'backtest') ? 'paramtest' : ((h0 === 'portfolio') ? 'paramgroup' : ((h0 === 'debit') ? 'overview' : h0));
-      const allowed = new Set(['overview','paramtest','paramgroup','execution','factory','processing','tuning','logs','controls']);
+      const allowed = new Set(['overview','paramtest','paramgroup','execution','factory','processing','tuning','logs']);
       setActiveView(allowed.has(h) ? h : 'overview');
     }
 

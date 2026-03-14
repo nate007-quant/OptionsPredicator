@@ -7,8 +7,10 @@
 <div class="small">This panel is model-only. Execution controls are intentionally excluded.</div>
 
 <div class="card"><h3>Realtime Model Status</h3>
-<div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+<div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
   <button id="statusRefreshBtn">Refresh</button>
+  <label style="display:inline-flex; align-items:center; gap:6px; margin:0;"><input id="statusAuto" type="checkbox" checked> auto-refresh</label>
+  <label style="display:inline-flex; align-items:center; gap:6px; margin:0;">sec <input id="statusSec" type="number" min="2" max="120" value="4" style="width:70px;"></label>
   <span class="small" id="statusRefreshMsg"></span>
 </div>
 <div id="status"></div><div class="small" id="updated"></div></div>
@@ -47,6 +49,7 @@
 
 <script>
 let specs={}, current={}, draft={};
+let statusTimer=null;
 async function j(url, opt){const r=await fetch(url,opt); const t=await r.text(); let d={}; try{d=JSON.parse(t)}catch{} if(!r.ok) throw new Error((d&&d.detail)||t||r.statusText); return d;}
 function esc(s){return String(s??'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
 function renderFields(){
@@ -93,6 +96,16 @@ document.getElementById('applyProfileBtn').onclick=async()=>{ try{await j('/conf
 document.getElementById('saveProfileBtn').onclick=async()=>{const n=document.getElementById('saveProfileName').value.trim(); if(!n) return; try{await j('/config/profiles',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({name:n,config:draft})}); await loadProfiles(); await loadAudit();}catch(e){document.getElementById('profileMsg').textContent=e.message;}}
 document.getElementById('rollbackBtn').onclick=async()=>{const v=parseInt(document.getElementById('rollbackVersion').value||'0'); if(!v) return; try{await j('/config/rollback/'+v,{method:'POST',headers:{'x-actor':'operator'}}); await loadConfig(); await loadAudit();}catch(e){document.getElementById('profileMsg').textContent=e.message;}}
 
-(async()=>{await loadConfig(); await loadProfiles(); await loadAudit(); await loadStatus(); setInterval(loadStatus,4000);})();
+function startStatusAuto(){
+  if(statusTimer){ clearInterval(statusTimer); statusTimer=null; }
+  const on = !!document.getElementById('statusAuto')?.checked;
+  const sec = Math.max(2, Math.min(120, parseInt(document.getElementById('statusSec')?.value || '4',10) || 4));
+  if (on){ statusTimer=setInterval(loadStatus, sec*1000); }
+}
+
+document.getElementById('statusAuto').onchange=startStatusAuto;
+document.getElementById('statusSec').onchange=startStatusAuto;
+
+(async()=>{await loadConfig(); await loadProfiles(); await loadAudit(); await loadStatus(); startStatusAuto();})();
 </script>
 </body></html>
