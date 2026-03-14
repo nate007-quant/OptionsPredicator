@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
+from options_ai.regime import classify_regime
+
 
 EntryMode = Literal["first_n_minutes", "time_range"]
 AnchorMode = Literal["ATM", "WALLS", "MAGNET", "ALL"]
@@ -77,6 +79,10 @@ class DebitBacktestConfig:
     flow_gate_min_bucket_z: float = 1.5
     flow_gate_min_breadth: float = 0.60
     flow_gate_min_confidence: float = 0.60
+
+    # Regime-aware gating/routing (optional)
+    regime_enabled: bool = False
+    regime_min_confidence: float = 0.55
 
     # --- structural walls mode knobs ---
     enable_pw_trade: bool = True
@@ -543,6 +549,91 @@ def _pick_contract_at_strike(
         return best_sym, best_mid
 
 
+def _build_regime_payload_from_row(r: dict[str, Any], *, tz_local: str) -> dict[str, Any]:
+    spot = float(r.get("spot") or 0.0)
+    call_wall = float(r.get("call_wall")) if r.get("call_wall") is not None else None
+    put_wall = float(r.get("put_wall")) if r.get("put_wall") is not None else None
+    magnet = float(r.get("magnet")) if r.get("magnet") is not None else None
+
+    dist_call = ((call_wall - spot) / spot) if (call_wall is not None and spot) else None
+    dist_put = ((put_wall - spot) / spot) if (put_wall is not None and spot) else None
+    dist_mag = ((magnet - spot) / spot) if (magnet is not None and spot) else None
+
+    trend = "neutral"
+    sma5 = r.get("sma_spot_5")
+    sma20 = r.get("sma_spot_20")
+    if sma5 is not None and sma20 is not None:
+        if float(sma5) > float(sma20):
+            trend = "bullish"
+        elif float(sma5) < float(sma20):
+            trend = "bearish"
+
+    volume_class = "normal"
+    d_tot_vol = r.get("d_tot_vol")
+    if d_tot_vol is not None:
+        if float(d_tot_vol) > 0:
+            volume_class = "high"
+        elif float(d_tot_vol) < 0:
+            volume_class = "low"
+
+    gex_regime = "positive_gamma"
+    if call_wall is not None and put_wall is not None and (spot < put_wall or spot > call_wall):
+        gex_regime = "negative_gamma"
+
+    snapshot_summary = {
+        "observed_utc": r.get("snapshot_ts").astimezone(ZoneInfo("UTC")).isoformat() if r.get("snapshot_ts") else None,
+        "spot_price": spot,
+        "has_ohlcv": True,
+    }
+    model_signals = {
+        "trend": trend,
+        "volume_class": volume_class,
+        "expected_move_abs": float(r.get("atm_iv") or 0.0) * spot,
+        "expected_move_pct": float(r.get("atm_iv") or 0.0) * 0.5,
+        "atm_iv": float(r.get("atm_iv") or 0.0),
+        "put_call_oi_ratio": float(r.get("pcr_oi") or 1.0),
+        "put_call_volume_ratio": float(r.get("pcr_volume") or 1.0),
+        "unusual_activity_count": 1 if abs(float(r.get("flow_bucket_robust_z") or 0.0)) >= 2.0 else 0,
+        "gex": {
+            "regime_label": gex_regime,
+            "levels": {
+                "call_wall": {"strike": call_wall, "distance_pct": dist_call},
+                "put_wall": {"strike": put_wall, "distance_pct": dist_put},
+                "magnet": {"strike": magnet, "distance_pct": dist_mag},
+            },
+        },
+    }
+    extra_ctx = {
+        "regime_version": "regime_v1",
+        "hysteresis_snapshots": 1,
+        "prior_labels": [],
+        "chain_features_0dte": {
+            "skew_25d": r.get("skew_25d"),
+            "bf_25d": r.get("bf_25d"),
+            "atm_bidask_spread": r.get("atm_bidask_spread"),
+            "valid_mid_count": r.get("valid_mid_count"),
+            "contract_count": r.get("contract_count"),
+            "low_quality": bool(r.get("low_quality") or False),
+        },
+    }
+    return classify_regime(snapshot_summary, model_signals, extra_ctx)
+
+
+def _regime_allows_trade(label: str, spread_type: str) -> bool:
+    st = str(spread_type or "").upper()
+    if label == "trend_up":
+        return st == "CALL"
+    if label == "trend_down":
+        return st == "PUT"
+    if label == "vol_expansion_breakout":
+        return True
+    if label == "pin_mean_revert":
+        return True
+    if label == "event_unstable":
+        return False
+    return True
+
+
 def _fetch_candidates_for_window(
     conn: psycopg.Connection,
     *,
@@ -560,6 +651,8 @@ def _fetch_candidates_for_window(
     flow_gate_min_bucket_z: float,
     flow_gate_min_breadth: float,
     flow_gate_min_confidence: float,
+    regime_enabled: bool,
+    regime_min_confidence: float,
 ) -> dict[datetime, list[dict[str, Any]]]:
     if not snapshots:
         return {}
@@ -584,10 +677,16 @@ def _fetch_candidates_for_window(
               f.flow_bucket_robust_z,
               f.flow_breadth,
               f.flow_confidence,
-              f.flow_live_ok_default
+              f.flow_live_ok_default,
+              f.spot, f.atm_iv, f.pcr_oi, f.pcr_volume, f.skew_25d, f.bf_25d,
+              f.atm_bidask_spread, f.valid_mid_count, f.contract_count, f.low_quality,
+              f.sma_spot_5, f.sma_spot_20, f.d_tot_vol,
+              g.call_wall, g.put_wall, g.magnet
             FROM spx.debit_spread_candidates_0dte c
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
+            LEFT JOIN spx.gex_levels_0dte g
+              ON g.snapshot_ts = c.snapshot_ts
             LEFT JOIN spx.debit_spread_scores_0dte s
               ON s.snapshot_ts = c.snapshot_ts
              AND s.horizon_minutes = %s
@@ -656,10 +755,26 @@ def _fetch_candidates_for_window(
                     "flow_breadth": float(r[14]) if r[14] is not None else None,
                     "flow_confidence": float(r[15]) if r[15] is not None else None,
                     "flow_live_ok_default": bool(r[16]) if r[16] is not None else None,
+                    "spot": float(r[17]) if r[17] is not None else None,
+                    "atm_iv": float(r[18]) if r[18] is not None else None,
+                    "pcr_oi": float(r[19]) if r[19] is not None else None,
+                    "pcr_volume": float(r[20]) if r[20] is not None else None,
+                    "skew_25d": float(r[21]) if r[21] is not None else None,
+                    "bf_25d": float(r[22]) if r[22] is not None else None,
+                    "atm_bidask_spread": float(r[23]) if r[23] is not None else None,
+                    "valid_mid_count": int(r[24]) if r[24] is not None else None,
+                    "contract_count": int(r[25]) if r[25] is not None else None,
+                    "low_quality": bool(r[26]) if r[26] is not None else None,
+                    "sma_spot_5": float(r[27]) if r[27] is not None else None,
+                    "sma_spot_20": float(r[28]) if r[28] is not None else None,
+                    "d_tot_vol": float(r[29]) if r[29] is not None else None,
+                    "call_wall": float(r[30]) if r[30] is not None else None,
+                    "put_wall": float(r[31]) if r[31] is not None else None,
+                    "magnet": float(r[32]) if r[32] is not None else None,
                 }
             )
 
-        if flow_gate_enabled or flow_live_ok_filter_enabled:
+        if flow_gate_enabled or flow_live_ok_filter_enabled or regime_enabled:
             for ts in list(by_ts.keys()):
                 filt: list[dict[str, Any]] = []
                 for c in by_ts[ts]:
@@ -688,6 +803,14 @@ def _fetch_candidates_for_window(
                                 and conf >= float(flow_gate_min_confidence)
                             )
                         if not gate_ok:
+                            continue
+
+                    if regime_enabled:
+                        rp = _build_regime_payload_from_row(c, tz_local="America/Chicago")
+                        c["regime"] = rp
+                        if float(rp.get("confidence") or 0.0) < float(regime_min_confidence):
+                            continue
+                        if not _regime_allows_trade(str(rp.get("label") or ""), str(c.get("spread_type") or "")):
                             continue
 
                     filt.append(c)
@@ -1016,6 +1139,8 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     flow_gate_min_bucket_z=cfg.flow_gate_min_bucket_z,
                     flow_gate_min_breadth=cfg.flow_gate_min_breadth,
                     flow_gate_min_confidence=cfg.flow_gate_min_confidence,
+                    regime_enabled=cfg.regime_enabled,
+                    regime_min_confidence=cfg.regime_min_confidence,
                 )
             else:
                 by_ts = _fetch_candidates_term_anchor_based(
@@ -1313,6 +1438,8 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 "spot": (cand or {}).get("spot"),
                 "put_wall": (cand or {}).get("put_wall"),
                 "call_wall": (cand or {}).get("call_wall"),
+                "regime_label": ((cand or {}).get("regime") or {}).get("label") if isinstance((cand or {}).get("regime"), dict) else None,
+                "regime_confidence": ((cand or {}).get("regime") or {}).get("confidence") if isinstance((cand or {}).get("regime"), dict) else None,
             }
             trades.append(tdict)
 
@@ -1390,6 +1517,8 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             "flow_gate_min_bucket_z": float(cfg.flow_gate_min_bucket_z),
             "flow_gate_min_breadth": float(cfg.flow_gate_min_breadth),
             "flow_gate_min_confidence": float(cfg.flow_gate_min_confidence),
+            "regime_enabled": bool(cfg.regime_enabled),
+            "regime_min_confidence": float(cfg.regime_min_confidence),
             "enable_pw_trade": bool(cfg.enable_pw_trade),
             "enable_cw_trade": bool(cfg.enable_cw_trade),
             "long_leg_moneyness": cfg.long_leg_moneyness,
