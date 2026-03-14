@@ -1079,6 +1079,45 @@ def _build_structural_candidate(
     }
 
 
+def _fetch_regime_context_row(conn: psycopg.Connection, *, snapshot_ts: datetime) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT f.snapshot_ts, f.spot, f.atm_iv, f.pcr_oi, f.pcr_volume,
+                   f.skew_25d, f.bf_25d, f.atm_bidask_spread, f.valid_mid_count,
+                   f.contract_count, f.low_quality, f.sma_spot_5, f.sma_spot_20, f.d_tot_vol,
+                   g.call_wall, g.put_wall, g.magnet
+            FROM spx.chain_features_0dte f
+            LEFT JOIN spx.gex_levels_0dte g ON g.snapshot_ts = f.snapshot_ts
+            WHERE f.snapshot_ts = %s
+            LIMIT 1
+            """,
+            (snapshot_ts,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None
+        return {
+            "snapshot_ts": r[0],
+            "spot": float(r[1]) if r[1] is not None else None,
+            "atm_iv": float(r[2]) if r[2] is not None else None,
+            "pcr_oi": float(r[3]) if r[3] is not None else None,
+            "pcr_volume": float(r[4]) if r[4] is not None else None,
+            "skew_25d": float(r[5]) if r[5] is not None else None,
+            "bf_25d": float(r[6]) if r[6] is not None else None,
+            "atm_bidask_spread": float(r[7]) if r[7] is not None else None,
+            "valid_mid_count": int(r[8]) if r[8] is not None else None,
+            "contract_count": int(r[9]) if r[9] is not None else None,
+            "low_quality": bool(r[10]) if r[10] is not None else None,
+            "sma_spot_5": float(r[11]) if r[11] is not None else None,
+            "sma_spot_20": float(r[12]) if r[12] is not None else None,
+            "d_tot_vol": float(r[13]) if r[13] is not None else None,
+            "call_wall": float(r[14]) if r[14] is not None else None,
+            "put_wall": float(r[15]) if r[15] is not None else None,
+            "magnet": float(r[16]) if r[16] is not None else None,
+        }
+
+
 def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfig) -> dict[str, Any]:
     # Does the ML scores table contain rows for this horizon?
     scores_available = False
@@ -1112,6 +1151,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
     eq_points: list[float] = []
 
     strike_cache: dict[tuple[datetime, date], list[float]] = {}
+    regime_cache: dict[datetime, dict[str, Any] | None] = {}
 
     for day_local in _daterange(cfg.start_day, cfg.end_day):
         day_trades = 0
@@ -1307,6 +1347,22 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 short_sym = str(cand["short_symbol"])
                 width_points = float(cand["width"])
                 direction = str(cand.get("direction") or "")
+
+            if cfg.regime_enabled:
+                rp = regime_cache.get(ts)
+                if ts not in regime_cache:
+                    rr = _fetch_regime_context_row(conn, snapshot_ts=ts)
+                    rp = _build_regime_payload_from_row(rr, tz_local=tz_local) if isinstance(rr, dict) else None
+                    regime_cache[ts] = rp
+                if not isinstance(rp, dict):
+                    continue
+                if float(rp.get("confidence") or 0.0) < float(cfg.regime_min_confidence):
+                    continue
+                if cand is None:
+                    cand = {}
+                cand["regime"] = rp
+                if not _regime_allows_trade(str(rp.get("label") or ""), str((cand or {}).get("spread_type") or "")):
+                    continue
 
             if exp_date is None or long_sym is None or short_sym is None or entry_debit is None:
                 continue

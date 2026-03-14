@@ -1015,9 +1015,7 @@ Enable flow_phase3 gating (bias + bucket z + breadth + confidence).">i</span></l
                   </div>
 
                   <div class="row" style="margin-top:10px;" id="btRegimeControls">
-                    <label><input id="btUseRegime" type="checkbox" /> Use regime-aware gating <span class="tip" data-tip="Anchor-based only.
-
-Classifies each snapshot into regime_v1 and filters entries by regime direction + confidence.">i</span></label>
+                    <label><input id="btUseRegime" type="checkbox" /> Use regime-aware gating <span class="tip" data-tip="Classifies each snapshot into regime_v1 and filters entries by regime direction + confidence.">i</span></label>
                     <label>Regime min confidence <input id="btRegimeMinConf" type="number" step="0.01" min="0" max="1" value="0.55" style="width:110px;" /></label>
                   </div>
                 </div>
@@ -1877,7 +1875,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         include_missing_exits: (btHiddenOverrides.include_missing_exits !== undefined) ? !!btHiddenOverrides.include_missing_exits : false,
         max_future_lookahead_minutes: (btHiddenOverrides.max_future_lookahead_minutes !== undefined) ? parseInt(String(btHiddenOverrides.max_future_lookahead_minutes), 10) : 120,
         price_mode: (btHiddenOverrides.price_mode !== undefined) ? String(btHiddenOverrides.price_mode) : 'mid',
-        tz_local: (btHiddenOverrides.tz_local !== undefined) ? String(btHiddenOverrides.tz_local) : 'America/Chicago'
+        tz_local: (btHiddenOverrides.tz_local !== undefined) ? String(btHiddenOverrides.tz_local) : 'America/Chicago',
+        regime_enabled: !!document.getElementById('btUseRegime')?.checked,
+        regime_min_confidence: parseFloat(document.getElementById('btRegimeMinConf')?.value || '0.55')
       };
 
       // expiration extras (only when applicable)
@@ -1913,8 +1913,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           flow_gate_min_bucket_z: parseFloat(document.getElementById('btFlowMinBucketZ')?.value || '1.5'),
           flow_gate_min_breadth: parseFloat(document.getElementById('btFlowMinBreadth')?.value || '0.60'),
           flow_gate_min_confidence: parseFloat(document.getElementById('btFlowMinConf')?.value || '0.60'),
-          regime_enabled: !!document.getElementById('btUseRegime')?.checked,
-          regime_min_confidence: parseFloat(document.getElementById('btRegimeMinConf')?.value || '0.55'),
         };
       }
 
