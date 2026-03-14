@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 
 from dotenv import load_dotenv
@@ -114,6 +115,14 @@ class Config:
     ml_min_neutral_band_pts: float = 3.0
     ml_k_em: float = 0.20
 
+    # Regime routing (v2.9)
+    regime_enabled: bool = True
+    regime_version: str = "regime_v1"
+    regime_hysteresis_snapshots: int = 2
+    regime_model_map_json: str = "{}"
+    regime_fallback_model_version: str = "ml_v1"
+    regime_min_confidence_for_routing: float = 0.55
+
     # GEX prompt compression (v2.3+)
     gex_neighbor_strikes: int = 2
     gex_topk_abs_strikes: int = 0
@@ -189,6 +198,17 @@ def _get_bool(name: str, default: bool) -> bool:
     if v is None:
         return default
     return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _get_json_object_string(name: str, default: str = "{}") -> str:
+    raw = os.getenv(name, default)
+    try:
+        obj = json.loads(raw or "{}")
+        if not isinstance(obj, dict):
+            return default
+        return json.dumps(obj, sort_keys=True)
+    except Exception:
+        return default
 
 
 def load_config() -> Config:
@@ -306,6 +326,12 @@ def load_config() -> Config:
         ml_action_threshold=float(os.getenv("ML_ACTION_THRESHOLD", "0.85")),
         ml_min_neutral_band_pts=float(os.getenv("ML_MIN_NEUTRAL_BAND_PTS", "3.0")),
         ml_k_em=float(os.getenv("ML_K_EM", "0.20")),
+        regime_enabled=_get_bool("REGIME_ENABLED", True),
+        regime_version=os.getenv("REGIME_VERSION", "regime_v1").strip() or "regime_v1",
+        regime_hysteresis_snapshots=int(os.getenv("REGIME_HYSTERESIS_SNAPSHOTS", "2")),
+        regime_model_map_json=_get_json_object_string("REGIME_MODEL_MAP_JSON", "{}"),
+        regime_fallback_model_version=os.getenv("REGIME_FALLBACK_MODEL_VERSION", "ml_v1").strip() or "ml_v1",
+        regime_min_confidence_for_routing=float(os.getenv("REGIME_MIN_CONFIDENCE_FOR_ROUTING", "0.55")),
         gex_neighbor_strikes=int(os.getenv("GEX_NEIGHBOR_STRIKES", "2")),
         gex_topk_abs_strikes=int(os.getenv("GEX_TOPK_ABS_STRIKES", "0")),
         gex_sticky_day_max=int(os.getenv("GEX_STICKY_DAY_MAX", "20")),

@@ -141,3 +141,69 @@ It includes a **Debit Spreads** view that shows:
   - `p(bigwin)` probability of hitting your configured win multiple
 - recent realized outcomes (historical)
 
+
+## Regime Detection and Routing (v2.9)
+
+The ingest pipeline now computes a deterministic **regime_v1** label before ML feature generation and model inference.
+
+### Regime labels
+
+- `trend_up`
+- `trend_down`
+- `pin_mean_revert`
+- `vol_expansion_breakout`
+- `event_unstable`
+
+### Inputs used (event-time safe)
+
+- Existing model signals (`trend`, `volume_class`, expected move, IV, PCR, unusual activity, compact GEX regime + level distances)
+- Session flags derived from `observed_utc` (open / lunch / power hour)
+- Optional same-timestamp `spx.chain_features_0dte` fields (if Timescale is configured):
+  `skew_25d`, `bf_25d`, `atm_bidask_spread`, `valid_mid_count`, `contract_count`, `low_quality`
+
+No future rows or labels are used.
+
+### Hysteresis
+
+Regime switching uses a configurable hold rule:
+- `REGIME_HYSTERESIS_SNAPSHOTS` controls minimum persistence needed before switching labels.
+
+### ML routing
+
+When `REGIME_ENABLED=true`:
+- if `regime.confidence >= REGIME_MIN_CONFIDENCE_FOR_ROUTING` and mapped bundle exists, ML routes to `REGIME_MODEL_MAP_JSON[label]`
+- otherwise it falls back to `REGIME_FALLBACK_MODEL_VERSION`
+
+Routing reason is written to prediction row (`routing_reason`) with values like:
+- `ml_regime_route`
+- `ml_regime_fallback_low_confidence`
+- `ml_regime_fallback_unmapped`
+- `ml_regime_fallback_missing_bundle`
+
+### Example regime payload
+
+```json
+{
+  "label": "pin_mean_revert",
+  "confidence": 0.67,
+  "version": "regime_v1",
+  "reasons": ["top_score=0.700", "runner_up=0.420"],
+  "inputs_used": {
+    "trend": "neutral",
+    "volume_class": "normal",
+    "expected_move_pct": 0.0042,
+    "gex_regime_label": "positive_gamma",
+    "session_flags": {
+      "session_open": 0.0,
+      "session_lunch": 1.0,
+      "session_power_hour": 0.0
+    }
+  }
+}
+```
+
+### Known limitations / next improvements
+
+- No macro-event calendar in v1; scheduled data releases are only inferred indirectly via volatility/flow proxies.
+- No explicit term-structure regime features yet (front/back IV term shape).
+- Optional Timescale quality fields are best-effort; when unavailable, confidence is reduced conservatively.
