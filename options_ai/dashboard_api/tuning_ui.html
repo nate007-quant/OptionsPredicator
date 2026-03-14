@@ -12,6 +12,9 @@
 .badge-failed{background:#7f1d1d;color:#fecaca}
 .badge-idle{background:#1f2937;color:#d1d5db}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.status-good{color:#86efac}
+.status-warn{color:#fde68a}
+.status-bad{color:#fca5a5}
 </style>
 
 </head><body>
@@ -90,6 +93,10 @@ async function loadStatus(){
   if(_m) _m.textContent='Refreshing…';
   const fmtTs = (v)=> v ? String(v) : '—';
   const fmtSec = (v)=> (v==null || v==='') ? '—' : `${Number(v).toFixed(1)}s`;
+  const minsAgo = (iso)=>{ try{ if(!iso) return null; const d=new Date(String(iso)); if(Number.isNaN(d.getTime())) return null; return (Date.now()-d.getTime())/60000.0; }catch{return null;} };
+  const cls = (state)=> state==='good' ? 'status-good' : (state==='warn' ? 'status-warn' : 'status-bad');
+  const covState = (v)=>{ const x=Number(v); if(!Number.isFinite(x)) return 'bad'; if(x>=0.98) return 'good'; if(x>=0.90) return 'warn'; return 'bad'; };
+  const freshState = (mins)=>{ if(mins==null || !Number.isFinite(mins)) return 'bad'; if(mins<=10) return 'good'; if(mins<=30) return 'warn'; return 'bad'; };
   const stateBadge = (st)=>{
     const s=String(st||'Idle');
     const cls = s==='Ready' ? 'badge-ready' : (s==='Training' ? 'badge-training' : (s==='Failed' ? 'badge-failed' : 'badge-idle'));
@@ -100,6 +107,9 @@ async function loadStatus(){
     const tw=d.training_window||{};
     const pf=d.pipeline_freshness||{};
     const sc=d.scoring_status||{};
+    const featureAgeM = minsAgo(pf.latest_feature_ts);
+    const scoreAgeM = minsAgo(pf.latest_score_ts || sc.latest_score_ts);
+    const coverage = sc.coverage_7d;
     const pct = (v)=> (v==null || !Number.isFinite(Number(v))) ? '—' : `${(100*Number(v)).toFixed(1)}%`;
     const dec = (v,n=4)=> (v==null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(n);
     const statusHtml = `
@@ -113,15 +123,15 @@ async function loadStatus(){
         <div class="status-cell"><div class="status-k">Training End</div><div class="status-v mono">${esc(fmtTs(tw.end_ts))}</div></div>
         <div class="status-cell"><div class="status-k">Job</div><div class="status-v">${esc(d.job?.status||'—')} ${esc(d.job?.progress||'')}</div></div>
         <div class="status-cell"><div class="status-k">Next Retrain Countdown</div><div class="status-v">${esc(d.next_retrain_countdown_sec ?? '—')}s</div></div>
-        <div class="status-cell"><div class="status-k">Pipeline Feature Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_feature_ts))}</div></div>
-        <div class="status-cell"><div class="status-k">Pipeline Score Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_score_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Pipeline Feature Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_feature_ts))} <span class="small ${cls(freshState(featureAgeM))}">(${featureAgeM==null?"n/a":Math.round(featureAgeM)+"m"})</span></div></div>
+        <div class="status-cell"><div class="status-k">Pipeline Score Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_score_ts || sc.latest_score_ts))} <span class="small ${cls(freshState(scoreAgeM))}">(${scoreAgeM==null?"n/a":Math.round(scoreAgeM)+"m"})</span></div></div>
 
         <div class="status-cell"><div class="status-k">Scores (24h)</div><div class="status-v">${esc(sc.score_rows_24h ?? '—')}</div></div>
         <div class="status-cell"><div class="status-k">Scored Snapshots (24h)</div><div class="status-v">${esc(sc.scored_snapshots_24h ?? '—')}</div></div>
-        <div class="status-cell"><div class="status-k">Score Coverage (7d)</div><div class="status-v">${esc(pct(sc.coverage_7d))}</div></div>
+        <div class="status-cell"><div class="status-k">Score Coverage (7d)</div><div class="status-v"><span class="${cls(covState(coverage))}">${esc(pct(coverage))}</span></div></div>
         <div class="status-cell"><div class="status-k">Avg Pred Return (24h)</div><div class="status-v">${esc(dec(sc.avg_pred_return_24h, 4))}</div></div>
         <div class="status-cell"><div class="status-k">Avg p(bigwin) (24h)</div><div class="status-v">${esc(dec(sc.avg_p_bigwin_24h, 4))}</div></div>
-        <div class="status-cell"><div class="status-k">Latest Score TS</div><div class="status-v mono">${esc(fmtTs(sc.latest_score_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Latest Score TS</div><div class="status-v mono">${esc(fmtTs(sc.latest_score_ts))} <span class="small ${cls(freshState(minsAgo(sc.latest_score_ts)))}">(${minsAgo(sc.latest_score_ts)==null?"n/a":Math.round(minsAgo(sc.latest_score_ts))+"m"})</span></div></div>
       </div>
       <div class="small" style="margin-top:8px;"><span class="err">${esc(d.last_error||tw.error||sc.error||'')}</span></div>
     `;
