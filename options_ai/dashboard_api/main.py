@@ -5198,6 +5198,67 @@ def create_app() -> FastAPI:
             return {'error': str(e)}
 
 
+
+    def _scoring_status(horizon_minutes: int, model_version: str) -> dict[str, Any] | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        try:
+            with _pg_connect(dsn) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      count(*) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS score_rows_24h,
+                      count(DISTINCT snapshot_ts) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS scored_snapshots_24h,
+                      avg(pred_return) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS avg_pred_return_24h,
+                      avg(p_bigwin) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS avg_p_bigwin_24h,
+                      max(snapshot_ts) AS latest_score_ts
+                    FROM spx.debit_spread_scores_0dte
+                    WHERE horizon_minutes=%s AND model_version=%s
+                    """,
+                    (int(horizon_minutes), str(model_version)),
+                )
+                r = cur.fetchone()
+                score_rows_24h, scored_snapshots_24h, avg_pred_return_24h, avg_p_bigwin_24h, latest_score_ts = r
+
+                cur.execute(
+                    """
+                    WITH trad AS (
+                      SELECT DISTINCT snapshot_ts, anchor_type, spread_type
+                      FROM spx.debit_spread_candidates_0dte
+                      WHERE tradable=true
+                        AND snapshot_ts >= now() - interval '7 days'
+                    )
+                    SELECT
+                      count(*) AS tradable_keys_7d,
+                      sum(CASE WHEN s.snapshot_ts IS NOT NULL THEN 1 ELSE 0 END) AS scored_keys_7d
+                    FROM trad t
+                    LEFT JOIN spx.debit_spread_scores_0dte s
+                      ON s.snapshot_ts=t.snapshot_ts
+                     AND s.anchor_type=t.anchor_type
+                     AND s.spread_type=t.spread_type
+                     AND s.horizon_minutes=%s
+                     AND s.model_version=%s
+                    """,
+                    (int(horizon_minutes), str(model_version)),
+                )
+                t = cur.fetchone()
+                tradable_keys_7d, scored_keys_7d = (t[0] or 0), (t[1] or 0)
+                coverage_7d = (float(scored_keys_7d) / float(tradable_keys_7d)) if tradable_keys_7d else None
+
+                return {
+                    'score_rows_24h': int(score_rows_24h or 0),
+                    'scored_snapshots_24h': int(scored_snapshots_24h or 0),
+                    'avg_pred_return_24h': (float(avg_pred_return_24h) if avg_pred_return_24h is not None else None),
+                    'avg_p_bigwin_24h': (float(avg_p_bigwin_24h) if avg_p_bigwin_24h is not None else None),
+                    'latest_score_ts': _to_central_iso(latest_score_ts),
+                    'coverage_7d': coverage_7d,
+                    'tradable_keys_7d': int(tradable_keys_7d or 0),
+                    'scored_keys_7d': int(scored_keys_7d or 0),
+                }
+        except Exception as e:
+            return {'error': str(e)}
+
     def _run_ml_job(action: str, actor: str) -> None:
         started = datetime.now(timezone.utc)
         job_id = str(uuid.uuid4())
@@ -5468,6 +5529,7 @@ def create_app() -> FastAPI:
             "last_error": last_err,
             "auto_retrain_enabled": auto_enabled,
             "pipeline_freshness": _pipeline_health(),
+            "scoring_status": _scoring_status(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")), model_version),
         }
 
     @app.get('/health/pipeline')

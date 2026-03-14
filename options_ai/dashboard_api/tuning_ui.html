@@ -99,6 +99,9 @@ async function loadStatus(){
     const d=await j('/ml/status');
     const tw=d.training_window||{};
     const pf=d.pipeline_freshness||{};
+    const sc=d.scoring_status||{};
+    const pct = (v)=> (v==null || !Number.isFinite(Number(v))) ? '—' : `${(100*Number(v)).toFixed(1)}%`;
+    const dec = (v,n=4)=> (v==null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(n);
     const statusHtml = `
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">${stateBadge(d.model_state)} <span class="small">model: <span class="mono">${esc(d.model_version||'—')}</span></span></div>
       <div class="status-grid">
@@ -112,8 +115,15 @@ async function loadStatus(){
         <div class="status-cell"><div class="status-k">Next Retrain Countdown</div><div class="status-v">${esc(d.next_retrain_countdown_sec ?? '—')}s</div></div>
         <div class="status-cell"><div class="status-k">Pipeline Feature Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_feature_ts))}</div></div>
         <div class="status-cell"><div class="status-k">Pipeline Score Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_score_ts))}</div></div>
+
+        <div class="status-cell"><div class="status-k">Scores (24h)</div><div class="status-v">${esc(sc.score_rows_24h ?? '—')}</div></div>
+        <div class="status-cell"><div class="status-k">Scored Snapshots (24h)</div><div class="status-v">${esc(sc.scored_snapshots_24h ?? '—')}</div></div>
+        <div class="status-cell"><div class="status-k">Score Coverage (7d)</div><div class="status-v">${esc(pct(sc.coverage_7d))}</div></div>
+        <div class="status-cell"><div class="status-k">Avg Pred Return (24h)</div><div class="status-v">${esc(dec(sc.avg_pred_return_24h, 4))}</div></div>
+        <div class="status-cell"><div class="status-k">Avg p(bigwin) (24h)</div><div class="status-v">${esc(dec(sc.avg_p_bigwin_24h, 4))}</div></div>
+        <div class="status-cell"><div class="status-k">Latest Score TS</div><div class="status-v mono">${esc(fmtTs(sc.latest_score_ts))}</div></div>
       </div>
-      <div class="small" style="margin-top:8px;"><span class="err">${esc(d.last_error||tw.error||'')}</span></div>
+      <div class="small" style="margin-top:8px;"><span class="err">${esc(d.last_error||tw.error||sc.error||'')}</span></div>
     `;
     document.getElementById('status').innerHTML=statusHtml;
     document.getElementById('autoRetrain').checked=!!d.auto_retrain_enabled;
