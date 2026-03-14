@@ -1,6 +1,19 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>Model Tuning Control Center</title>
 <style>body{font-family:Arial;margin:20px;background:#0f1115;color:#e8eaed} .card{border:1px solid #2a2f3a;padding:12px;border-radius:8px;margin-bottom:12px;background:#151922} label{display:block;margin:6px 0} input,select{background:#0f1115;color:#e8eaed;border:1px solid #374151;padding:4px 6px;border-radius:4px} button{margin-right:8px;padding:6px 10px} .row{display:grid;grid-template-columns:280px 1fr 1fr 1fr;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #262b36}.err{color:#ff7b7b}.ok{color:#8be28b}.small{font-size:12px;color:#aab0b7}</style>
+<style>
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:6px}
+.status-cell{border:1px solid #2b3342;border-radius:8px;padding:8px;background:#111827}
+.status-k{font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.03em}
+.status-v{font-size:14px;color:#e5e7eb;margin-top:3px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+.badge-ready{background:#14532d;color:#bbf7d0}
+.badge-training{background:#78350f;color:#fde68a}
+.badge-failed{background:#7f1d1d;color:#fecaca}
+.badge-idle{background:#1f2937;color:#d1d5db}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+</style>
+
 </head><body>
 <h2>Model Tuning Control Center (No Execution Access)</h2>
 <div class="small" id="tuningBuildStamp">Build: 2026-03-14.2</div>
@@ -72,13 +85,52 @@ function refreshPending(){
 async function loadConfig(){ const d=await j('/config/current'); current=d.current; draft=JSON.parse(JSON.stringify(current)); specs=d.specs; renderFields(); refreshPending(); }
 async function loadProfiles(){ const d=await j('/config/profiles'); const sel=document.getElementById('profileSelect'); sel.innerHTML=''; (d.profiles||[]).forEach(p=>{const o=document.createElement('option'); o.value=p.name; o.textContent=`${p.name} (v${p.version})`; sel.appendChild(o);}); }
 async function loadAudit(){ const d=await j('/config/audit-log'); document.getElementById('audit').textContent=JSON.stringify(d.items||[],null,2); }
-async function loadStatus(){ const _m=document.getElementById('statusRefreshMsg'); if(_m) _m.textContent='Refreshing…'; try{ const d=await j('/ml/status'); document.getElementById('status').innerHTML=`State: <b>${esc(d.model_state)}</b> | Version: ${esc(d.model_version)} | Last retrain: ${esc(d.last_retrain_ts)} | Duration: ${esc(d.last_retrain_duration_sec)}s | Train rows: ${esc(d.training_rows)}<br>Training range: <b>${esc((d.training_window||{}).start_ts||'—')}</b> → <b>${esc((d.training_window||{}).end_ts||'—')}</b> | days: ${esc((d.training_window||{}).days||0)}<br>Job: ${esc(d.job?.status)} ${esc(d.job?.progress||'')} | Next retrain in: ${esc(d.next_retrain_countdown_sec)}s<br>Pipeline freshness: ${esc(JSON.stringify(d.pipeline_freshness||{}))}<br><span class='err'>${esc(d.last_error||((d.training_window||{}).error)||'')}</span>`;
+async function loadStatus(){
+  const _m=document.getElementById('statusRefreshMsg');
+  if(_m) _m.textContent='Refreshing…';
+  const fmtTs = (v)=> v ? String(v) : '—';
+  const fmtSec = (v)=> (v==null || v==='') ? '—' : `${Number(v).toFixed(1)}s`;
+  const stateBadge = (st)=>{
+    const s=String(st||'Idle');
+    const cls = s==='Ready' ? 'badge-ready' : (s==='Training' ? 'badge-training' : (s==='Failed' ? 'badge-failed' : 'badge-idle'));
+    return `<span class="badge ${cls}">${esc(s)}</span>`;
+  };
+  try{
+    const d=await j('/ml/status');
+    const tw=d.training_window||{};
+    const pf=d.pipeline_freshness||{};
+    const statusHtml = `
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">${stateBadge(d.model_state)} <span class="small">model: <span class="mono">${esc(d.model_version||'—')}</span></span></div>
+      <div class="status-grid">
+        <div class="status-cell"><div class="status-k">Last Retrain</div><div class="status-v mono">${esc(fmtTs(d.last_retrain_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Retrain Duration</div><div class="status-v">${esc(fmtSec(d.last_retrain_duration_sec))}</div></div>
+        <div class="status-cell"><div class="status-k">Training Rows</div><div class="status-v">${esc(d.training_rows ?? '—')}</div></div>
+        <div class="status-cell"><div class="status-k">Training Days</div><div class="status-v">${esc(tw.days ?? '—')}</div></div>
+        <div class="status-cell"><div class="status-k">Training Start</div><div class="status-v mono">${esc(fmtTs(tw.start_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Training End</div><div class="status-v mono">${esc(fmtTs(tw.end_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Job</div><div class="status-v">${esc(d.job?.status||'—')} ${esc(d.job?.progress||'')}</div></div>
+        <div class="status-cell"><div class="status-k">Next Retrain Countdown</div><div class="status-v">${esc(d.next_retrain_countdown_sec ?? '—')}s</div></div>
+        <div class="status-cell"><div class="status-k">Pipeline Feature Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_feature_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Pipeline Score Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_score_ts))}</div></div>
+      </div>
+      <div class="small" style="margin-top:8px;"><span class="err">${esc(d.last_error||tw.error||'')}</span></div>
+    `;
+    document.getElementById('status').innerHTML=statusHtml;
     document.getElementById('autoRetrain').checked=!!d.auto_retrain_enabled;
     document.getElementById('updated').textContent='Last updated: '+new Date().toLocaleTimeString();
     document.getElementById('retrainBtn').disabled=(d.model_state==='Training');
-    const trc=d.training_range_config||{}; const ss=document.getElementById('trainStartTs'); const ee=document.getElementById('trainEndTs'); if(ss && document.activeElement!==ss) ss.value=(trc.start_ts||''); if(ee && document.activeElement!==ee) ee.value=(trc.end_ts||''); if(_m) _m.textContent='OK';
-  }catch(e){ document.getElementById('status').innerHTML='<span class="err">Refresh failed (auto-retrying)</span>'; if(_m) _m.textContent='Refresh failed'; }
+    const trc=d.training_range_config||{};
+    const ss=document.getElementById('trainStartTs');
+    const ee=document.getElementById('trainEndTs');
+    if(ss && document.activeElement!==ss) ss.value=(trc.start_ts||'');
+    if(ee && document.activeElement!==ee) ee.value=(trc.end_ts||'');
+    if(_m) _m.textContent='OK';
+  }catch(e){
+    document.getElementById('status').innerHTML='<span class="err">Refresh failed (auto-retrying)</span>';
+    if(_m) _m.textContent='Refresh failed';
+  }
 }
+
 
 document.getElementById('applyBtn').onclick=async()=>{document.getElementById('applyErr').textContent=''; try{const d=await j('/config/profiles/apply-current',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({config:draft})}); await loadConfig(); await loadAudit(); alert('Applied version '+d.version);}catch(e){document.getElementById('applyErr').textContent=e.message;}};
 document.getElementById('reloadBtn').onclick=loadConfig;
