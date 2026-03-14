@@ -572,13 +572,21 @@ def create_app() -> FastAPI:
         html_path = Path(__file__).with_name("ui.html")
         return html_path.read_text(encoding="utf-8")
 
-    @app.get("/tuning", response_class=HTMLResponse)
-    def tuning_ui(response: Response) -> str:
+    def _render_tuning_ui(response: Response) -> str:
         response.headers["Cache-Control"] = "no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         html_path = Path(__file__).with_name("tuning_ui.html")
         return html_path.read_text(encoding="utf-8")
+
+    @app.get("/tuning", response_class=HTMLResponse)
+    def tuning_ui(response: Response) -> str:
+        return _render_tuning_ui(response)
+
+    # Alias for API-prefixed reverse proxies that only forward /api/* paths.
+    @app.get("/api/tuning", response_class=HTMLResponse)
+    def tuning_ui_api_alias(response: Response) -> str:
+        return _render_tuning_ui(response)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
