@@ -1114,6 +1114,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <label style="margin-left:10px;">Budget <input id="btSamplerBudget" type="number" value="5000" min="1" max="200000" style="width:95px;" /></label>
                 <span class="hint" id="btSamplerCounters" style="margin-left:10px;"></span>
                 <span class="hint" id="btNote" style="margin-left:10px;"></span>
+                <span id="btRegimeBadge" style="margin-left:8px; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted);">Regime: off</span>
               </div>
             </div>
           </div>
@@ -1989,6 +1990,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btFlowMinConf', p.flow_gate_min_confidence);
       setc('btUseRegime', p.regime_enabled);
       setv('btRegimeMinConf', p.regime_min_confidence);
+      const badge0 = document.getElementById('btRegimeBadge'); if (badge0) { const on = !!p.regime_enabled; badge0.textContent = on ? `Regime: ON (min ${Number(p.regime_min_confidence ?? 0.55).toFixed(2)})` : 'Regime: OFF'; badge0.style.borderColor = on ? 'var(--ok,#2e7d32)' : 'var(--line)'; badge0.style.color = on ? 'var(--ok,#2e7d32)' : 'var(--muted)'; }
 
       setc('btEnablePW', p.enable_pw_trade);
       setc('btEnableCW', p.enable_cw_trade);
@@ -3253,6 +3255,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         throw new Error(`backtest http ${resp.status}: ${t}`);
       }
       const data = await resp.json();
+
+      const badge = document.getElementById('btRegimeBadge');
+      if (badge) {
+        const on = !!(data?.config?.regime_enabled);
+        const minc = Number(data?.config?.regime_min_confidence ?? 0.55);
+        const trades = Array.isArray(data?.trades) ? data.trades : [];
+        const byReg = {};
+        for (const t of trades) {
+          const k = (t?.regime_label || 'n/a');
+          byReg[k] = (byReg[k] || 0) + 1;
+        }
+        const tops = Object.entries(byReg).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([k,v])=>`${k}:${v}`).join(', ');
+        badge.textContent = on ? `Regime: ON (min ${minc.toFixed(2)})${tops ? ' • '+tops : ''}` : 'Regime: OFF';
+        badge.style.borderColor = on ? 'var(--ok,#2e7d32)' : 'var(--line)';
+        badge.style.color = on ? 'var(--ok,#2e7d32)' : 'var(--muted)';
+      }
 
       const sum = document.getElementById('btSummary');
       if (sum) sum.textContent = JSON.stringify(data.summary || {}, null, 2);
