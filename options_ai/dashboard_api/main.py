@@ -515,6 +515,7 @@ def create_app() -> FastAPI:
         try:
             _con.execute("ALTER TABLE portfolio_defs ADD COLUMN IF NOT EXISTS execution_exit_policy TEXT NOT NULL DEFAULT 'any_leg'")
             _con.execute("UPDATE portfolio_defs SET execution_exit_policy='any_leg' WHERE execution_exit_policy IS NULL OR execution_exit_policy='' OR execution_exit_policy NOT IN ('any_leg','entry_leg')")
+            _con.execute("CREATE TABLE IF NOT EXISTS portfolio_ui_snapshots (portfolio_id BIGINT PRIMARY KEY, portfolio_updated_at_utc TEXT NOT NULL, saved_at_ms BIGINT NOT NULL, snapshot_json TEXT NOT NULL, updated_at_utc TEXT NOT NULL)")
             _con.commit()
         except Exception:
             pass
@@ -1945,6 +1946,63 @@ def create_app() -> FastAPI:
         except Exception:
             out_legs = []
         return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'execution_exit_policy': new_exit_policy, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label, 'signal_engine_enabled': bool(int(new_sig))}
+
+    @app.get('/api/portfolios/{portfolio_id}/ui_snapshot')
+    def portfolio_ui_snapshot_get(portfolio_id: int) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            r = con.execute(
+                "SELECT portfolio_id, portfolio_updated_at_utc, saved_at_ms, snapshot_json, updated_at_utc FROM portfolio_ui_snapshots WHERE portfolio_id=?",
+                (int(portfolio_id),)
+            ).fetchone()
+            if not r:
+                return {'portfolio_id': int(portfolio_id), 'snapshot': None}
+            try:
+                snap = _json.loads(r['snapshot_json'] or '{}')
+            except Exception:
+                snap = None
+            return {
+                'portfolio_id': int(r['portfolio_id']),
+                'portfolio_updated_at_utc': str(r['portfolio_updated_at_utc'] or ''),
+                'saved_at_ms': int(r['saved_at_ms'] or 0),
+                'updated_at_utc': str(r['updated_at_utc'] or ''),
+                'snapshot': snap,
+            }
+
+    @app.put('/api/portfolios/{portfolio_id}/ui_snapshot')
+    def portfolio_ui_snapshot_put(portfolio_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        payload = body or {}
+        p_upd = str(payload.get('portfolio_updated_at_utc') or '')
+        try:
+            saved_at_ms = int(payload.get('saved_at_ms') or int(datetime.now(timezone.utc).timestamp() * 1000))
+        except Exception:
+            saved_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        snap_obj = {
+            'combined_summary': payload.get('combined_summary') or {},
+            'combined_equity_curve': payload.get('combined_equity_curve') or [],
+            'legs_summaries': payload.get('legs_summaries') or [],
+            'progress_snapshot': payload.get('progress_snapshot') if isinstance(payload.get('progress_snapshot'), dict) else None,
+            'saved_at_ms': saved_at_ms,
+            'portfolio_updated_at_utc': p_upd,
+        }
+        snap_json = _json.dumps(snap_obj, separators=(',', ':'), sort_keys=True)
+        if len(snap_json) > 2_000_000:
+            raise HTTPException(status_code=413, detail='snapshot too large')
+        now = _now_utc_iso()
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                INSERT INTO portfolio_ui_snapshots(portfolio_id, portfolio_updated_at_utc, saved_at_ms, snapshot_json, updated_at_utc)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT (portfolio_id)
+                DO UPDATE SET portfolio_updated_at_utc=EXCLUDED.portfolio_updated_at_utc,
+                              saved_at_ms=EXCLUDED.saved_at_ms,
+                              snapshot_json=EXCLUDED.snapshot_json,
+                              updated_at_utc=EXCLUDED.updated_at_utc
+                """,
+                (int(portfolio_id), p_upd, int(saved_at_ms), snap_json, now)
+            )
+            con.commit()
+        return {'ok': True, 'portfolio_id': int(portfolio_id), 'saved_at_ms': int(saved_at_ms), 'updated_at_utc': now}
 
     def _hhmm_to_minutes_local(x: str | None) -> int | None:
         if not x:

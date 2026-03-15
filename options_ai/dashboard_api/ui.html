@@ -3700,6 +3700,44 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       return days * 24 * 60 * 60 * 1000;
     }
 
+    let pfSnapshotPushTimers = {};
+    let pfSnapshotPushPayload = {};
+    let pfSnapshotLastPushMs = {};
+    const PF_SNAPSHOT_PUSH_MIN_MS = 4000;
+
+    async function pfLoadCardCacheRemote(pid, portfolioUpdatedAt) {
+      try {
+        const r = await jget(`/api/portfolios/${pid}/ui_snapshot`);
+        if (!r || !r.snapshot) return null;
+        const obj = r.snapshot;
+        const age = Date.now() - Number(obj.saved_at_ms || 0);
+        if (!Number.isFinite(age) || age < 0 || age > pfCacheTtlMs()) return null;
+        if (String(obj.portfolio_updated_at_utc || '') !== String(portfolioUpdatedAt || '')) return null;
+        return obj;
+      } catch {
+        return null;
+      }
+    }
+
+    function pfQueueCardCacheRemote(pid, payload) {
+      const id = String(pid);
+      pfSnapshotPushPayload[id] = payload;
+      if (pfSnapshotPushTimers[id]) return;
+      const elapsed = Date.now() - Number(pfSnapshotLastPushMs[id] || 0);
+      const wait = Math.max(500, PF_SNAPSHOT_PUSH_MIN_MS - elapsed);
+      pfSnapshotPushTimers[id] = setTimeout(async () => {
+        const pl = pfSnapshotPushPayload[id];
+        delete pfSnapshotPushTimers[id];
+        if (!pl) return;
+        try {
+          await jput(`/api/portfolios/${id}/ui_snapshot`, pl);
+          pfSnapshotLastPushMs[id] = Date.now();
+        } catch {
+          // best effort only
+        }
+      }, wait);
+    }
+
     function pfSaveCardCache(pid, portfolioUpdatedAt, summary, equity, legsSummaries=[], progressSnap=null) {
       try {
         const payload = {
@@ -3711,7 +3749,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           progress_snapshot: (progressSnap && typeof progressSnap === 'object') ? progressSnap : null,
         };
         localStorage.setItem(pfCacheKey(pid), JSON.stringify(payload));
-      } catch {}
+        pfQueueCardCacheRemote(pid, payload);
+      } catch {
+        try { pfQueueCardCacheRemote(pid, payload); } catch {}
+      }
     }
 
     function pfLoadCardCache(pid, portfolioUpdatedAt) {
@@ -4511,6 +4552,28 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
             note.textContent = iso ? `Status: Cached snapshot · ${iso}` : 'Status: Cached snapshot';
           }
         }
+
+        safe(`pf_card_remote_${pid}`, async () => {
+          const remote = await pfLoadCardCacheRemote(pid, it.updated_at_utc || '');
+          if (!remote) return;
+          const local = pfLoadCardCache(pid, it.updated_at_utc || '');
+          if (local && Number(local.saved_at_ms || 0) >= Number(remote.saved_at_ms || 0)) return;
+          pfSaveCardCache(pid, it.updated_at_utc || '', remote.combined_summary, remote.combined_equity_curve || [], remote.legs_summaries || [], remote.progress_snapshot || null);
+          if (Array.isArray(remote.combined_equity_curve)) pfRenderCardEquity(pid, remote.combined_equity_curve);
+          pfRenderCardSummaryGraphics(pid, remote.combined_summary || {});
+          pfRenderCardLineMetrics(pid, remote.legs_summaries || []);
+          const ps = (remote.progress_snapshot && typeof remote.progress_snapshot === 'object') ? remote.progress_snapshot : null;
+          if (ps) {
+            const stLike = {
+              status: 'running',
+              progress_percent_estimate: Number(ps.progress_percent_estimate || 0),
+              current_leg_index: Number(ps.current_leg_index || 0),
+              avg_leg_seconds_estimate: Number(ps.avg_leg_seconds_estimate || 0),
+              last_activity_at_utc: ps.last_activity_at_utc || null,
+            };
+            pfRenderCardProgress(pid, Number(ps.legs_completed || 0), Number(ps.legs_total || 0), stLike);
+          }
+        });
 
         const persistedSid2 = Number(pfCardSessions[String(pid)] || 0);
         if (Number.isFinite(persistedSid2) && persistedSid2 > 0) {
