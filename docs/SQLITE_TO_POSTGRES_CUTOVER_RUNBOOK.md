@@ -66,3 +66,20 @@ Data is migrated, but runtime cutover requires code refactor before flipping `DA
 - Keep previous `.env` backup and sqlite DB snapshot.
 - Revert config + restart services.
 - No destructive migration steps were applied to SQLite.
+
+
+### One-command freeze/sync/parity helper
+
+Use:
+```bash
+cd /opt/OptionsPredicator
+./scripts/run_pg_cutover_freeze.sh "postgresql://spx:spxpass@localhost:5433/spxdb" spx
+```
+
+This script will:
+- backup `.env`
+- force `TRADING_ENABLED=false`
+- stop execution + dashboard services (sudo)
+- run final incremental sqlite->pg sync
+- run strict parity check
+
