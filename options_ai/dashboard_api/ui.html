@@ -1892,6 +1892,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     let pfCardRanges = {}; // portfolio_id -> {start,end}
     let pfCardModes = {}; // portfolio_id -> independent|merged
     let pfCardExitPolicies = {}; // portfolio_id -> any_leg|entry_leg
+    let pfQueuedStarts = {}; // portfolio_id -> { reqBody, waiting_sid, queued_at_ms }
+    let pfQueueWatchers = {}; // portfolio_id -> interval id
 
     const PF_CARD_SESSIONS_KEY = 'pf_card_sessions_v1';
     function pfLoadCardSessions() {
@@ -3964,12 +3966,78 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       toast('group date window saved', 'success');
     }
 
+    function pfExtractActiveSessionIdFromError(errLike) {
+      const raw = String(errLike?.message || errLike || '');
+      let detail = raw;
+      try {
+        const obj = JSON.parse(raw);
+        if (obj && typeof obj === 'object' && obj.detail) detail = String(obj.detail);
+      } catch {}
+      const m = detail.match(/already active:\s*(\d+)/i);
+      return m ? Number(m[1]) : null;
+    }
+
+    async function pfActivateSession(pid, sid) {
+      pfSetCardSession(pid, sid);
+      if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
+      pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
+      await pfPollSingleGroup(pid);
+    }
+
+    async function pfProcessQueuedStart(pid) {
+      const q = pfQueuedStarts[String(pid)];
+      if (!q) {
+        if (pfQueueWatchers[String(pid)]) { clearInterval(pfQueueWatchers[String(pid)]); delete pfQueueWatchers[String(pid)]; }
+        return;
+      }
+      const note = document.getElementById(`pfCardNote-${pid}`);
+      const sid = Number(q.waiting_sid || 0);
+      try {
+        if (sid > 0) {
+          const st = await jget(`/api/portfolio_backtest/status?session_id=${sid}`);
+          const stRaw = String(st?.status || '').toLowerCase();
+          if (['running','stopping'].includes(stRaw)) {
+            if (note) note.textContent = `Status: Queued · Waiting for session ${sid} (${pfPrettyStatus(stRaw)})`;
+            return;
+          }
+        }
+      } catch {}
+
+      // queue can start now
+      try {
+        const resp = await jpost('/api/portfolio_backtest/start', q.reqBody || {});
+        delete pfQueuedStarts[String(pid)];
+        if (pfQueueWatchers[String(pid)]) { clearInterval(pfQueueWatchers[String(pid)]); delete pfQueueWatchers[String(pid)]; }
+        if (note) note.textContent = 'Status: Queued run started';
+        await pfActivateSession(pid, Number(resp.session_id));
+        toast('Queued group run started', 'success');
+      } catch (e2) {
+        const sid2 = pfExtractActiveSessionIdFromError(e2);
+        if (sid2) {
+          q.waiting_sid = Number(sid2);
+          pfQueuedStarts[String(pid)] = q;
+          if (note) note.textContent = `Status: Queued · Waiting for session ${sid2}`;
+          return;
+        }
+        delete pfQueuedStarts[String(pid)];
+        if (pfQueueWatchers[String(pid)]) { clearInterval(pfQueueWatchers[String(pid)]); delete pfQueueWatchers[String(pid)]; }
+        if (note) note.textContent = 'Status: Queue failed to start';
+        toast('Queued start failed', 'error');
+      }
+    }
+
     async function pfRunSingleGroup(pid) {
       const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
       if (!it) throw new Error('group not found');
       const legs = Array.isArray(it.legs) ? it.legs : [];
       if (!legs.length) throw new Error('group has no parameter lines');
       const note = document.getElementById(`pfCardNote-${pid}`);
+      if (pfQueuedStarts[String(pid)]) {
+        if (note) note.textContent = 'Status: Already queued';
+        toast('This group is already queued', 'info');
+        return;
+      }
+
       if (note) note.textContent = 'Status: Starting run…';
       renderBtSummaryGraphics({});
       pfRenderCardProgress(pid, 0, (legs || []).length);
@@ -3987,51 +4055,20 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       try {
         resp = await jpost('/api/portfolio_backtest/start', reqBody);
       } catch (e) {
-        const raw = String(e?.message || e || '');
-        let detail = raw;
-        try {
-          const obj = JSON.parse(raw);
-          if (obj && typeof obj === 'object' && obj.detail) detail = String(obj.detail);
-        } catch {}
+        const sid = pfExtractActiveSessionIdFromError(e);
+        if (!sid) throw e;
 
-        // Friendly handling for "already active" conflict:
-        // - if active: auto-attach to active session and begin polling
-        // - if already stopped/failed (race): retry start once automatically
-        const m = detail.match(/already active:\s*(\d+)/i);
-        if (m) {
-          const sid = Number(m[1]);
-          try {
-            const st = await jget(`/api/portfolio_backtest/status?session_id=${sid}`);
-            const stRaw = String(st?.status || '').toLowerCase();
-            if (['running','stopping'].includes(stRaw)) {
-              pfSetCardSession(pid, sid);
-              if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
-              pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
-              if (note) note.textContent = `Status: Attached to active session ${sid}`;
-              await pfPollSingleGroup(pid);
-              toast(`Attached to active run (session ${sid})`, 'info');
-              return;
-            }
-          } catch {}
-
-          // Small race/backoff retry for stale conflict records
-          await new Promise(r => setTimeout(r, 350));
-          try {
-            resp = await jpost('/api/portfolio_backtest/start', reqBody);
-          } catch {
-            if (note) note.textContent = `Status: Busy (session ${sid}) — try again in a moment`;
-            toast(`A group backtest is still active (session ${sid}).`, 'warn');
-            return;
-          }
-        } else {
-          throw e;
+        pfQueuedStarts[String(pid)] = { reqBody, waiting_sid: sid, queued_at_ms: Date.now() };
+        if (note) note.textContent = `Status: Queued · Waiting for session ${sid}`;
+        if (!pfQueueWatchers[String(pid)]) {
+          pfQueueWatchers[String(pid)] = setInterval(() => safe(`pf_queue_${pid}`, () => pfProcessQueuedStart(pid)), 2500);
         }
+        await pfProcessQueuedStart(pid);
+        toast(`Queued. Waiting for active session ${sid} to finish.`, 'info');
+        return;
       }
 
-      pfSetCardSession(pid, resp.session_id);
-      if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
-      pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
-      await pfPollSingleGroup(pid);
+      await pfActivateSession(pid, Number(resp.session_id));
     }
 
     async function pfStopSingleGroup(pid) {
