@@ -2893,7 +2893,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         }
 
         const saveBtn = document.createElement('button');
-        saveBtn.textContent = 'Save';
+        saveBtn.textContent = 'Save→Portfolio';
         saveBtn.className = 'btn-primary';
         saveBtn.style.padding = '4px 8px';
         saveBtn.style.marginLeft = '6px';
@@ -2922,6 +2922,32 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
         tdAddPf.appendChild(pfSel);
         tdAddPf.appendChild(saveBtn);
+
+        const saveGroupBtn = document.createElement('button');
+        saveGroupBtn.textContent = 'Save→Group';
+        saveGroupBtn.className = 'btn';
+        saveGroupBtn.style.padding = '4px 8px';
+        saveGroupBtn.style.marginLeft = '6px';
+        saveGroupBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const hint = Array.isArray(it.group_memberships) && it.group_memberships.length
+            ? `Existing: ${it.group_memberships.map(g => `#${g.id} ${g.name || ''}`.trim()).join(', ')}`
+            : 'Enter existing group ID or new group name';
+          const raw = prompt(`Save run ${rid} to Parameter Group.\n${hint}`, `Run ${rid} Group`);
+          if (!raw || !String(raw).trim()) return;
+          try {
+            saveGroupBtn.disabled = true;
+            const res = await btAddRunToGroup(it, raw);
+            await safe('bt_runs', () => btRefreshRuns());
+            toast(`Saved to group #${res.group_id}`, 'success');
+          } catch (e) {
+            console.error('bt_row_add_to_group', e);
+            toast('Save to group failed', 'error');
+          } finally {
+            saveGroupBtn.disabled = false;
+          }
+        });
+        tdAddPf.appendChild(saveGroupBtn);
 
         const tdAct = document.createElement('td');
         const delBtn = document.createElement('button');
@@ -3046,6 +3072,17 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       await jput(`/api/portfolios/${pid}`, { legs });
       return { added: true };
+    }
+
+    async function btAddRunToGroup(runItem, groupRef) {
+      const rid = Number(runItem && runItem.id);
+      if (!Number.isFinite(rid)) throw new Error('invalid run id');
+      const raw = String(groupRef || '').trim();
+      if (!raw) throw new Error('group name or id required');
+      const payload = {};
+      if (/^\d+$/.test(raw)) payload.group_id = Number(raw);
+      else payload.create_group_name = raw;
+      return await jpost(`/api/backtest/runs/${rid}/send-to-groups`, payload);
     }
 
     async function btRunsDeleteIds(ids) {
