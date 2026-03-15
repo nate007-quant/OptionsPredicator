@@ -381,7 +381,7 @@ def create_app() -> FastAPI:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS execution_intents (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  id BIGSERIAL PRIMARY KEY,
                   created_at_utc TEXT NOT NULL,
                   updated_at_utc TEXT NOT NULL,
                   environment TEXT NOT NULL,
@@ -402,7 +402,7 @@ def create_app() -> FastAPI:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS trade_runs (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  id BIGSERIAL PRIMARY KEY,
                   created_at_utc TEXT NOT NULL,
                   updated_at_utc TEXT NOT NULL,
                   environment TEXT NOT NULL,
@@ -430,7 +430,7 @@ def create_app() -> FastAPI:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS risk_session_state (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  id BIGSERIAL PRIMARY KEY,
                   created_at_utc TEXT NOT NULL,
                   updated_at_utc TEXT NOT NULL,
                   environment TEXT NOT NULL,
@@ -450,7 +450,7 @@ def create_app() -> FastAPI:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS reprice_policy (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  id BIGSERIAL PRIMARY KEY,
                   created_at_utc TEXT NOT NULL,
                   updated_at_utc TEXT NOT NULL,
                   environment TEXT NOT NULL,
@@ -468,7 +468,7 @@ def create_app() -> FastAPI:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS audit_log (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  id BIGSERIAL PRIMARY KEY,
                   created_at_utc TEXT NOT NULL,
                   environment TEXT NOT NULL,
                   actor TEXT NOT NULL,
@@ -4827,7 +4827,7 @@ def create_app() -> FastAPI:
             con.execute(
                 """
                 CREATE TABLE IF NOT EXISTS storage_metrics_samples (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  id BIGSERIAL PRIMARY KEY,
                   sample_minute_utc TEXT NOT NULL UNIQUE,
                   postgres_bytes INTEGER,
                   timescale_bytes INTEGER,
