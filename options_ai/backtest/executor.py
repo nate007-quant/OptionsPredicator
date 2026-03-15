@@ -6,8 +6,6 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import HTTPException
-
 from options_ai.backtest.registry import StrategyRegistry, canonical_json, params_hash
 
 
@@ -26,7 +24,6 @@ class BacktestExecutor:
             return self._connect_fn(self.db_path)
         con = sqlite3.connect(self.db_path, timeout=30.0)
         con.row_factory = sqlite3.Row
-        # hardening
         try:
             con.execute("PRAGMA journal_mode=WAL")
         except Exception:
@@ -37,14 +34,14 @@ class BacktestExecutor:
             pass
         return con
 
-    def _with_sqlite_retry(self, fn, *, retries: int = 6, base_sleep: float = 0.15):
+    def _with_sqlite_retry(self, fn, *, retries: int = 8, base_sleep: float = 0.15):
         last = None
         for i in range(max(1, int(retries))):
             try:
                 return fn()
             except sqlite3.OperationalError as e:
                 msg = str(e).lower()
-                if "locked" not in msg:
+                if "locked" not in msg and "busy" not in msg:
                     raise
                 last = e
                 time.sleep(float(base_sleep) * (i + 1))
@@ -69,48 +66,51 @@ class BacktestExecutor:
         params_json = canonical_json(canonical_params)
         ph = params_hash(strategy_key=strategy_key, schema_version=schema_version, params_json_canonical=params_json)
 
-        existing_run_id: int | None = None
+        def _read_existing():
+            with self._connect() as con:
+                return con.execute(
+                    """
+                    SELECT id, params_json, summary_json, result_json
+                    FROM backtest_runs
+                    WHERE strategy_key=? AND schema_version=? AND params_hash=?
+                    ORDER BY id ASC
+                    LIMIT 1
+                    """,
+                    (strategy_key, int(schema_version), ph),
+                ).fetchone()
 
-        # global dedupe (unless force_run)
-        with self._connect() as con:
-            row = con.execute(
-                """
-                SELECT id, params_json, summary_json, result_json
-                FROM backtest_runs
-                WHERE strategy_key=? AND schema_version=? AND params_hash=?
-                ORDER BY id ASC
-                LIMIT 1
-                """,
-                (strategy_key, int(schema_version), ph),
-            ).fetchone()
-            if row is not None and not force_run:
-                # Return existing stored result for duplicate params so UI can re-render charts/trades.
-                try:
-                    cfg = json.loads(row[1] or '{}')
-                except Exception:
-                    cfg = None
-                try:
-                    summ = json.loads(row[2] or '{}')
-                except Exception:
-                    summ = None
-                try:
-                    cached = json.loads(row[3] or '{}')
-                except Exception:
-                    cached = {}
-                if not isinstance(cached, dict):
-                    cached = {}
-                cached.setdefault("config", cfg)
-                cached.setdefault("summary", summ)
-                cached.update({
+        row = self._with_sqlite_retry(_read_existing)
+        existing_run_id: int | None = int(row[0]) if row is not None else None
+
+        # Dedup only when force_run is OFF.
+        if row is not None and not force_run:
+            try:
+                cfg = json.loads(row[1] or "{}")
+            except Exception:
+                cfg = None
+            try:
+                summ = json.loads(row[2] or "{}")
+            except Exception:
+                summ = None
+            try:
+                cached = json.loads(row[3] or "{}")
+            except Exception:
+                cached = {}
+            if not isinstance(cached, dict):
+                cached = {}
+            cached.setdefault("config", cfg)
+            cached.setdefault("summary", summ)
+            cached.update(
+                {
                     "duplicate_skipped": True,
+                    "forced_rerun": False,
                     "run_id": int(row[0]),
                     "strategy_key": strategy_key,
                     "schema_version": schema_version,
                     "params_hash": ph,
-                })
-                return cached
-            if row is not None and force_run:
-                existing_run_id = int(row[0])
+                }
+            )
+            return cached
 
         # Execute backtest
         result = strat.run(canonical_params)
@@ -121,56 +121,60 @@ class BacktestExecutor:
 
         now = now_utc_iso()
 
-        with self._connect() as con:
-            if existing_run_id is not None:
-                # Force rerun: keep the same run_id, but update stored summary and timestamp
-                con.execute(
-                    """
-                    UPDATE backtest_runs
-                    SET created_at_utc=?, preset_id=?, preset_name_at_run=?, summary_json=?, result_json=?
-                    WHERE id=?
-                    """,
-                    (
-                        now,
-                        int(preset_id) if preset_id is not None else None,
-                        preset_name_at_run,
-                        summary_json,
-                        result_json,
-                        int(existing_run_id),
-                    ),
-                )
-                run_id = int(existing_run_id)
-            else:
-                cur = con.execute(
-                    """
-                    INSERT INTO backtest_runs(
-                        strategy_key, created_at_utc, preset_id, preset_name_at_run,
-                        params_json, summary_json, result_json,
-                        schema_version, params_hash,
-                        refinement_launched, refinement_sampler_id, refinement_launched_at_utc
+        def _write_run() -> int:
+            with self._connect() as con:
+                if existing_run_id is not None:
+                    con.execute(
+                        """
+                        UPDATE backtest_runs
+                        SET created_at_utc=?, preset_id=?, preset_name_at_run=?, summary_json=?, result_json=?
+                        WHERE id=?
+                        """,
+                        (
+                            now,
+                            int(preset_id) if preset_id is not None else None,
+                            preset_name_at_run,
+                            summary_json,
+                            result_json,
+                            int(existing_run_id),
+                        ),
                     )
-                    VALUES(?,?,?,?,?,?,?,?,?,0,NULL,NULL)
-                    """,
-                    (
-                        strategy_key,
-                        now,
-                        int(preset_id) if preset_id is not None else None,
-                        preset_name_at_run,
-                        params_json,
-                        summary_json,
-                        result_json,
-                        int(schema_version),
-                        ph,
-                    ),
-                )
-                run_id = int(cur.lastrowid)
-            con.commit()
+                    run_id = int(existing_run_id)
+                else:
+                    cur = con.execute(
+                        """
+                        INSERT INTO backtest_runs(
+                            strategy_key, created_at_utc, preset_id, preset_name_at_run,
+                            params_json, summary_json, result_json,
+                            schema_version, params_hash,
+                            refinement_launched, refinement_sampler_id, refinement_launched_at_utc
+                        )
+                        VALUES(?,?,?,?,?,?,?,?,?,0,NULL,NULL)
+                        """,
+                        (
+                            strategy_key,
+                            now,
+                            int(preset_id) if preset_id is not None else None,
+                            preset_name_at_run,
+                            params_json,
+                            summary_json,
+                            result_json,
+                            int(schema_version),
+                            ph,
+                        ),
+                    )
+                    run_id = int(cur.lastrowid)
+                con.commit()
+                return run_id
+
+        run_id = int(self._with_sqlite_retry(_write_run))
 
         if isinstance(result, dict):
+            forced = bool(force_run and existing_run_id is not None)
             result["run_id"] = run_id
             result["preset_id"] = preset_id
-            result["duplicate_skipped"] = (existing_run_id is not None)
-            result["forced_rerun"] = bool(existing_run_id is not None)
+            result["duplicate_skipped"] = False
+            result["forced_rerun"] = forced
             result["strategy_key"] = strategy_key
             result["schema_version"] = schema_version
             result["params_hash"] = ph
@@ -186,7 +190,6 @@ def score_summary(summary: dict[str, Any], *, min_trades: int = 5) -> float | No
         pf = float(summary.get("profit_factor") or 0.0)
         if pf != pf or pf <= 0:
             return None
-        # cap profit factor to avoid inf
         pf_capped = min(pf, 10.0)
         import math
 

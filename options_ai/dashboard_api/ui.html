@@ -4472,16 +4472,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const note = document.getElementById('btNote');
       if (note) note.textContent = 'running…';
 
-      const resp = await fetch('/api/backtest/debit_spreads/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!resp.ok) {
-        const t = await resp.text();
-        throw new Error(`backtest http ${resp.status}: ${t}`);
+      let data;
+      try {
+        const resp = await fetch('/api/backtest/debit_spreads/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!resp.ok) {
+          const t = await resp.text();
+          throw new Error(`backtest http ${resp.status}: ${t}`);
+        }
+        data = await resp.json();
+      } catch (e) {
+        if (note) note.textContent = `error: ${String(e?.message || e)}`;
+        throw e;
       }
-      const data = await resp.json();
 
       const badge = document.getElementById('btRegimeBadge');
       if (badge) {
@@ -4531,7 +4537,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       if (note) note.textContent = `done: ${((data.trades||[]).length)} trades`;
 
-      if (data && data.run_duplicate) {
+      if (data && data.run_duplicate && !data.forced_rerun) {
         toast('Duplicate backtest params (deduped). Enable Force rerun to re-execute.', 'info');
       }
       await btRefreshRuns();
