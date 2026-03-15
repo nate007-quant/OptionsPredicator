@@ -4033,6 +4033,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         const resp = await jpost('/api/portfolio_backtest/start', q.reqBody || {});
         delete pfQueuedStarts[String(pid)];
         if (pfQueueWatchers[String(pid)]) { clearInterval(pfQueueWatchers[String(pid)]); delete pfQueueWatchers[String(pid)]; }
+        const runBtn = document.getElementById(`pfCardRun-${pid}`);
+        if (runBtn) runBtn.disabled = false;
         if (note) note.textContent = 'Status: Queued run started';
         await pfActivateSession(pid, Number(resp.session_id));
         toast('Queued group run started', 'success');
@@ -4046,6 +4048,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         }
         delete pfQueuedStarts[String(pid)];
         if (pfQueueWatchers[String(pid)]) { clearInterval(pfQueueWatchers[String(pid)]); delete pfQueueWatchers[String(pid)]; }
+        const runBtn = document.getElementById(`pfCardRun-${pid}`);
+        if (runBtn) runBtn.disabled = false;
         if (note) note.textContent = 'Status: Queue failed to start';
         toast('Queued start failed', 'error');
       }
@@ -4085,6 +4089,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
         pfQueuedStarts[String(pid)] = { reqBody, waiting_sid: sid, queued_at_ms: Date.now() };
         if (note) note.textContent = `Status: Queued · Waiting for session ${sid}`;
+        const runBtn = document.getElementById(`pfCardRun-${pid}`);
+        if (runBtn) runBtn.disabled = true;
         if (!pfQueueWatchers[String(pid)]) {
           pfQueueWatchers[String(pid)] = setInterval(() => safe(`pf_queue_${pid}`, () => pfProcessQueuedStart(pid)), 2500);
         }
@@ -4133,6 +4139,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (st && (st.status === 'stopped' || st.status === 'failed')) {
         if (pfCardPollers[String(pid)]) { clearInterval(pfCardPollers[String(pid)]); delete pfCardPollers[String(pid)]; }
         pfClearCardSession(pid);
+        if (pfQueueWatchers[String(pid)]) { clearInterval(pfQueueWatchers[String(pid)]); delete pfQueueWatchers[String(pid)]; }
+        delete pfQueuedStarts[String(pid)];
+        const runBtn = document.getElementById(`pfCardRun-${pid}`);
+        if (runBtn) runBtn.disabled = false;
       }
     }
 
@@ -4482,8 +4492,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
             <td id="pfLineMetrics-${pid}-${i}"><span class="hint">entries: — | exits: — (populate after run)</span></td>
             <td id="pfLineMargin-${pid}-${i}"><span class="hint">max: — · min: —</span></td>
             <td>
-              <button id="pfLineSave-${pid}-${i}" class="btn-primary" style="padding:4px 8px;">Save</button>
-              <button id="pfLineDel-${pid}-${i}" class="btn-danger" style="padding:4px 8px; margin-left:6px;">Delete</button>
+              <button type="button" id="pfLineSave-${pid}-${i}" class="btn-primary" style="padding:4px 8px;">Save</button>
+              <button type="button" id="pfLineDel-${pid}-${i}" class="btn-danger" style="padding:4px 8px; margin-left:6px;">Delete</button>
               <div style="margin-top:6px;">
                 <select id="pfLineCopyTarget-${pid}-${i}" style="min-width:160px;">
                   ${(() => {
@@ -4492,7 +4502,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
                     return opts.map(g => `<option value="${esc(String(g.id))}">${esc(String(g.name || ('Group ' + g.id)))}</option>`).join('');
                   })()}
                 </select>
-                <button id="pfLineCopy-${pid}-${i}" style="margin-left:6px;">Copy</button>
+                <button type="button" id="pfLineCopy-${pid}-${i}" style="margin-left:6px;">Copy</button>
               </div>
             </td>
           `;
@@ -4504,8 +4514,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           pfRenderCardLineMetrics(pid, cached.legs_summaries);
         }
 
-        document.getElementById(`pfCardRun-${pid}`)?.addEventListener('click', () => safe(`pf_card_run_${pid}`, () => pfRunSingleGroup(pid)));
-        document.getElementById(`pfCardStop-${pid}`)?.addEventListener('click', () => safe(`pf_card_stop_${pid}`, () => pfStopSingleGroup(pid)));
+        document.getElementById(`pfCardRun-${pid}`)?.addEventListener('click', (ev) => { ev.preventDefault(); safe(`pf_card_run_${pid}`, () => pfRunSingleGroup(pid)); });
+        document.getElementById(`pfCardStop-${pid}`)?.addEventListener('click', (ev) => { ev.preventDefault(); safe(`pf_card_stop_${pid}`, () => pfStopSingleGroup(pid)); });
         document.getElementById(`pfCardAdd-${pid}`)?.addEventListener('click', () => safe(`pf_card_add_${pid}`, () => pfAddGroupLine(pid)));
         document.getElementById(`pfCardMode-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_mode_${pid}`, () => pfSetGroupExecutionMode(pid, ev.target.value)));
         document.getElementById(`pfCardExitPolicy-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_exit_policy_${pid}`, () => pfSetGroupExitPolicy(pid, ev.target.value)));
