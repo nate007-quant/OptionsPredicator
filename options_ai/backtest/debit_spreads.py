@@ -729,6 +729,8 @@ def _fetch_candidates_for_window(
             FROM spx.debit_spread_candidates_0dte c
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
+            LEFT JOIN spx.gex_levels_0dte g
+              ON g.snapshot_ts = c.snapshot_ts
             LEFT JOIN spx.debit_spread_scores_0dte s
               ON s.snapshot_ts = c.snapshot_ts
              AND s.horizon_minutes = %s
