@@ -6010,8 +6010,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         }
       }
 
-      if (auditPre) auditPre.textContent = (latest.audit_tail || []).join('
-');
+      if (auditPre) auditPre.textContent = (latest.audit_tail || []).join('\n');
       return d;
     }
 
