@@ -6,7 +6,6 @@ import logging
 import subprocess
 import threading
 import uuid
-import sqlite3
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -39,7 +38,6 @@ from options_ai.backtest.registry import StrategyRegistry, params_hash
 from options_ai.backtest.sampler_service import BacktestSamplerService
 from options_ai.backtest.portfolio_backtest_service import PortfolioBacktestService
 from options_ai.backtest.portfolio_group_backtest_service import PortfolioGroupBacktestService
-from options_ai.backtest.sqlite_migrations import migrate_backtest_schema, backfill_params_hash
 from options_ai.execution.schema import ensure_execution_hardening_schema
 from options_ai.dashboard_api import tuning_control as tc
 from options_ai.db_compat import connect_compat
@@ -220,21 +218,14 @@ def _db_path_from_database_url(database_url: str) -> str:
     d = str(database_url or "").strip()
     if d.startswith("postgresql://") or d.startswith("postgres://"):
         return d
-    if not d.startswith("sqlite:"):
-        raise ValueError("unsupported DATABASE_URL")
-    p = d.replace("sqlite:", "", 1)
-    while p.startswith("////"):
-        p = p[1:]
-    if not p.startswith("/"):
-        raise ValueError("sqlite path must be absolute")
-    return p
+    raise ValueError("Postgres DATABASE_URL required")
 
 
 def _connect(db_path: str):
     return connect_compat(db_path, timeout=30.0)
 
 
-def _calc_metrics(rows: list[sqlite3.Row]) -> dict[str, Any]:
+def _calc_metrics(rows: list[Any]) -> dict[str, Any]:
     counts = {
         "total_scored": 0,
         "correct": 0,
@@ -335,120 +326,55 @@ def create_app() -> FastAPI:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
     def _ensure_backtest_tables() -> None:
-        if bt_use_pg:
-            if psycopg is None:
-                raise RuntimeError("BACKTEST_DATABASE_URL is set but psycopg is not installed")
-            with psycopg.connect(backtest_db_url) as con:
-                with con.cursor() as cur:
-                    cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS backtest_presets (
-                          id BIGSERIAL PRIMARY KEY,
-                          strategy_key TEXT NOT NULL,
-                          name TEXT NOT NULL,
-                          params_json TEXT NOT NULL,
-                          schema_version INTEGER NOT NULL DEFAULT 1,
-                          created_at_utc TEXT NOT NULL,
-                          updated_at_utc TEXT NOT NULL,
-                          last_run_id BIGINT NULL,
-                          last_run_at_utc TEXT NULL,
-                          last_summary_json TEXT NULL,
-                          UNIQUE(strategy_key, name)
-                        );
-                        """
-                    )
-                    cur.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS backtest_runs (
-                          id BIGSERIAL PRIMARY KEY,
-                          strategy_key TEXT NOT NULL,
-                          created_at_utc TEXT NOT NULL,
-                          preset_id BIGINT NULL,
-                          preset_name_at_run TEXT NULL,
-                          params_json TEXT NOT NULL,
-                          summary_json TEXT NOT NULL,
-                          result_json TEXT NULL,
-                          schema_version INTEGER NOT NULL DEFAULT 1,
-                          params_hash TEXT NOT NULL,
-                          refinement_launched INTEGER NOT NULL DEFAULT 0,
-                          refinement_sampler_id BIGINT NULL,
-                          refinement_launched_at_utc TEXT NULL,
-                          UNIQUE(strategy_key, schema_version, params_hash)
-                        );
-                        """
-                    )
-                    cur.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_created ON backtest_runs(strategy_key, created_at_utc DESC);")
-                    cur.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_created ON backtest_runs(preset_id, created_at_utc DESC);")
-                con.commit()
-            return
-
-        with _connect(db_path) as con:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS backtest_presets (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  strategy_key TEXT NOT NULL,
-                  name TEXT NOT NULL,
-                  params_json TEXT NOT NULL,
-                  schema_version INTEGER NOT NULL DEFAULT 1,
-                  created_at_utc TEXT NOT NULL,
-                  updated_at_utc TEXT NOT NULL,
-                  last_run_id INTEGER NULL,
-                  last_run_at_utc TEXT NULL,
-                  last_summary_json TEXT NULL,
-                  UNIQUE(strategy_key, name)
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS backtest_runs (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  strategy_key TEXT NOT NULL,
-                  created_at_utc TEXT NOT NULL,
-                  preset_id INTEGER NULL,
-                  preset_name_at_run TEXT NULL,
-                  params_json TEXT NOT NULL,
-                  summary_json TEXT NOT NULL,
-                  result_json TEXT NULL
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_created
-                ON backtest_runs(strategy_key, created_at_utc DESC);
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_created
-                ON backtest_runs(preset_id, created_at_utc DESC);
-                """
-            )
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS parameter_groups (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT NOT NULL,
-                  status TEXT NOT NULL DEFAULT 'Draft',
-                  tags_json TEXT NOT NULL DEFAULT '[]',
-                  comment TEXT,
-                  run_ids_json TEXT NOT NULL DEFAULT '[]',
-                  portfolio_ids_json TEXT NOT NULL DEFAULT '[]',
-                  created_at_utc TEXT NOT NULL,
-                  updated_at_utc TEXT NOT NULL,
-                  archived INTEGER NOT NULL DEFAULT 0
-                );
-                """
-            )
-            # Migrations: add dedupe/hash + refinement latch + sampler sessions
-            migrate_backtest_schema(con)
-            # Backfill params_hash for old rows (params_json already canonical in this app)
-            backfill_params_hash(con, hash_fn=lambda strategy_key, schema_version, params_json: params_hash(strategy_key=strategy_key, schema_version=int(schema_version), params_json_canonical=str(params_json)))
+        if not bt_use_pg:
+            raise RuntimeError("BACKTEST_DATABASE_URL must be Postgres")
+        if psycopg is None:
+            raise RuntimeError("BACKTEST_DATABASE_URL is set but psycopg is not installed")
+        with psycopg.connect(backtest_db_url) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS backtest_presets (
+                      id BIGSERIAL PRIMARY KEY,
+                      strategy_key TEXT NOT NULL,
+                      name TEXT NOT NULL,
+                      params_json TEXT NOT NULL,
+                      schema_version INTEGER NOT NULL DEFAULT 1,
+                      created_at_utc TEXT NOT NULL,
+                      updated_at_utc TEXT NOT NULL,
+                      last_run_id BIGINT NULL,
+                      last_run_at_utc TEXT NULL,
+                      last_summary_json TEXT NULL,
+                      UNIQUE(strategy_key, name)
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS backtest_runs (
+                      id BIGSERIAL PRIMARY KEY,
+                      strategy_key TEXT NOT NULL,
+                      created_at_utc TEXT NOT NULL,
+                      preset_id BIGINT NULL,
+                      preset_name_at_run TEXT NULL,
+                      params_json TEXT NOT NULL,
+                      summary_json TEXT NOT NULL,
+                      result_json TEXT NULL,
+                      schema_version INTEGER NOT NULL DEFAULT 1,
+                      params_hash TEXT NOT NULL,
+                      refinement_launched INTEGER NOT NULL DEFAULT 0,
+                      refinement_sampler_id BIGINT NULL,
+                      refinement_launched_at_utc TEXT NULL,
+                      UNIQUE(strategy_key, schema_version, params_hash)
+                    );
+                    """
+                )
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_created ON backtest_runs(strategy_key, created_at_utc DESC);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_created ON backtest_runs(preset_id, created_at_utc DESC);")
             con.commit()
 
     def _ensure_execution_tables() -> None:
+
         if state_use_pg:
             return
         with _connect(db_path) as con:
@@ -585,14 +511,12 @@ def create_app() -> FastAPI:
         return nm
 
     _ensure_backtest_tables()
-    if not state_use_pg:
-        with _connect(db_path) as _con:
-            tc.ensure_schema(_con)
-            try:
-                tc.seed_builtin_profiles(_con)
-            except Exception:
-                # Non-fatal under write contention; profiles can be seeded on next startup/request.
-                pass
+    with _connect(db_path) as _con:
+        tc.ensure_schema(_con)
+        try:
+            tc.seed_builtin_profiles(_con)
+        except Exception:
+            pass
 
     # Backtest services
     strategy_registry = StrategyRegistry()
@@ -1065,7 +989,7 @@ def create_app() -> FastAPI:
                 """
             ).fetchall()
 
-        by_day: dict[str, list[sqlite3.Row]] = {}
+        by_day: dict[str, list[Any]] = {}
         for r in rows:
             ts = r["observed_ts_utc"] or r["timestamp"]
             day = _central_day_key(ts)
@@ -1153,7 +1077,7 @@ def create_app() -> FastAPI:
                 """
             ).fetchall()
 
-        by_day: dict[str, list[sqlite3.Row]] = {}
+        by_day: dict[str, list[Any]] = {}
         for r in rows:
             ts = r['observed_ts_utc'] or r['timestamp']
             day = _central_day_key(ts)
@@ -1202,7 +1126,7 @@ def create_app() -> FastAPI:
         params: tuple[Any, ...] = (bucket_seconds, bucket_seconds, now_utc, int(window_days))
         return sql, params
 
-    def _postprocess_bucket_row(r: sqlite3.Row, *, min_samples: int, include_action: bool) -> dict[str, Any]:
+    def _postprocess_bucket_row(r: Any, *, min_samples: int, include_action: bool) -> dict[str, Any]:
         total = int(r['total_scored'] or 0)
         correct = int(r['correct'] or 0)
         wrong_dir = int(r['wrong_direction'] or 0)
@@ -1319,7 +1243,7 @@ def create_app() -> FastAPI:
                 (mv, int(days)),
             ).fetchall()
 
-        by_day: dict[str, list[sqlite3.Row]] = {}
+        by_day: dict[str, list[Any]] = {}
         for r in rows:
             by_day.setdefault(r['trade_day'], []).append(r)
 
@@ -1429,8 +1353,6 @@ def create_app() -> FastAPI:
         db_counts: dict[str, int] = {}
         with _connect(db_path) as con:
             
-            if not str(db_path).startswith("postgres"):
-                con.execute("PRAGMA foreign_keys=OFF")
             for tbl in ("predictions", "performance_summary", "system_events", "model_usage"):
                 try:
                     n = int(con.execute(f"SELECT COUNT(1) AS n FROM {tbl}").fetchone()["n"])
@@ -1440,17 +1362,7 @@ def create_app() -> FastAPI:
                     db_counts[tbl] = -1
             con.commit()
 
-        # VACUUM (sqlite only)
         vacuum_ran = False
-        try:
-            if not str(db_path).startswith("postgres"):
-                con2 = sqlite3.connect(db_path, timeout=30.0)
-                con2.execute("VACUUM")
-                con2.close()
-                vacuum_ran = True
-        except Exception as e:
-            if lg:
-                lg.error(component="Admin", event="reset_vacuum_failed", message="VACUUM failed", file_key="system", error=str(e))
 
         # Filesystem wipe
         errors: list[str] = []
@@ -1637,7 +1549,7 @@ def create_app() -> FastAPI:
                         (strategy_key, name, params_json, now, now),
                     )
                     con.commit()
-                except sqlite3.IntegrityError:
+                except Exception:
                     raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
 
         return backtest_presets_list(strategy_key=strategy_key)
@@ -1694,7 +1606,7 @@ def create_app() -> FastAPI:
                 try:
                     con.execute(f"UPDATE backtest_presets SET {', '.join(sets)} WHERE id = ?", tuple(params))
                     con.commit()
-                except sqlite3.IntegrityError:
+                except Exception:
                     raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
 
         return backtest_presets_list(strategy_key=strategy_key)
@@ -2432,7 +2344,7 @@ def create_app() -> FastAPI:
 
 # ---- Execution API ----
 
-    def _ensure_execution_account_controls(con: sqlite3.Connection) -> None:
+    def _ensure_execution_account_controls(con: Any) -> None:
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS execution_account_controls (
@@ -4987,7 +4899,7 @@ def create_app() -> FastAPI:
         if not dsn:
             return {
                 'window': window,
-                'engine': 'sqlite',
+                'engine': 'postgres',
                 'availability': True,
                 'connections_active': None,
                 'connections_max': None,
@@ -5214,7 +5126,7 @@ def create_app() -> FastAPI:
                     last_src = str(rr['signal_last_source_ts'] or '') if rr else ''
                     con.execute("UPDATE portfolio_defs SET signal_last_poll_utc=? WHERE id=?", (now, pid))
                     con.commit()
-            except sqlite3.OperationalError:
+            except Exception:
                 # transient lock contention; skip this cycle for this portfolio
                 continue
 

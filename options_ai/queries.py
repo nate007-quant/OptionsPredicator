@@ -56,7 +56,8 @@ def insert_prediction(db_path: str, row: dict[str, Any]) -> int | None:
 
     with connect(db_path) as conn:
         try:
-            existing_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info('predictions')")}
+            rows = conn.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='spx' AND table_name='predictions'").fetchall()
+            existing_cols = {str((r.get('column_name') if isinstance(r, dict) else r[0])) for r in rows}
         except Exception:
             existing_cols = set()
         for oc in optional_cols:

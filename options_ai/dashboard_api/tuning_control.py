@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -42,26 +41,26 @@ CREATE TABLE IF NOT EXISTS tuning_profiles (
   name TEXT PRIMARY KEY,
   config_json TEXT NOT NULL,
   built_in INTEGER NOT NULL DEFAULT 0,
-  version INTEGER NOT NULL DEFAULT 1,
+  version BIGINT NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tuning_config_versions (
-  version INTEGER PRIMARY KEY AUTOINCREMENT,
+  version BIGSERIAL PRIMARY KEY,
   config_json TEXT NOT NULL,
   actor TEXT,
   action TEXT,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tuning_config_state (
-  id INTEGER PRIMARY KEY CHECK (id=1),
-  current_version INTEGER,
+  id INTEGER PRIMARY KEY,
+  current_version BIGINT,
   current_config_json TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   updated_by TEXT
 );
 CREATE TABLE IF NOT EXISTS tuning_audit_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  id BIGSERIAL PRIMARY KEY,
   ts TEXT NOT NULL,
   actor TEXT,
   action TEXT NOT NULL,
@@ -72,7 +71,7 @@ CREATE TABLE IF NOT EXISTS tuning_audit_log (
   meta_json TEXT
 );
 CREATE TABLE IF NOT EXISTS tuning_job_state (
-  id INTEGER PRIMARY KEY CHECK (id=1),
+  id INTEGER PRIMARY KEY,
   job_id TEXT,
   action TEXT,
   status TEXT,
@@ -94,12 +93,12 @@ def _json(x: Any) -> str:
     return json.dumps(x, separators=(",", ":"), sort_keys=True)
 
 
-def ensure_schema(con: sqlite3.Connection) -> None:
+def ensure_schema(con: Any) -> None:
     con.executescript(SCHEMA_SQL)
     con.commit()
 
 
-def audit(con: sqlite3.Connection, *, actor: str, action: str, old_values: Any, new_values: Any, result: str, error_detail: str | None = None, meta: Any = None) -> None:
+def audit(con: Any, *, actor: str, action: str, old_values: Any, new_values: Any, result: str, error_detail: str | None = None, meta: Any = None) -> None:
     con.execute("INSERT INTO tuning_audit_log(ts, actor, action, old_values_json, new_values_json, result, error_detail, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (utc_now_iso(), actor, action, _json(old_values) if old_values is not None else None, _json(new_values) if new_values is not None else None, str(result), error_detail, _json(meta) if meta is not None else None))
     con.commit()
 
@@ -116,7 +115,7 @@ def _env_defaults() -> dict[str, Any]:
     return normalize_config(out)[0]
 
 
-def get_current_config(con: sqlite3.Connection) -> dict[str, Any]:
+def get_current_config(con: Any) -> dict[str, Any]:
     row = con.execute("SELECT current_config_json FROM tuning_config_state WHERE id=1").fetchone()
     if row and row[0]:
         try:
@@ -207,30 +206,31 @@ def reject_forbidden(payload: dict[str, Any]) -> list[str]:
     return bad
 
 
-def set_current_config(con: sqlite3.Connection, cfg: dict[str, Any], *, actor: str, action: str) -> int:
+def set_current_config(con: Any, cfg: dict[str, Any], *, actor: str, action: str) -> int:
     cur = get_current_config(con)
     ts = utc_now_iso()
-    c = con.execute("INSERT INTO tuning_config_versions(config_json, actor, action, created_at) VALUES (?, ?, ?, ?)", (_json(cfg), actor, action, ts))
-    ver = int(c.lastrowid)
+    c = con.execute("INSERT INTO tuning_config_versions(config_json, actor, action, created_at) VALUES (?, ?, ?, ?) RETURNING version", (_json(cfg), actor, action, ts))
+    rr = c.fetchone()
+    ver = int((rr.get('version') if isinstance(rr, dict) else rr[0]))
     con.execute("INSERT INTO tuning_config_state(id, current_version, current_config_json, updated_at, updated_by) VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET current_version=EXCLUDED.current_version, current_config_json=EXCLUDED.current_config_json, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by", (ver, _json(cfg), ts, actor))
     con.commit()
     audit(con, actor=actor, action=action, old_values=cur, new_values=cfg, result="success")
     return ver
 
 
-def list_profiles(con: sqlite3.Connection) -> list[dict[str, Any]]:
+def list_profiles(con: Any) -> list[dict[str, Any]]:
     rows = con.execute("SELECT name, config_json, built_in, version, created_at, updated_at FROM tuning_profiles ORDER BY built_in DESC, name ASC").fetchall()
     return [{"name": r[0], "config": json.loads(r[1]), "built_in": bool(r[2]), "version": int(r[3]), "created_at": r[4], "updated_at": r[5]} for r in rows]
 
 
-def seed_builtin_profiles(con: sqlite3.Connection) -> None:
+def seed_builtin_profiles(con: Any) -> None:
     ts = utc_now_iso()
     for name, cfg in PRESETS.items():
         con.execute("INSERT INTO tuning_profiles(name, config_json, built_in, version, created_at, updated_at) VALUES (?, ?, 1, 1, ?, ?) ON CONFLICT(name) DO NOTHING", (name, _json(cfg), ts, ts))
     con.commit()
 
 
-def upsert_profile(con: sqlite3.Connection, *, name: str, config: dict[str, Any], actor: str) -> None:
+def upsert_profile(con: Any, *, name: str, config: dict[str, Any], actor: str) -> None:
     now = utc_now_iso()
     row = con.execute("SELECT config_json, version FROM tuning_profiles WHERE name=?", (name,)).fetchone()
     if row:
@@ -245,21 +245,21 @@ def upsert_profile(con: sqlite3.Connection, *, name: str, config: dict[str, Any]
         audit(con, actor=actor, action="profile.create", old_values=None, new_values=config, result="success", meta={"name": name})
 
 
-def apply_profile(con: sqlite3.Connection, *, name: str, actor: str) -> int:
+def apply_profile(con: Any, *, name: str, actor: str) -> int:
     row = con.execute("SELECT config_json FROM tuning_profiles WHERE name=?", (name,)).fetchone()
     if not row:
         raise ValueError("Profile not found")
     return set_current_config(con, json.loads(row[0]), actor=actor, action=f"profile.apply:{name}")
 
 
-def rollback_to_version(con: sqlite3.Connection, *, version: int, actor: str) -> int:
+def rollback_to_version(con: Any, *, version: int, actor: str) -> int:
     row = con.execute("SELECT config_json FROM tuning_config_versions WHERE version=?", (int(version),)).fetchone()
     if not row:
         raise ValueError("Version not found")
     return set_current_config(con, json.loads(row[0]), actor=actor, action=f"rollback:{version}")
 
 
-def list_audit(con: sqlite3.Connection, *, limit: int = 200) -> list[dict[str, Any]]:
+def list_audit(con: Any, *, limit: int = 200) -> list[dict[str, Any]]:
     rows = con.execute("SELECT id, ts, actor, action, old_values_json, new_values_json, result, error_detail, meta_json FROM tuning_audit_log ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
@@ -267,7 +267,7 @@ def list_audit(con: sqlite3.Connection, *, limit: int = 200) -> list[dict[str, A
     return out
 
 
-def set_job_state(con: sqlite3.Connection, **kwargs: Any) -> None:
+def set_job_state(con: Any, **kwargs: Any) -> None:
     cur = con.execute("SELECT job_id, action, status, progress, started_at, finished_at, duration_sec, error_text FROM tuning_job_state WHERE id=1").fetchone()
     old = {"job_id": cur[0] if cur else None, "action": cur[1] if cur else None, "status": cur[2] if cur else None, "progress": cur[3] if cur else None, "started_at": cur[4] if cur else None, "finished_at": cur[5] if cur else None, "duration_sec": cur[6] if cur else None, "error_text": cur[7] if cur else None}
     old.update(kwargs)
@@ -275,19 +275,19 @@ def set_job_state(con: sqlite3.Connection, **kwargs: Any) -> None:
     con.commit()
 
 
-def get_job_state(con: sqlite3.Connection) -> dict[str, Any]:
+def get_job_state(con: Any) -> dict[str, Any]:
     row = con.execute("SELECT job_id, action, status, progress, started_at, finished_at, duration_sec, error_text FROM tuning_job_state WHERE id=1").fetchone()
     if not row:
         return {"job_id": None, "action": None, "status": "idle", "progress": None, "started_at": None, "finished_at": None, "duration_sec": None, "error_text": None}
     return {"job_id": row[0], "action": row[1], "status": row[2] or "idle", "progress": row[3], "started_at": row[4], "finished_at": row[5], "duration_sec": row[6], "error_text": row[7]}
 
 
-def get_auto_retrain_enabled(con: sqlite3.Connection) -> bool:
+def get_auto_retrain_enabled(con: Any) -> bool:
     row = con.execute("SELECT value FROM tuning_settings WHERE key='auto_retrain_enabled'").fetchone()
     return True if not row else (str(row[0]).strip().lower() in {"1", "true", "yes", "on"})
 
 
-def set_auto_retrain_enabled(con: sqlite3.Connection, enabled: bool) -> None:
+def set_auto_retrain_enabled(con: Any, enabled: bool) -> None:
     con.execute("INSERT INTO tuning_settings(key, value, updated_at) VALUES('auto_retrain_enabled', ?, ?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at", ("1" if enabled else "0", utc_now_iso()))
     con.commit()
 
@@ -298,7 +298,7 @@ def config_to_env_overrides(cfg: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def get_training_range(con: sqlite3.Connection) -> dict[str, str | None]:
+def get_training_range(con: Any) -> dict[str, str | None]:
     rs = con.execute("SELECT value FROM tuning_settings WHERE key='ml_train_start_ts'").fetchone()
     re = con.execute("SELECT value FROM tuning_settings WHERE key='ml_train_end_ts'").fetchone()
     return {
@@ -307,7 +307,7 @@ def get_training_range(con: sqlite3.Connection) -> dict[str, str | None]:
     }
 
 
-def set_training_range(con: sqlite3.Connection, *, start_ts: str | None, end_ts: str | None) -> None:
+def set_training_range(con: Any, *, start_ts: str | None, end_ts: str | None) -> None:
     now = utc_now_iso()
     con.execute("INSERT INTO tuning_settings(key, value, updated_at) VALUES('ml_train_start_ts', ?, ?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at", (str(start_ts or ''), now))
     con.execute("INSERT INTO tuning_settings(key, value, updated_at) VALUES('ml_train_end_ts', ?, ?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at", (str(end_ts or ''), now))

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 import httpx
 from dataclasses import dataclass
@@ -191,7 +190,7 @@ class ExecutionExecutor:
             'resolved_bool': bool(int(r['resolved_bool'] or 0)),
         }
 
-    def _strict_quarantine_active(self, con: sqlite3.Connection) -> bool:
+    def _strict_quarantine_active(self, con: Any) -> bool:
         if not self.strict_quarantine_requires_operator_clear:
             return False
         tz = ZoneInfo(self.session_tz)
@@ -210,7 +209,7 @@ class ExecutionExecutor:
         reason = str(r[1] or '')
         return blocked and reason.startswith('strict_quarantine_')
 
-    def _risk_blocked(self, con: sqlite3.Connection) -> bool:
+    def _risk_blocked(self, con: Any) -> bool:
         tz = ZoneInfo(self.session_tz)
         sess_day = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
         row = con.execute(
@@ -233,7 +232,7 @@ class ExecutionExecutor:
         pnl = realized + unreal
         return pnl <= -abs(max_loss)
 
-    def _load_reprice_policy(self, con: sqlite3.Connection, underlying: str) -> RepricePolicy:
+    def _load_reprice_policy(self, con: Any, underlying: str) -> RepricePolicy:
         row = con.execute(
             """
             SELECT max_attempts, step, interval_seconds, max_total_concession
@@ -300,7 +299,7 @@ class ExecutionExecutor:
         listr = '' if li in (None, '') else (str(int(li)) if str(li).lstrip('-').isdigit() else str(li))
         return st, sid, listr
 
-    def _count_open_trades_for_source(self, con: sqlite3.Connection, *, src_key: tuple[str, str, str]) -> int:
+    def _count_open_trades_for_source(self, con: Any, *, src_key: tuple[str, str, str]) -> int:
         rows = con.execute(
             """
             SELECT run_payload_json
@@ -315,7 +314,7 @@ class ExecutionExecutor:
                 n += 1
         return n
 
-    def _count_trades_today_for_source(self, con: sqlite3.Connection, *, src_key: tuple[str, str, str]) -> int:
+    def _count_trades_today_for_source(self, con: Any, *, src_key: tuple[str, str, str]) -> int:
         start_utc, end_utc = self._session_day_bounds_utc()
         rows = con.execute(
             """
@@ -397,7 +396,7 @@ class ExecutionExecutor:
 
     def _record_order_event(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         trade_run_id: int | None,
         execution_intent_id: int,
@@ -426,7 +425,7 @@ class ExecutionExecutor:
 
     def _record_incident(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         severity: str,
         incident_type: str,
@@ -453,7 +452,7 @@ class ExecutionExecutor:
 
     def _mark_intent(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         intent_id: int,
         status: str,
@@ -488,7 +487,7 @@ class ExecutionExecutor:
             ),
         )
 
-    def _create_trade_run(self, con: sqlite3.Connection, *, intent_id: int, payload: dict[str, Any], qty: int = 1) -> int:
+    def _create_trade_run(self, con: Any, *, intent_id: int, payload: dict[str, Any], qty: int = 1) -> int:
         params = (payload.get("params") or {}) if isinstance(payload, dict) else {}
         cur = con.execute(
             """
@@ -513,7 +512,7 @@ class ExecutionExecutor:
         )
         return int(cur.lastrowid)
 
-    def _current_reject_streak(self, con: sqlite3.Connection) -> int:
+    def _current_reject_streak(self, con: Any) -> int:
         rows = con.execute(
             """
             SELECT status FROM execution_intents
@@ -531,7 +530,7 @@ class ExecutionExecutor:
                 break
         return streak
 
-    def _slippage_breaker_triggered(self, con: sqlite3.Connection) -> tuple[bool, dict[str, Any]]:
+    def _slippage_breaker_triggered(self, con: Any) -> tuple[bool, dict[str, Any]]:
         rows = con.execute(
             """
             SELECT execution_intent_id, raw_payload_json
@@ -565,7 +564,7 @@ class ExecutionExecutor:
         trig = offenders >= 1
         return trig, {'offenders': offenders, 'max_concession': max_conc, 'threshold': self.max_allowed_entry_slippage_abs}
 
-    def _run_prechecks(self, con: sqlite3.Connection, *, intent_id: int, dto: OrderDTO, long_sym: str, short_sym: str) -> tuple[bool, dict[str, Any], str | None]:
+    def _run_prechecks(self, con: Any, *, intent_id: int, dto: OrderDTO, long_sym: str, short_sym: str) -> tuple[bool, dict[str, Any], str | None]:
         checks: dict[str, Any] = {}
 
         # contract/symbology validation

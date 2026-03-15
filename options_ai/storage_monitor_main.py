@@ -21,11 +21,7 @@ def _db_path_from_database_url(database_url: str) -> str:
     d = (database_url or '').strip()
     if d.startswith('postgresql://') or d.startswith('postgres://'):
         return d
-    if d.startswith('sqlite:///'):
-        return d.replace('sqlite:///', '/', 1)
-    if d.startswith('sqlite:////'):
-        return d.replace('sqlite://', '', 1)
-    raise RuntimeError('DATABASE_URL must be sqlite:///... or postgres://...')
+    raise RuntimeError('Postgres DATABASE_URL required for storage monitor')
 
 
 def _pg_size(dsn: str) -> tuple[int | None, str | None]:
@@ -81,12 +77,6 @@ def main() -> None:
         sample_ts = _now_minute_iso()
         pg_bytes, pg_name = _pg_size(postgres_dsn)
         ts_bytes, ts_name = _pg_size(timescale_dsn)
-
-        if pg_bytes is None and not postgres_dsn:
-            try:
-                pg_bytes = int(Path(str(db_path)).stat().st_size)
-            except Exception:
-                pg_bytes = None
 
         used_b = free_b = None
         try:

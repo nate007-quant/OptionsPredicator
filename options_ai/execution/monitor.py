@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -76,7 +75,7 @@ class ExecutionMonitor:
 
     def _record_order_event(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         trade_run_id: int | None,
         execution_intent_id: int | None,
@@ -105,7 +104,7 @@ class ExecutionMonitor:
 
     def _record_position_event(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         trade_run_id: int | None,
         position_key: str | None,
@@ -136,7 +135,7 @@ class ExecutionMonitor:
             ),
         )
 
-    def _audit(self, con: sqlite3.Connection, *, action: str, entity_type: str, entity_id: str, details: dict[str, Any]) -> None:
+    def _audit(self, con: Any, *, action: str, entity_type: str, entity_id: str, details: dict[str, Any]) -> None:
         try:
             con.execute(
                 """
@@ -153,13 +152,13 @@ class ExecutionMonitor:
                     _json(details),
                 ),
             )
-        except sqlite3.OperationalError:
+        except Exception:
             # Do not crash monitor on transient SQLite lock contention.
             pass
 
     def _incident(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         severity: str,
         incident_type: str,
@@ -200,7 +199,7 @@ class ExecutionMonitor:
             con.commit()
         return {"ok": True, "event_type": et}
 
-    def _has_protective_exit(self, con: sqlite3.Connection, trade_run_id: int) -> bool:
+    def _has_protective_exit(self, con: Any, trade_run_id: int) -> bool:
         r = con.execute(
             """
             SELECT id FROM order_events
@@ -212,7 +211,7 @@ class ExecutionMonitor:
         return r is not None
 
 
-    def _already_alerted_missing_protection(self, con: sqlite3.Connection, trade_run_id: int) -> bool:
+    def _already_alerted_missing_protection(self, con: Any, trade_run_id: int) -> bool:
         r = con.execute(
             """
             SELECT id FROM audit_log
@@ -242,7 +241,7 @@ class ExecutionMonitor:
                     return [x for x in v if isinstance(x, dict)]
         return []
 
-    def _streamer_down_breaker(self, con: sqlite3.Connection) -> tuple[bool, dict[str, Any]]:
+    def _streamer_down_breaker(self, con: Any) -> tuple[bool, dict[str, Any]]:
         row = con.execute(
             """
             SELECT created_at_utc FROM order_events
@@ -266,7 +265,7 @@ class ExecutionMonitor:
             'threshold_seconds': self.max_streamer_downtime_seconds,
         }
 
-    def _recent_unresolved_mismatch_count(self, con: sqlite3.Connection) -> int:
+    def _recent_unresolved_mismatch_count(self, con: Any) -> int:
         row = con.execute(
             """
             SELECT COUNT(*)

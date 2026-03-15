@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
@@ -35,20 +34,10 @@ class BacktestExecutor:
         self._lock = threading.RLock()
         self.pg_dsn = (pg_dsn or "").strip() or None
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
         if self._connect_fn is not None:
             return self._connect_fn(self.db_path)
-        con = sqlite3.connect(self.db_path, timeout=120.0)
-        con.row_factory = sqlite3.Row
-        try:
-            con.execute("PRAGMA journal_mode=WAL")
-        except Exception:
-            pass
-        try:
-            con.execute("PRAGMA busy_timeout=60000")
-        except Exception:
-            pass
-        return con
+        raise RuntimeError("SQLite backend removed; configure pg_dsn")
 
     def _pg_connect(self):
         if not self.pg_dsn:
@@ -357,16 +346,9 @@ class BacktestExecutor:
         strict: bool = True,
         force_run: bool = False,
     ) -> dict[str, Any]:
-        if self.pg_dsn:
-            return self._execute_and_persist_pg(
-                strategy_id=strategy_id,
-                payload=payload,
-                preset_id=preset_id,
-                preset_name_at_run=preset_name_at_run,
-                strict=strict,
-                force_run=force_run,
-            )
-        return self._execute_and_persist_sqlite(
+        if not self.pg_dsn:
+            raise RuntimeError("Postgres backend required for backtest executor")
+        return self._execute_and_persist_pg(
             strategy_id=strategy_id,
             payload=payload,
             preset_id=preset_id,

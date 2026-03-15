@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -92,7 +91,7 @@ class RiskGuard:
 
     def _record_order_event(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         trade_run_id: int | None,
         execution_intent_id: int | None,
@@ -119,7 +118,7 @@ class RiskGuard:
             ),
         )
 
-    def _audit(self, con: sqlite3.Connection, *, action: str, entity_type: str, entity_id: str, details: dict[str, Any]) -> None:
+    def _audit(self, con: Any, *, action: str, entity_type: str, entity_id: str, details: dict[str, Any]) -> None:
         con.execute(
             """
             INSERT INTO audit_log(created_at_utc, environment, actor, action, entity_type, entity_id, details_json)
@@ -136,7 +135,7 @@ class RiskGuard:
             ),
         )
 
-    def _update_risk_session_state(self, con: sqlite3.Connection) -> tuple[float, float, bool]:
+    def _update_risk_session_state(self, con: Any) -> tuple[float, float, bool]:
         tz = ZoneInfo(self.session_tz)
         now_local = datetime.now(timezone.utc).astimezone(tz)
         sess_day = now_local.date().isoformat()
@@ -191,7 +190,7 @@ class RiskGuard:
 
         return realized, unrealized, blocked
 
-    def _already_force_closed_today(self, con: sqlite3.Connection) -> bool:
+    def _already_force_closed_today(self, con: Any) -> bool:
         tz = ZoneInfo(self.session_tz)
         sess_day = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
         r = con.execute(
@@ -205,7 +204,7 @@ class RiskGuard:
         ).fetchone()
         return r is not None
 
-    def _force_close_positions(self, con: sqlite3.Connection) -> int:
+    def _force_close_positions(self, con: Any) -> int:
         rows = con.execute(
             """
             SELECT id, execution_intent_id, underlying, qty, exit_order_id, complex_exit_order_id

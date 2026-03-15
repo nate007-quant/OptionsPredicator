@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -119,7 +118,7 @@ class ExecutionIntentBuilder:
                 return False
         return False
 
-    def _intent_payload_from_run(self, *, run_row: sqlite3.Row, params: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    def _intent_payload_from_run(self, *, run_row: Any, params: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
         first_ct, last_ct = self._entry_window_ct(params)
         payload = {
             "source": {

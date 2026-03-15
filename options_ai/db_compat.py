@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 try:
@@ -16,10 +15,8 @@ class FlexRow(dict):
 
     def __getitem__(self, key: Any) -> Any:  # type: ignore[override]
         if isinstance(key, int):
-            try:
-                return list(self.values())[key]
-            except Exception as e:
-                raise KeyError(key) from e
+            vals = list(self.values())
+            return vals[key]
         return super().__getitem__(key)
 
 
@@ -42,7 +39,10 @@ class PgCursorCompat:
     @property
     def lastrowid(self):
         try:
-            return self._cur.fetchone()[0]
+            r = self._cur.fetchone()
+            if isinstance(r, dict):
+                return r.get("id")
+            return r[0]
         except Exception:
             return None
 
@@ -52,8 +52,6 @@ class PgCursorCompat:
             return None
         if isinstance(r, dict):
             return FlexRow(r)
-        if isinstance(r, tuple):
-            return r
         return r
 
     def fetchall(self):
@@ -68,7 +66,7 @@ class PgCursorCompat:
 
 
 class PgConnCompat:
-    def __init__(self, dsn: str, timeout: float = 5.0):
+    def __init__(self, dsn: str):
         if psycopg is None:
             raise RuntimeError("psycopg not installed")
         self._con = psycopg.connect(dsn, row_factory=dict_row)
@@ -91,6 +89,13 @@ class PgConnCompat:
         cc = PgCursorCompat(cur)
         return cc.execute(sql, params)
 
+    def executescript(self, script: str):
+        cur = self._con.cursor()
+        parts = [x.strip() for x in str(script or '').split(';') if x.strip()]
+        for stmt in parts:
+            cur.execute(stmt)
+        return self
+
     def commit(self):
         self._con.commit()
 
@@ -99,18 +104,8 @@ class PgConnCompat:
 
 
 def connect_compat(db_dsn_or_path: str, *, timeout: float = 5.0):
+    _ = timeout
     target = str(db_dsn_or_path or "").strip()
-    if target.startswith("postgresql://") or target.startswith("postgres://"):
-        return PgConnCompat(target, timeout=timeout)
-
-    con = sqlite3.connect(target, timeout=float(timeout))
-    con.row_factory = sqlite3.Row
-    try:
-        con.execute("PRAGMA journal_mode=WAL;")
-    except Exception:
-        pass
-    try:
-        con.execute("PRAGMA busy_timeout=5000;")
-    except Exception:
-        pass
-    return con
+    if not (target.startswith("postgresql://") or target.startswith("postgres://")):
+        raise RuntimeError(f"Postgres DSN required, got: {target!r}")
+    return PgConnCompat(target)
