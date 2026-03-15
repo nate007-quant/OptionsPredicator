@@ -4337,7 +4337,6 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         if (cached) {
           if (Array.isArray(cached.combined_equity_curve)) pfRenderCardEquity(pid, cached.combined_equity_curve);
           pfRenderCardSummaryGraphics(pid, cached.combined_summary || {});
-          pfRenderCardLineMetrics(pid, cached.legs_summaries || []);
           const doneN = Array.isArray(legs) ? legs.length : 0;
           pfRenderCardProgress(pid, doneN, doneN);
           const note = document.getElementById(`pfCardNote-${pid}`);
@@ -4389,6 +4388,11 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
             </td>
           `;
           tb.appendChild(tr);
+        }
+
+        // cached metric hydration must happen after table rows exist
+        if (cached && Array.isArray(cached.legs_summaries) && cached.legs_summaries.length) {
+          pfRenderCardLineMetrics(pid, cached.legs_summaries);
         }
 
         document.getElementById(`pfCardRun-${pid}`)?.addEventListener('click', () => safe(`pf_card_run_${pid}`, () => pfRunSingleGroup(pid)));
