@@ -2893,7 +2893,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         }
 
         const saveBtn = document.createElement('button');
-        saveBtn.textContent = 'Save→Portfolio';
+        saveBtn.textContent = 'Save';
         saveBtn.className = 'btn-primary';
         saveBtn.style.padding = '4px 8px';
         saveBtn.style.marginLeft = '6px';
@@ -2903,17 +2903,29 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           try {
             saveBtn.disabled = true;
             const pid = parseInt(String(pfSel.value || ''), 10);
-            const res = await btAddRunToPortfolio(it, pid);
+            const portfolioName = (pfPortfolios || []).find(x => String(x.id) === String(pid))?.name || `Portfolio ${pid}`;
+
+            // 1) save run into selected portfolio
+            const pfRes = await btAddRunToPortfolio(it, pid);
+
+            // 2) save run into parameter group (existing first, else auto-create from portfolio)
+            let groupRef = '';
+            if (Array.isArray(it.group_memberships) && it.group_memberships.length > 0) {
+              groupRef = String(it.group_memberships[0].id || '').trim();
+            }
+            if (!groupRef) groupRef = `${portfolioName} Group`;
+            const grpRes = await btAddRunToGroup(it, groupRef);
+
             await safe('pf_portfolios', () => pfReloadPortfolios());
             await safe('bt_runs', () => btRefreshRuns());
-            if (res && res.added === false && res.reason === 'already_present') {
-              toast('Already in selected portfolio', 'info');
-            } else {
-              const name = (pfPortfolios || []).find(x => String(x.id) === String(pid))?.name || `#${pid}`;
-              toast(`Saved to portfolio: ${name}`, 'success');
-            }
+
+            const pfMsg = (pfRes && pfRes.added === false && pfRes.reason === 'already_present')
+              ? `Already in portfolio: ${portfolioName}`
+              : `Saved to portfolio: ${portfolioName}`;
+            const grpMsg = grpRes && grpRes.group_id ? `group #${grpRes.group_id}` : 'group';
+            toast(`${pfMsg} + ${grpMsg}`, 'success');
           } catch (e) {
-            console.error('bt_row_add_to_portfolio', e);
+            console.error('bt_row_save_combined', e);
             toast('Save failed', 'error');
           } finally {
             saveBtn.disabled = !portfolios.length;
@@ -2922,32 +2934,6 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
         tdAddPf.appendChild(pfSel);
         tdAddPf.appendChild(saveBtn);
-
-        const saveGroupBtn = document.createElement('button');
-        saveGroupBtn.textContent = 'Save→Group';
-        saveGroupBtn.className = 'btn';
-        saveGroupBtn.style.padding = '4px 8px';
-        saveGroupBtn.style.marginLeft = '6px';
-        saveGroupBtn.addEventListener('click', async (ev) => {
-          ev.stopPropagation();
-          const hint = Array.isArray(it.group_memberships) && it.group_memberships.length
-            ? `Existing: ${it.group_memberships.map(g => `#${g.id} ${g.name || ''}`.trim()).join(', ')}`
-            : 'Enter existing group ID or new group name';
-          const raw = prompt(`Save run ${rid} to Parameter Group.\n${hint}`, `Run ${rid} Group`);
-          if (!raw || !String(raw).trim()) return;
-          try {
-            saveGroupBtn.disabled = true;
-            const res = await btAddRunToGroup(it, raw);
-            await safe('bt_runs', () => btRefreshRuns());
-            toast(`Saved to group #${res.group_id}`, 'success');
-          } catch (e) {
-            console.error('bt_row_add_to_group', e);
-            toast('Save to group failed', 'error');
-          } finally {
-            saveGroupBtn.disabled = false;
-          }
-        });
-        tdAddPf.appendChild(saveGroupBtn);
 
         const tdAct = document.createElement('td');
         const delBtn = document.createElement('button');
