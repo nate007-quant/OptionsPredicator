@@ -1,3 +1,5 @@
+Status: Completed
+
 # Postgres Runtime Cutover Checklist (No SQLite Runtime)
 
 ## Current live state
@@ -16,7 +18,6 @@
 
 ### 2) SQL dialect migration
 - [ ] Replace sqlite-only SQL in runtime paths:
-  - `PRAGMA ...`
   - `INSERT OR IGNORE`
   - `INSERT OR REPLACE`
   - sqlite date funcs (`datetime(...)`, `strftime(...)`) in state queries
