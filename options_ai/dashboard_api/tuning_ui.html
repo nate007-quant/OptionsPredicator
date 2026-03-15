@@ -1,0 +1,210 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Model Tuning Control Center</title>
+<style>
+:root{--bg:#0f1115;--panel:#151922;--text:#e8eaed;--muted:#aab0b7;--border:#2a2f3a;}
+*{box-sizing:border-box}
+body{font-family:Arial,sans-serif;margin:0;background:var(--bg);color:var(--text);padding:12px}
+.page{max-width:1380px;margin:0 auto}
+.card{border:1px solid var(--border);padding:12px;border-radius:10px;margin-bottom:12px;background:var(--panel)}
+label{display:block;margin:6px 0}
+input,select{background:#0f1115;color:#e8eaed;border:1px solid #374151;padding:7px 8px;border-radius:6px;max-width:100%}
+button{margin-right:8px;padding:7px 10px;border-radius:6px;border:1px solid #374151;background:#111827;color:#e8eaed;cursor:pointer}
+button:hover{background:#1f2937}
+.row{display:grid;grid-template-columns:240px minmax(220px,1fr) minmax(220px,1fr) minmax(220px,1fr);gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #262b36}
+.err{color:#ff7b7b}.ok{color:#8be28b}.small{font-size:12px;color:var(--muted)}
+#audit{white-space:pre-wrap;word-break:break-word}
+@media (max-width: 1100px){
+  .row{grid-template-columns:1fr 1fr;}
+  .row > div:first-child{grid-column:1 / -1}
+}
+@media (max-width: 760px){
+  body{padding:8px}
+  .card{padding:10px}
+  .row{grid-template-columns:1fr}
+  button{margin:4px 6px 4px 0}
+  input,select{width:100%}
+}
+</style>
+<style>
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:6px}
+.status-cell{border:1px solid #2b3342;border-radius:8px;padding:8px;background:#111827}
+.status-k{font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.03em}
+.status-v{font-size:14px;color:#e5e7eb;margin-top:3px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+.badge-ready{background:#14532d;color:#bbf7d0}
+.badge-training{background:#78350f;color:#fde68a}
+.badge-failed{background:#7f1d1d;color:#fecaca}
+.badge-idle{background:#1f2937;color:#d1d5db}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.status-good{color:#86efac}
+.status-warn{color:#fde68a}
+.status-bad{color:#fca5a5}
+</style>
+
+</head><body>
+<div class="page">
+<h2>Model Tuning Control Center (No Execution Access)</h2>
+<div class="small" id="tuningBuildStamp">Build: 2026-03-14.2</div>
+<div class="small">This panel is model-only. Execution controls are intentionally excluded.</div>
+
+<div class="card"><h3>Realtime Model Status</h3>
+<div style="display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap;">
+  <button id="statusRefreshBtn">Refresh</button>
+  <label style="display:inline-flex; align-items:center; gap:6px; margin:0;"><input id="statusAuto" type="checkbox" checked> auto-refresh</label>
+  <label style="display:inline-flex; align-items:center; gap:6px; margin:0;">sec <input id="statusSec" type="number" min="2" max="120" value="4" style="width:70px;"></label>
+  <span class="small" id="statusRefreshMsg"></span>
+</div>
+<div id="status"></div><div class="small" id="updated"></div></div>
+
+<div class="card"><h3>Tuning Parameters</h3>
+<div id="fields"></div>
+<div id="pending" class="small"></div>
+<button id="applyBtn">Apply Changes</button>
+<button id="reloadBtn">Reload Current</button>
+<div id="applyErr" class="err"></div></div>
+
+<div class="card"><h3>Model Actions</h3>
+<button id="retrainBtn">Retrain Now</button>
+<button id="retrainChainBtn">Refresh Range + Retrain</button>
+<button id="rescoreBtn">Rescore Now</button>
+<div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+  <label>Train start (UTC) <input id="trainStartTs" type="text" placeholder="2025-01-01T00:00:00Z"></label>
+  <label>Train end (UTC) <input id="trainEndTs" type="text" placeholder="2026-01-01T00:00:00Z"></label>
+  <button id="saveTrainRangeBtn">Save Range</button>
+  <button id="clearTrainRangeBtn">Clear Range</button>
+</div>
+<label><input id="autoRetrain" type="checkbox"> Auto-Retrain (ML service)</label>
+<div id="actionMsg" class="small"></div></div>
+
+<div class="card"><h3>Profiles / Rollback</h3>
+<select id="profileSelect"></select>
+<button id="loadProfileBtn">Load Profile</button>
+<button id="applyProfileBtn">Apply Profile</button>
+<input id="saveProfileName" placeholder="new profile name">
+<button id="saveProfileBtn">Save Profile</button>
+<input id="rollbackVersion" type="number" placeholder="version">
+<button id="rollbackBtn">Rollback</button>
+<div id="profileMsg" class="small"></div></div>
+
+<div class="card"><h3>Audit Log</h3><pre id="audit" style="max-height:260px;overflow:auto"></pre></div>
+
+<script>
+let specs={}, current={}, draft={};
+let statusTimer=null;
+async function j(url, opt){const r=await fetch(url,opt); const t=await r.text(); let d={}; try{d=JSON.parse(t)}catch{} if(!r.ok) throw new Error((d&&d.detail)||t||r.statusText); return d;}
+function esc(s){return String(s??'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+function renderFields(){
+  const c=document.getElementById('fields'); c.innerHTML='';
+  for(const [k,m] of Object.entries(specs.fields||{})){
+    const v=draft[k] ?? '';
+    const row=document.createElement('div'); row.className='row';
+    let input='';
+    if(m.type==='enum'){ input=`<select data-k="${k}">${m.choices.map(x=>`<option ${String(v).toLowerCase()===String(x).toLowerCase()?'selected':''}>${x}</option>`).join('')}</select>`; }
+    else input=`<input data-k="${k}" value="${esc(v)}">`;
+    row.innerHTML=`<div><b>${k}</b></div><div>${input}<div class='small'>Safe default: ${esc(m.default)}</div></div><div class='small'>${esc(m.what||'')}</div><div class='small'>↑ ${esc(m.up||'')}<br>↓ ${esc(m.down||'')}</div>`;
+    c.appendChild(row);
+  }
+  c.querySelectorAll('[data-k]').forEach(el=>el.addEventListener('change',()=>{draft[el.dataset.k]=el.value; refreshPending();}));
+}
+function refreshPending(){
+  const ch=[]; for(const k of Object.keys(specs.fields||{})){ if(String(current[k])!==String(draft[k])) ch.push(k);} 
+  document.getElementById('pending').textContent = ch.length?`Pending changes: ${ch.join(', ')}`:'No pending changes';
+}
+async function loadConfig(){ const d=await j('/config/current'); current=d.current; draft=JSON.parse(JSON.stringify(current)); specs=d.specs; renderFields(); refreshPending(); }
+async function loadProfiles(){ const d=await j('/config/profiles'); const sel=document.getElementById('profileSelect'); sel.innerHTML=''; (d.profiles||[]).forEach(p=>{const o=document.createElement('option'); o.value=p.name; o.textContent=`${p.name} (v${p.version})`; sel.appendChild(o);}); }
+async function loadAudit(){ const d=await j('/config/audit-log'); document.getElementById('audit').textContent=JSON.stringify(d.items||[],null,2); }
+async function loadStatus(){
+  const _m=document.getElementById('statusRefreshMsg');
+  if(_m) _m.textContent='Refreshing…';
+  const fmtTs = (v)=> v ? String(v) : '—';
+  const fmtSec = (v)=> (v==null || v==='') ? '—' : `${Number(v).toFixed(1)}s`;
+  const minsAgo = (iso)=>{ try{ if(!iso) return null; const d=new Date(String(iso)); if(Number.isNaN(d.getTime())) return null; return (Date.now()-d.getTime())/60000.0; }catch{return null;} };
+  const cls = (state)=> state==='good' ? 'status-good' : (state==='warn' ? 'status-warn' : 'status-bad');
+  const covState = (v)=>{ const x=Number(v); if(!Number.isFinite(x)) return 'bad'; if(x>=0.98) return 'good'; if(x>=0.90) return 'warn'; return 'bad'; };
+  const rowsState = (rows,minRows)=>{ const r=Number(rows), m=Number(minRows); if(!Number.isFinite(r)||!Number.isFinite(m)||m<=0) return 'bad'; if(r>=m*1.25) return 'good'; if(r>=m) return 'warn'; return 'bad'; };
+  const freshState = (mins)=>{ if(mins==null || !Number.isFinite(mins)) return 'bad'; if(mins<=10) return 'good'; if(mins<=30) return 'warn'; return 'bad'; };
+  const stateBadge = (st)=>{
+    const s=String(st||'Idle');
+    const cls = s==='Ready' ? 'badge-ready' : (s==='Training' ? 'badge-training' : (s==='Failed' ? 'badge-failed' : 'badge-idle'));
+    return `<span class="badge ${cls}">${esc(s)}</span>`;
+  };
+  try{
+    const d=await j('/ml/status');
+    const tw=d.training_window||{};
+    const pf=d.pipeline_freshness||{};
+    const sc=d.scoring_status||{};
+    const featureAgeM = minsAgo(pf.latest_feature_ts);
+    const scoreAgeM = minsAgo(pf.latest_score_ts || sc.latest_score_ts);
+    const coverage = sc.coverage_7d;
+    const pct = (v)=> (v==null || !Number.isFinite(Number(v))) ? '—' : `${(100*Number(v)).toFixed(1)}%`;
+    const dec = (v,n=4)=> (v==null || !Number.isFinite(Number(v))) ? '—' : Number(v).toFixed(n);
+    const statusHtml = `
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">${stateBadge(d.model_state)} <span class="small">model: <span class="mono">${esc(d.model_version||'—')}</span></span></div>
+      <div class="status-grid">
+        <div class="status-cell"><div class="status-k">Last Retrain</div><div class="status-v mono">${esc(fmtTs(d.last_retrain_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Retrain Duration</div><div class="status-v">${esc(fmtSec(d.last_retrain_duration_sec))}</div></div>
+        <div class="status-cell"><div class="status-k">Training Rows</div><div class="status-v"><span class="${cls(rowsState(d.training_rows,d.min_train_rows))}">${esc(d.training_rows ?? '—')}</span> <span class="small">(min ${esc(d.min_train_rows ?? '—')})</span></div></div>
+        <div class="status-cell"><div class="status-k">Training Days</div><div class="status-v">${esc(tw.days ?? '—')}</div></div>
+        <div class="status-cell"><div class="status-k">Training Start</div><div class="status-v mono">${esc(fmtTs(tw.start_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Training End</div><div class="status-v mono">${esc(fmtTs(tw.end_ts))}</div></div>
+        <div class="status-cell"><div class="status-k">Job</div><div class="status-v">${esc(d.job?.status||'—')} ${esc(d.job?.progress||'')}</div></div>
+        <div class="status-cell"><div class="status-k">Next Retrain Countdown</div><div class="status-v">${esc(d.next_retrain_countdown_sec ?? '—')}s</div></div>
+        <div class="status-cell"><div class="status-k">Pipeline Feature Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_feature_ts))} <span class="small ${cls(freshState(featureAgeM))}">(${featureAgeM==null?"n/a":Math.round(featureAgeM)+"m"})</span></div></div>
+        <div class="status-cell"><div class="status-k">Pipeline Score Freshness</div><div class="status-v mono">${esc(fmtTs(pf.latest_score_ts || sc.latest_score_ts))} <span class="small ${cls(freshState(scoreAgeM))}">(${scoreAgeM==null?"n/a":Math.round(scoreAgeM)+"m"})</span></div></div>
+
+        <div class="status-cell"><div class="status-k">Scores (24h)</div><div class="status-v">${esc(sc.score_rows_24h ?? '—')}</div></div>
+        <div class="status-cell"><div class="status-k">Scored Snapshots (24h)</div><div class="status-v">${esc(sc.scored_snapshots_24h ?? '—')}</div></div>
+        <div class="status-cell"><div class="status-k">Score Coverage (7d)</div><div class="status-v"><span class="${cls(covState(coverage))}">${esc(pct(coverage))}</span></div></div>
+        <div class="status-cell"><div class="status-k">Avg Pred Return (24h)</div><div class="status-v">${esc(dec(sc.avg_pred_return_24h, 4))}</div></div>
+        <div class="status-cell"><div class="status-k">Avg p(bigwin) (24h)</div><div class="status-v">${esc(dec(sc.avg_p_bigwin_24h, 4))}</div></div>
+        <div class="status-cell"><div class="status-k">Latest Score TS</div><div class="status-v mono">${esc(fmtTs(sc.latest_score_ts))} <span class="small ${cls(freshState(minsAgo(sc.latest_score_ts)))}">(${minsAgo(sc.latest_score_ts)==null?"n/a":Math.round(minsAgo(sc.latest_score_ts))+"m"})</span></div></div>
+      </div>
+      <div class="small" style="margin-top:8px;"><span class="err">${esc(d.last_error||tw.error||sc.error||'')}</span></div>
+    `;
+    document.getElementById('status').innerHTML=statusHtml;
+    document.getElementById('autoRetrain').checked=!!d.auto_retrain_enabled;
+    document.getElementById('updated').textContent='Last updated: '+new Date().toLocaleTimeString();
+    document.getElementById('retrainBtn').disabled=(d.model_state==='Training');
+    const trc=d.training_range_config||{};
+    const ss=document.getElementById('trainStartTs');
+    const ee=document.getElementById('trainEndTs');
+    if(ss && document.activeElement!==ss) ss.value=(trc.start_ts||'');
+    if(ee && document.activeElement!==ee) ee.value=(trc.end_ts||'');
+    if(_m) _m.textContent='OK';
+  }catch(e){
+    document.getElementById('status').innerHTML='<span class="err">Refresh failed (auto-retrying)</span>';
+    if(_m) _m.textContent='Refresh failed';
+  }
+}
+
+
+document.getElementById('applyBtn').onclick=async()=>{document.getElementById('applyErr').textContent=''; try{const d=await j('/config/profiles/apply-current',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({config:draft})}); await loadConfig(); await loadAudit(); alert('Applied version '+d.version);}catch(e){document.getElementById('applyErr').textContent=e.message;}};
+document.getElementById('reloadBtn').onclick=loadConfig;
+document.getElementById('statusRefreshBtn').onclick=loadStatus;
+document.getElementById('retrainBtn').onclick=async()=>{ if(!confirm('Confirm retrain now?')) return; try{await j('/ml/retrain-now',{method:'POST',headers:{'x-actor':'operator'}}); document.getElementById('actionMsg').textContent='Retrain started';}catch(e){document.getElementById('actionMsg').textContent=e.message;} };
+document.getElementById('retrainChainBtn').onclick=async()=>{ try{ const s0=(document.getElementById('trainStartTs')?.value||'').trim(); const e0=(document.getElementById('trainEndTs')?.value||'').trim(); await j('/ml/training-range',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({start_ts:s0||null,end_ts:e0||null})}); const d=await j('/ml/status'); const tw=d.training_window||{}; const msg=`Retrain using current training range?\nStart: ${tw.start_ts||'—'}\nEnd: ${tw.end_ts||'—'}\nRows: ${tw.rows||d.training_rows||0}`; if(!confirm(msg)) return; await j('/ml/retrain-now',{method:'POST',headers:{'x-actor':'operator'}}); document.getElementById('actionMsg').textContent='Range saved; retrain started'; }catch(e){document.getElementById('actionMsg').textContent=e.message;} };
+document.getElementById('rescoreBtn').onclick=async()=>{ try{await j('/ml/rescore-now',{method:'POST',headers:{'x-actor':'operator'}}); document.getElementById('actionMsg').textContent='Rescore started';}catch(e){document.getElementById('actionMsg').textContent=e.message;} };
+document.getElementById('autoRetrain').onchange=async(e)=>{ try{await j('/ml/auto-retrain',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({enabled:e.target.checked})});}catch(err){alert(err.message);} };
+
+document.getElementById('saveTrainRangeBtn').onclick=async()=>{ try{ const s0=(document.getElementById('trainStartTs')?.value||'').trim(); const e0=(document.getElementById('trainEndTs')?.value||'').trim(); await j('/ml/training-range',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({start_ts:s0||null,end_ts:e0||null})}); document.getElementById('actionMsg').textContent='Training range saved'; await loadStatus(); }catch(e){document.getElementById('actionMsg').textContent=e.message;} };
+document.getElementById('clearTrainRangeBtn').onclick=async()=>{ try{ await j('/ml/training-range',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({start_ts:null,end_ts:null})}); const ss=document.getElementById('trainStartTs'); const ee=document.getElementById('trainEndTs'); if(ss) ss.value=''; if(ee) ee.value=''; document.getElementById('actionMsg').textContent='Training range cleared'; await loadStatus(); }catch(e){document.getElementById('actionMsg').textContent=e.message;} };
+
+document.getElementById('loadProfileBtn').onclick=async()=>{const d=await j('/config/profiles'); const p=(d.profiles||[]).find(x=>x.name===document.getElementById('profileSelect').value); if(p){draft=JSON.parse(JSON.stringify(p.config)); renderFields(); refreshPending();}}
+document.getElementById('applyProfileBtn').onclick=async()=>{ try{await j('/config/profiles/'+encodeURIComponent(document.getElementById('profileSelect').value)+'/apply',{method:'POST',headers:{'x-actor':'operator'}}); await loadConfig(); await loadAudit();}catch(e){document.getElementById('profileMsg').textContent=e.message;}}
+document.getElementById('saveProfileBtn').onclick=async()=>{const n=document.getElementById('saveProfileName').value.trim(); if(!n) return; try{await j('/config/profiles',{method:'POST',headers:{'Content-Type':'application/json','x-actor':'operator'},body:JSON.stringify({name:n,config:draft})}); await loadProfiles(); await loadAudit();}catch(e){document.getElementById('profileMsg').textContent=e.message;}}
+document.getElementById('rollbackBtn').onclick=async()=>{const v=parseInt(document.getElementById('rollbackVersion').value||'0'); if(!v) return; try{await j('/config/rollback/'+v,{method:'POST',headers:{'x-actor':'operator'}}); await loadConfig(); await loadAudit();}catch(e){document.getElementById('profileMsg').textContent=e.message;}}
+
+function startStatusAuto(){
+  if(statusTimer){ clearInterval(statusTimer); statusTimer=null; }
+  const on = !!document.getElementById('statusAuto')?.checked;
+  const sec = Math.max(2, Math.min(120, parseInt(document.getElementById('statusSec')?.value || '4',10) || 4));
+  if (on){ statusTimer=setInterval(loadStatus, sec*1000); }
+}
+
+document.getElementById('statusAuto').onchange=startStatusAuto;
+document.getElementById('statusSec').onchange=startStatusAuto;
+
+(async()=>{await loadConfig(); await loadProfiles(); await loadAudit(); await loadStatus(); startStatusAuto();})();
+</script>
+</div>
+</body></html>

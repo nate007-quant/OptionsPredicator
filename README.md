@@ -141,3 +141,34 @@ It includes a **Debit Spreads** view that shows:
   - `p(bigwin)` probability of hitting your configured win multiple
 - recent realized outcomes (historical)
 
+
+
+## Regime Detection and Routing (v2.9)
+
+The ingest pipeline now computes a deterministic **regime_v1** label before ML feature generation and model inference.
+
+### Regime labels
+
+- `trend_up`
+- `trend_down`
+- `pin_mean_revert`
+- `vol_expansion_breakout`
+- `event_unstable`
+
+### Example regime payload
+
+```json
+{
+  "label": "pin_mean_revert",
+  "confidence": 0.67,
+  "version": "regime_v1",
+  "reasons": ["top_score=0.700", "runner_up=0.420"],
+  "inputs_used": {"trend": "neutral"}
+}
+```
+
+### Known limitations / next improvements
+
+- No macro-event calendar in v1.
+- No explicit IV term-structure regime features yet.
+- Optional Timescale quality fields are best-effort.

@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+from typing import Any
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except Exception:  # pragma: no cover
+    psycopg = None  # type: ignore
+    dict_row = None  # type: ignore
+
+
+class FlexRow(dict):
+    """dict row with sqlite-like int indexing support."""
+
+    def __getitem__(self, key: Any) -> Any:  # type: ignore[override]
+        if isinstance(key, int):
+            vals = list(self.values())
+            return vals[key]
+        return super().__getitem__(key)
+
+
+class PgCursorCompat:
+    def __init__(self, cur: Any):
+        self._cur = cur
+
+    @staticmethod
+    def _q(sql: str) -> str:
+        return str(sql).replace("?", "%s")
+
+    def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None):
+        self._cur.execute(self._q(sql), tuple(params or ()))
+        return self
+
+    def executemany(self, sql: str, seq: list[tuple[Any, ...]]):
+        self._cur.executemany(self._q(sql), seq)
+        return self
+
+    @property
+    def lastrowid(self):
+        try:
+            r = self._cur.fetchone()
+            if isinstance(r, dict):
+                return r.get("id")
+            return r[0]
+        except Exception:
+            return None
+
+    def fetchone(self):
+        r = self._cur.fetchone()
+        if r is None:
+            return None
+        if isinstance(r, dict):
+            return FlexRow(r)
+        return r
+
+    def fetchall(self):
+        rows = self._cur.fetchall()
+        out = []
+        for r in rows:
+            if isinstance(r, dict):
+                out.append(FlexRow(r))
+            else:
+                out.append(r)
+        return out
+
+
+class PgConnCompat:
+    def __init__(self, dsn: str):
+        if psycopg is None:
+            raise RuntimeError("psycopg not installed")
+        self._con = psycopg.connect(dsn, row_factory=dict_row)
+        self.row_factory = FlexRow
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self._con.commit()
+            else:
+                self._con.rollback()
+        finally:
+            self._con.close()
+
+    def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None):
+        cur = self._con.cursor()
+        cc = PgCursorCompat(cur)
+        return cc.execute(sql, params)
+
+    def executescript(self, script: str):
+        cur = self._con.cursor()
+        parts = [x.strip() for x in str(script or '').split(';') if x.strip()]
+        for stmt in parts:
+            cur.execute(stmt)
+        return self
+
+    def commit(self):
+        self._con.commit()
+
+    def close(self):
+        self._con.close()
+
+
+def connect_compat(db_dsn_or_path: str, *, timeout: float = 5.0):
+    _ = timeout
+    target = str(db_dsn_or_path or "").strip()
+    if not (target.startswith("postgresql://") or target.startswith("postgres://")):
+        raise RuntimeError(f"Postgres DSN required, got: {target!r}")
+    return PgConnCompat(target)

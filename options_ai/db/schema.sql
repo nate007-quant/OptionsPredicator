@@ -1,7 +1,5 @@
 -- Options AI v2.8 schema
 
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
 
 CREATE TABLE IF NOT EXISTS predictions (
   id INTEGER PRIMARY KEY,
@@ -27,6 +25,9 @@ CREATE TABLE IF NOT EXISTS predictions (
   model_used TEXT NOT NULL,
   model_provider TEXT NOT NULL,
   routing_reason TEXT NOT NULL,
+  regime_label TEXT,
+  regime_confidence REAL,
+  regime_version TEXT,
   price_at_prediction REAL,
   price_at_outcome REAL,
   actual_move REAL,

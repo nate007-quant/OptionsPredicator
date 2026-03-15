@@ -13,6 +13,7 @@ import psycopg
 
 from options_ai.utils.task_state import utc_now_iso, write_task_state
 from sklearn.linear_model import Ridge, LogisticRegression
+from sklearn.preprocessing import StandardScaler
 
 
 ANCHOR_TYPES = ("ATM", "CALL_WALL", "PUT_WALL", "MAGNET")
@@ -25,19 +26,27 @@ class DebitMLConfig:
 
     horizon_minutes: int = 30
 
+    # target/label controls
+    target_mode: str = "return"  # return|change
+    bigwin_label_mode: str = "return_threshold"  # return_threshold|multiple
+    bigwin_return_threshold: float = 0.30
     bigwin_mult_atm: float = 2.0
-    bigwin_mult_wall: float = 4.0
+    bigwin_mult_wall: float = 2.5
+    ridge_alpha: float = 3.0
+    clf_class_weight_balanced: bool = True
 
     # training controls
     min_train_rows: int = 300
     max_train_rows: int = 50000
     retrain_seconds: int = 15 * 60
+    train_start_ts: str | None = None
+    train_end_ts: str | None = None
 
     # scoring loop
     poll_seconds: float = 20.0
 
     models_dir: str = "/mnt/options_ai/models/debit_spread"
-    model_version: str = "debit_ridge_v1"
+    model_version: str = "debit_ridge_v2_flow"
 
 
 SCHEMA_SQL = """
@@ -50,6 +59,7 @@ CREATE TABLE IF NOT EXISTS spx.debit_spread_scores_0dte (
   spread_type TEXT NOT NULL,
 
   pred_change NUMERIC,
+  pred_return NUMERIC,
   p_bigwin NUMERIC,
   model_version TEXT NOT NULL,
   trained_at TIMESTAMPTZ,
@@ -61,20 +71,23 @@ CREATE TABLE IF NOT EXISTS spx.debit_spread_scores_0dte (
 CREATE INDEX IF NOT EXISTS debit_spread_scores_ts_idx ON spx.debit_spread_scores_0dte (snapshot_ts DESC);
 
 -- Forward-compatible: add new columns if the table already existed
+ALTER TABLE spx.debit_spread_scores_0dte ADD COLUMN IF NOT EXISTS pred_return NUMERIC;
 ALTER TABLE spx.debit_spread_scores_0dte ADD COLUMN IF NOT EXISTS p_bigwin NUMERIC;
+ALTER TABLE spx.debit_spread_labels_0dte ADD COLUMN IF NOT EXISTS ret_pct NUMERIC;
 """
 
 
 UPSERT_SCORE_SQL = """
 INSERT INTO spx.debit_spread_scores_0dte (
   snapshot_ts, horizon_minutes, anchor_type, spread_type,
-  pred_change, p_bigwin, model_version, trained_at
+  pred_change, pred_return, p_bigwin, model_version, trained_at
 ) VALUES (
   %(snapshot_ts)s, %(horizon_minutes)s, %(anchor_type)s, %(spread_type)s,
-  %(pred_change)s, %(p_bigwin)s, %(model_version)s, %(trained_at)s
+  %(pred_change)s, %(pred_return)s, %(p_bigwin)s, %(model_version)s, %(trained_at)s
 )
 ON CONFLICT (snapshot_ts, horizon_minutes, anchor_type, spread_type) DO UPDATE SET
   pred_change = EXCLUDED.pred_change,
+  pred_return = EXCLUDED.pred_return,
   p_bigwin = EXCLUDED.p_bigwin,
   model_version = EXCLUDED.model_version,
   trained_at = EXCLUDED.trained_at,
@@ -124,6 +137,30 @@ _NUM_FEATURES = [
     "contract_count",
     "valid_iv_count",
     "valid_mid_count",
+    "itm_vol",
+    "atm_vol",
+    "otm_vol",
+    "tot_vol",
+    "d_tot_vol",
+    "d_call_oi",
+    "d_put_oi",
+    "sma_spot_5",
+    "sma_spot_20",
+    "bb_pctb_20",
+    "rsi_14",
+    "twap_spot_day",
+    "vwap_chainweighted_spot_day",
+    "flow_pct_bullish",
+    "flow_pct_bearish",
+    "flow_breadth",
+    "flow_bucket_net_flow",
+    "flow_bucket_robust_z",
+    "flow_skew",
+    "flow_confidence",
+    "flow_atm_corridor_net",
+    "flow_atm_corridor_frac",
+    "flow_top3_share",
+    "flow_top5_share",
 ]
 
 
@@ -162,6 +199,30 @@ def _row_to_features(r: dict[str, Any]) -> tuple[np.ndarray, list[str]]:
         "contract_count": _as_float(r.get("contract_count")),
         "valid_iv_count": _as_float(r.get("valid_iv_count")),
         "valid_mid_count": _as_float(r.get("valid_mid_count")),
+        "itm_vol": _as_float(r.get("itm_vol")),
+        "atm_vol": _as_float(r.get("atm_vol")),
+        "otm_vol": _as_float(r.get("otm_vol")),
+        "tot_vol": _as_float(r.get("tot_vol")),
+        "d_tot_vol": _as_float(r.get("d_tot_vol")),
+        "d_call_oi": _as_float(r.get("d_call_oi")),
+        "d_put_oi": _as_float(r.get("d_put_oi")),
+        "sma_spot_5": _as_float(r.get("sma_spot_5")),
+        "sma_spot_20": _as_float(r.get("sma_spot_20")),
+        "bb_pctb_20": _as_float(r.get("bb_pctb_20")),
+        "rsi_14": _as_float(r.get("rsi_14")),
+        "twap_spot_day": _as_float(r.get("twap_spot_day")),
+        "vwap_chainweighted_spot_day": _as_float(r.get("vwap_chainweighted_spot_day")),
+        "flow_pct_bullish": _as_float(r.get("flow_pct_bullish")),
+        "flow_pct_bearish": _as_float(r.get("flow_pct_bearish")),
+        "flow_breadth": _as_float(r.get("flow_breadth")),
+        "flow_bucket_net_flow": _as_float(r.get("flow_bucket_net_flow")),
+        "flow_bucket_robust_z": _as_float(r.get("flow_bucket_robust_z")),
+        "flow_skew": _as_float(r.get("flow_skew")),
+        "flow_confidence": _as_float(r.get("flow_confidence")),
+        "flow_atm_corridor_net": _as_float(r.get("flow_atm_corridor_net")),
+        "flow_atm_corridor_frac": _as_float(r.get("flow_atm_corridor_frac")),
+        "flow_top3_share": _as_float(r.get("flow_top3_share")),
+        "flow_top5_share": _as_float(r.get("flow_top5_share")),
     }
 
     nums = [feat_map[k] for k in _NUM_FEATURES]
@@ -196,16 +257,37 @@ def _apply_impute(X_raw: np.ndarray, mask: np.ndarray, impute: np.ndarray) -> np
     return X
 
 
-def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limit: int) -> list[dict[str, Any]]:
+def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limit: int, train_start_ts: str | None = None, train_end_ts: str | None = None) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
-        cur.execute(
-            """
+        where = [
+            "l.horizon_minutes = %s",
+            "l.is_missing_future = false",
+            "l.change IS NOT NULL",
+            "c.tradable = true",
+            "f.low_quality = false",
+        ]
+        params: list[Any] = [int(horizon_minutes)]
+        if train_start_ts:
+            where.append("l.snapshot_ts >= %s::timestamptz")
+            params.append(str(train_start_ts))
+        if train_end_ts:
+            where.append("l.snapshot_ts <= %s::timestamptz")
+            params.append(str(train_end_ts))
+
+        q = f"""
             SELECT
-              l.change, l.debit_t, l.debit_tH,
+              l.change, l.ret_pct, l.debit_t, l.debit_tH,
               c.anchor_type, c.spread_type,
               c.debit_points, c.anchor_strike, c.k_long, c.k_short,
               f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
-              f.contract_count, f.valid_iv_count, f.valid_mid_count
+              f.contract_count, f.valid_iv_count, f.valid_mid_count,
+              f.itm_vol, f.atm_vol, f.otm_vol, f.tot_vol,
+              f.d_tot_vol, f.d_call_oi, f.d_put_oi,
+              f.sma_spot_5, f.sma_spot_20, f.bb_pctb_20, f.rsi_14,
+              f.twap_spot_day, f.vwap_chainweighted_spot_day,
+              f.flow_pct_bullish, f.flow_pct_bearish, f.flow_breadth,
+              f.flow_bucket_net_flow, f.flow_bucket_robust_z, f.flow_skew, f.flow_confidence,
+              f.flow_atm_corridor_net, f.flow_atm_corridor_frac, f.flow_top3_share, f.flow_top5_share
             FROM spx.debit_spread_labels_0dte l
             JOIN spx.debit_spread_candidates_0dte c
               ON c.snapshot_ts = l.snapshot_ts
@@ -213,38 +295,59 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
              AND c.spread_type = l.spread_type
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
-            WHERE l.horizon_minutes = %s
-              AND l.is_missing_future = false
-              AND l.change IS NOT NULL
-              AND c.tradable = true
-              AND f.low_quality = false
+            WHERE {' AND '.join(where)}
             ORDER BY l.snapshot_ts DESC
             LIMIT %s
-            """,
-            (int(horizon_minutes), int(limit)),
-        )
+        """
+        params.append(int(limit))
+        cur.execute(q, tuple(params))
         rows = []
         for r in cur.fetchall():
             rows.append(
                 {
-                    "y": _as_float(r[0]),
-                    "debit_t": _as_float(r[1]),
-                    "debit_tH": _as_float(r[2]),
-                    "anchor_type": r[3],
-                    "spread_type": r[4],
-                    "debit_points": _as_float(r[5]),
-                    "anchor_strike": _as_float(r[6]),
-                    "k_long": _as_float(r[7]),
-                    "k_short": _as_float(r[8]),
-                    "spot": _as_float(r[9]),
-                    "atm_iv": _as_float(r[10]),
-                    "skew_25d": _as_float(r[11]),
-                    "bf_25d": _as_float(r[12]),
-                    "pcr_volume": _as_float(r[13]),
-                    "pcr_oi": _as_float(r[14]),
-                    "contract_count": _as_float(r[15]),
-                    "valid_iv_count": _as_float(r[16]),
-                    "valid_mid_count": _as_float(r[17]),
+                    "change": _as_float(r[0]),
+                    "ret_pct": _as_float(r[1]),
+                    "debit_t": _as_float(r[2]),
+                    "debit_tH": _as_float(r[3]),
+                    "anchor_type": r[4],
+                    "spread_type": r[5],
+                    "debit_points": _as_float(r[6]),
+                    "anchor_strike": _as_float(r[7]),
+                    "k_long": _as_float(r[8]),
+                    "k_short": _as_float(r[9]),
+                    "spot": _as_float(r[10]),
+                    "atm_iv": _as_float(r[11]),
+                    "skew_25d": _as_float(r[12]),
+                    "bf_25d": _as_float(r[13]),
+                    "pcr_volume": _as_float(r[14]),
+                    "pcr_oi": _as_float(r[15]),
+                    "contract_count": _as_float(r[16]),
+                    "valid_iv_count": _as_float(r[17]),
+                    "valid_mid_count": _as_float(r[18]),
+                    "itm_vol": _as_float(r[19]),
+                    "atm_vol": _as_float(r[20]),
+                    "otm_vol": _as_float(r[21]),
+                    "tot_vol": _as_float(r[22]),
+                    "d_tot_vol": _as_float(r[23]),
+                    "d_call_oi": _as_float(r[24]),
+                    "d_put_oi": _as_float(r[25]),
+                    "sma_spot_5": _as_float(r[26]),
+                    "sma_spot_20": _as_float(r[27]),
+                    "bb_pctb_20": _as_float(r[28]),
+                    "rsi_14": _as_float(r[29]),
+                    "twap_spot_day": _as_float(r[30]),
+                    "vwap_chainweighted_spot_day": _as_float(r[31]),
+                    "flow_pct_bullish": _as_float(r[32]),
+                    "flow_pct_bearish": _as_float(r[33]),
+                    "flow_breadth": _as_float(r[34]),
+                    "flow_bucket_net_flow": _as_float(r[35]),
+                    "flow_bucket_robust_z": _as_float(r[36]),
+                    "flow_skew": _as_float(r[37]),
+                    "flow_confidence": _as_float(r[38]),
+                    "flow_atm_corridor_net": _as_float(r[39]),
+                    "flow_atm_corridor_frac": _as_float(r[40]),
+                    "flow_top3_share": _as_float(r[41]),
+                    "flow_top5_share": _as_float(r[42]),
                 }
             )
         return rows
@@ -254,6 +357,7 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
 class _TrainedModel:
     model: Ridge
     clf: LogisticRegression | None
+    scaler: StandardScaler | None
     impute: np.ndarray
     feature_names: list[str]
     trained_at: datetime
@@ -280,19 +384,18 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
                         return _TrainedModel(
                             model=obj["model"],
                             clf=obj.get("clf"),
+                            scaler=obj.get("scaler"),
                             impute=obj["impute"],
                             feature_names=list(obj.get("feature_names") or []),
                             trained_at=trained_at,
                             horizon_minutes=int(cfg.horizon_minutes),
                             model_version=str(cfg.model_version),
                         )
-            if not did:
-                write_task_state(task_path, None)
         except Exception:
             pass
 
-    rows = _fetch_training_rows(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(cfg.max_train_rows))
-    rows = [r for r in rows if r.get("y") is not None]
+    rows = _fetch_training_rows(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(cfg.max_train_rows), train_start_ts=cfg.train_start_ts, train_end_ts=cfg.train_end_ts)
+    rows = list(rows)
 
     if len(rows) < int(cfg.min_train_rows):
         return None
@@ -321,16 +424,33 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
         m = np.zeros_like(x, dtype=bool)
         m[: len(_NUM_FEATURES)] = np.array(num_mask, dtype=bool)
 
+        debit_t = _as_float(r.get("debit_t"))
+        change = _as_float(r.get("change"))
+        ret_pct = _as_float(r.get("ret_pct"))
+        if ret_pct is None and change is not None and debit_t is not None and debit_t > 0:
+            ret_pct = float(change) / float(debit_t)
+
+        if str(cfg.target_mode).lower() == "change":
+            y_val = change
+        else:
+            y_val = ret_pct
+
+        if y_val is None:
+            continue
+
         X_list.append(x)
         mask_list.append(m)
-        y_list.append(float(r["y"]))
+        y_list.append(float(y_val))
 
-        debit_t = _as_float(r.get("debit_t"))
         debit_tH = _as_float(r.get("debit_tH"))
-        mult = _bigwin_required_mult(str(r.get("anchor_type") or ""), mult_atm=cfg.bigwin_mult_atm, mult_wall=cfg.bigwin_mult_wall)
         big = 0
-        if debit_t is not None and debit_tH is not None and debit_t > 0:
-            big = 1 if float(debit_tH) >= float(mult) * float(debit_t) else 0
+        if str(cfg.bigwin_label_mode).lower() == "multiple":
+            mult = _bigwin_required_mult(str(r.get("anchor_type") or ""), mult_atm=cfg.bigwin_mult_atm, mult_wall=cfg.bigwin_mult_wall)
+            if debit_t is not None and debit_tH is not None and debit_t > 0:
+                big = 1 if float(debit_tH) >= float(mult) * float(debit_t) else 0
+        else:
+            if ret_pct is not None:
+                big = 1 if float(ret_pct) >= float(cfg.bigwin_return_threshold) else 0
         y_bigwin.append(int(big))
 
     X_raw = np.vstack(X_list)
@@ -340,15 +460,18 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
     impute = _compute_impute_values(X_raw, mask)
     X = _apply_impute(X_raw, mask, impute)
 
-    model = Ridge(alpha=1.0, random_state=0)
-    model.fit(X, y)
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
+
+    model = Ridge(alpha=float(cfg.ridge_alpha), random_state=0)
+    model.fit(Xs, y)
 
     clf = None
     try:
         ys = np.array(y_bigwin, dtype=np.int64)
         if ys.min() != ys.max():
-            clf = LogisticRegression(max_iter=2000)
-            clf.fit(X, ys)
+            clf = LogisticRegression(max_iter=2000, class_weight=('balanced' if bool(cfg.clf_class_weight_balanced) else None))
+            clf.fit(Xs, ys)
     except Exception:
         clf = None
 
@@ -358,6 +481,8 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
         "model": model,
         "clf": clf,
         "impute": impute,
+        "scaler": scaler,
+        "target_mode": str(cfg.target_mode),
         "feature_names": feat_names or [],
         "trained_at": trained_at,
         "horizon_minutes": int(cfg.horizon_minutes),
@@ -369,6 +494,7 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
     return _TrainedModel(
         model=model,
         clf=clf,
+        scaler=scaler,
         impute=impute,
         feature_names=feat_names or [],
         trained_at=trained_at,
@@ -401,7 +527,14 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
               c.anchor_type, c.spread_type,
               c.debit_points, c.anchor_strike, c.k_long, c.k_short,
               f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
-              f.contract_count, f.valid_iv_count, f.valid_mid_count
+              f.contract_count, f.valid_iv_count, f.valid_mid_count,
+              f.itm_vol, f.atm_vol, f.otm_vol, f.tot_vol,
+              f.d_tot_vol, f.d_call_oi, f.d_put_oi,
+              f.sma_spot_5, f.sma_spot_20, f.bb_pctb_20, f.rsi_14,
+              f.twap_spot_day, f.vwap_chainweighted_spot_day,
+              f.flow_pct_bullish, f.flow_pct_bearish, f.flow_breadth,
+              f.flow_bucket_net_flow, f.flow_bucket_robust_z, f.flow_skew, f.flow_confidence,
+              f.flow_atm_corridor_net, f.flow_atm_corridor_frac, f.flow_top3_share, f.flow_top5_share
             FROM spx.debit_spread_candidates_0dte c
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
@@ -437,6 +570,30 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
             "contract_count": _as_float(rr[12]),
             "valid_iv_count": _as_float(rr[13]),
             "valid_mid_count": _as_float(rr[14]),
+            "itm_vol": _as_float(rr[15]),
+            "atm_vol": _as_float(rr[16]),
+            "otm_vol": _as_float(rr[17]),
+            "tot_vol": _as_float(rr[18]),
+            "d_tot_vol": _as_float(rr[19]),
+            "d_call_oi": _as_float(rr[20]),
+            "d_put_oi": _as_float(rr[21]),
+            "sma_spot_5": _as_float(rr[22]),
+            "sma_spot_20": _as_float(rr[23]),
+            "bb_pctb_20": _as_float(rr[24]),
+            "rsi_14": _as_float(rr[25]),
+            "twap_spot_day": _as_float(rr[26]),
+            "vwap_chainweighted_spot_day": _as_float(rr[27]),
+            "flow_pct_bullish": _as_float(rr[28]),
+            "flow_pct_bearish": _as_float(rr[29]),
+            "flow_breadth": _as_float(rr[30]),
+            "flow_bucket_net_flow": _as_float(rr[31]),
+            "flow_bucket_robust_z": _as_float(rr[32]),
+            "flow_skew": _as_float(rr[33]),
+            "flow_confidence": _as_float(rr[34]),
+            "flow_atm_corridor_net": _as_float(rr[35]),
+            "flow_atm_corridor_frac": _as_float(rr[36]),
+            "flow_top3_share": _as_float(rr[37]),
+            "flow_top5_share": _as_float(rr[38]),
         }
 
         nums = [d.get(k) for k in _NUM_FEATURES]
@@ -453,12 +610,13 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
     X_raw = np.vstack(X_list)
     mask = np.vstack(mask_list)
     X = _apply_impute(X_raw, mask, tm.impute)
+    Xs = tm.scaler.transform(X) if tm.scaler is not None else X
 
-    preds = tm.model.predict(X)
+    preds = tm.model.predict(Xs)
     p_big = None
     if tm.clf is not None:
         try:
-            p_big = tm.clf.predict_proba(X)[:, 1]
+            p_big = tm.clf.predict_proba(Xs)[:, 1]
         except Exception:
             p_big = None
 
@@ -466,6 +624,10 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
     with conn.cursor() as cur:
         for idx, ((anchor_type, spread_type), pred) in enumerate(zip(keys, preds, strict=True)):
             pb = float(p_big[idx]) if p_big is not None else None
+            # If training target is return, expose both pred_return and equivalent pred_change points.
+            debit = float(X_list[idx][0]) if len(X_list[idx]) else 0.0
+            pred_return = float(pred) if str(cfg.target_mode).lower() != "change" else (float(pred) / debit if debit > 0 else None)
+            pred_change = float(pred) if str(cfg.target_mode).lower() == "change" else (float(pred) * debit)
             cur.execute(
                 UPSERT_SCORE_SQL,
                 {
@@ -473,7 +635,8 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
                     "horizon_minutes": int(cfg.horizon_minutes),
                     "anchor_type": anchor_type,
                     "spread_type": spread_type,
-                    "pred_change": float(pred),
+                    "pred_change": pred_change,
+                    "pred_return": pred_return,
                     "p_bigwin": pb,
                     "model_version": str(cfg.model_version),
                     "trained_at": tm.trained_at,
@@ -485,8 +648,8 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
     return upserted
 
 
-def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int, limit: int) -> list[datetime]:
-    """Return recent snapshot_ts values that have tradable candidates but no scores yet."""
+def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int, model_version: str, limit: int) -> list[datetime]:
+    """Return recent snapshot_ts values that need scores for the active model version."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -501,11 +664,12 @@ def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int,
                 FROM spx.debit_spread_scores_0dte s
                 WHERE s.snapshot_ts = c.snapshot_ts
                   AND s.horizon_minutes = %s
+                  AND s.model_version = %s
               )
             ORDER BY c.snapshot_ts DESC
             LIMIT %s
             """,
-            (int(horizon_minutes), int(limit)),
+            (int(horizon_minutes), str(model_version), int(limit)),
         )
         return [r[0] for r in cur.fetchall()]
 
@@ -520,7 +684,14 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
               c.anchor_type, c.spread_type,
               c.debit_points, c.anchor_strike, c.k_long, c.k_short,
               f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
-              f.contract_count, f.valid_iv_count, f.valid_mid_count
+              f.contract_count, f.valid_iv_count, f.valid_mid_count,
+              f.itm_vol, f.atm_vol, f.otm_vol, f.tot_vol,
+              f.d_tot_vol, f.d_call_oi, f.d_put_oi,
+              f.sma_spot_5, f.sma_spot_20, f.bb_pctb_20, f.rsi_14,
+              f.twap_spot_day, f.vwap_chainweighted_spot_day,
+              f.flow_pct_bullish, f.flow_pct_bearish, f.flow_breadth,
+              f.flow_bucket_net_flow, f.flow_bucket_robust_z, f.flow_skew, f.flow_confidence,
+              f.flow_atm_corridor_net, f.flow_atm_corridor_frac, f.flow_top3_share, f.flow_top5_share
             FROM spx.debit_spread_candidates_0dte c
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
@@ -555,6 +726,30 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
             "contract_count": _as_float(rr[12]),
             "valid_iv_count": _as_float(rr[13]),
             "valid_mid_count": _as_float(rr[14]),
+            "itm_vol": _as_float(rr[15]),
+            "atm_vol": _as_float(rr[16]),
+            "otm_vol": _as_float(rr[17]),
+            "tot_vol": _as_float(rr[18]),
+            "d_tot_vol": _as_float(rr[19]),
+            "d_call_oi": _as_float(rr[20]),
+            "d_put_oi": _as_float(rr[21]),
+            "sma_spot_5": _as_float(rr[22]),
+            "sma_spot_20": _as_float(rr[23]),
+            "bb_pctb_20": _as_float(rr[24]),
+            "rsi_14": _as_float(rr[25]),
+            "twap_spot_day": _as_float(rr[26]),
+            "vwap_chainweighted_spot_day": _as_float(rr[27]),
+            "flow_pct_bullish": _as_float(rr[28]),
+            "flow_pct_bearish": _as_float(rr[29]),
+            "flow_breadth": _as_float(rr[30]),
+            "flow_bucket_net_flow": _as_float(rr[31]),
+            "flow_bucket_robust_z": _as_float(rr[32]),
+            "flow_skew": _as_float(rr[33]),
+            "flow_confidence": _as_float(rr[34]),
+            "flow_atm_corridor_net": _as_float(rr[35]),
+            "flow_atm_corridor_frac": _as_float(rr[36]),
+            "flow_top3_share": _as_float(rr[37]),
+            "flow_top5_share": _as_float(rr[38]),
         }
 
         nums = [d.get(k) for k in _NUM_FEATURES]
@@ -565,22 +760,25 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
         m[: len(_NUM_FEATURES)] = np.array(num_mask, dtype=bool)
 
         X_list.append(_apply_impute(x.reshape(1, -1), m.reshape(1, -1), tm.impute)[0])
-        keys.append((str(d["anchor_type"]), str(d["spread_type"])))
+        keys.append((str(d["anchor_type"]), str(d["spread_type"]), float(d.get("debit_points") or 0.0)))
 
     X = np.vstack(X_list)
+    Xs = tm.scaler.transform(X) if tm.scaler is not None else X
 
-    preds = tm.model.predict(X)
+    preds = tm.model.predict(Xs)
     p_big = None
     if tm.clf is not None:
         try:
-            p_big = tm.clf.predict_proba(X)[:, 1]
+            p_big = tm.clf.predict_proba(Xs)[:, 1]
         except Exception:
             p_big = None
 
     upserted = 0
     with conn.cursor() as cur:
-        for idx, ((anchor_type, spread_type), pred) in enumerate(zip(keys, preds, strict=True)):
+        for idx, ((anchor_type, spread_type, debit), pred) in enumerate(zip(keys, preds, strict=True)):
             pb = float(p_big[idx]) if p_big is not None else None
+            pred_return = float(pred) if str(cfg.target_mode).lower() != "change" else (float(pred) / debit if debit > 0 else None)
+            pred_change = float(pred) if str(cfg.target_mode).lower() == "change" else (float(pred) * debit)
             cur.execute(
                 UPSERT_SCORE_SQL,
                 {
@@ -588,7 +786,8 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
                     "horizon_minutes": int(cfg.horizon_minutes),
                     "anchor_type": anchor_type,
                     "spread_type": spread_type,
-                    "pred_change": float(pred),
+                    "pred_change": pred_change,
+                    "pred_return": pred_return,
                     "p_bigwin": pb,
                     "model_version": str(cfg.model_version),
                     "trained_at": tm.trained_at,
@@ -603,7 +802,7 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
 def score_recent_backfill(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedModel, *, limit: int = 200) -> int:
     """Backfill scores for recent snapshots that are missing scores."""
     total = 0
-    for ts in _snapshots_missing_scores(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(limit)):
+    for ts in _snapshots_missing_scores(conn, horizon_minutes=int(cfg.horizon_minutes), model_version=str(cfg.model_version), limit=int(limit)):
         total += _score_snapshot(conn, cfg, tm, snapshot_ts=ts)
     return total
 
@@ -665,12 +864,17 @@ def load_config_from_env() -> DebitMLConfig:
     return DebitMLConfig(
         db_dsn=dsn,
         horizon_minutes=int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")),
+        target_mode=os.getenv("DEBIT_ML_TARGET_MODE", "return"),
+        bigwin_label_mode=os.getenv("DEBIT_BIGWIN_LABEL_MODE", "return_threshold"),
+        bigwin_return_threshold=float(os.getenv("DEBIT_BIGWIN_RETURN_THRESHOLD", "0.30")),
         bigwin_mult_atm=float(os.getenv("DEBIT_BIGWIN_MULT_ATM", "2.0")),
-        bigwin_mult_wall=float(os.getenv("DEBIT_BIGWIN_MULT_WALL", "4.0")),
+        bigwin_mult_wall=float(os.getenv("DEBIT_BIGWIN_MULT_WALL", "2.5")),
+        ridge_alpha=float(os.getenv("DEBIT_ML_RIDGE_ALPHA", "3.0")),
+        clf_class_weight_balanced=(str(os.getenv("DEBIT_ML_CLF_BALANCED", "true")).strip().lower() not in {"0","false","no"}),
         min_train_rows=int(os.getenv("DEBIT_ML_MIN_TRAIN_ROWS", "300")),
         max_train_rows=int(os.getenv("DEBIT_ML_MAX_TRAIN_ROWS", "50000")),
         retrain_seconds=int(os.getenv("DEBIT_ML_RETRAIN_SECONDS", "900")),
         poll_seconds=float(os.getenv("DEBIT_ML_POLL_SECONDS", "20")),
         models_dir=os.getenv("DEBIT_ML_MODELS_DIR", "/mnt/options_ai/models/debit_spread"),
-        model_version=os.getenv("DEBIT_ML_MODEL_VERSION", "debit_ridge_v1"),
+        model_version=os.getenv("DEBIT_ML_MODEL_VERSION", "debit_ridge_v2_flow"),
     )

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
 from options_ai.config import load_config
 from options_ai.db import db_path_from_url, init_db
+from options_ai.db_compat import connect_compat
 
 
 def _check_env(cfg) -> list[str]:
@@ -35,25 +35,23 @@ def _check_env(cfg) -> list[str]:
 
 def _check_db(db_path: str) -> list[str]:
     errs: list[str] = []
-    con = sqlite3.connect(db_path)
-    try:
-        needed = [
-            'execution_intents',
-            'trade_runs',
-            'order_events',
-            'position_events',
-            'risk_session_state',
-            'reprice_policy',
-            'audit_log',
-            'broker_reconciliation_log',
-            'incident_events',
-        ]
-        names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        miss = [t for t in needed if t not in names]
-        if miss:
-            errs.append(f'missing tables: {miss}')
-    finally:
-        con.close()
+    needed = [
+        'execution_intents',
+        'trade_runs',
+        'order_events',
+        'position_events',
+        'risk_session_state',
+        'reprice_policy',
+        'audit_log',
+        'broker_reconciliation_log',
+        'incident_events',
+    ]
+    with connect_compat(db_path, timeout=10.0) as con:
+        rows = con.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='spx'").fetchall()
+        names = {str(r[0] if not isinstance(r, dict) else r.get('table_name')) for r in rows}
+    miss = [t for t in needed if t not in names]
+    if miss:
+        errs.append(f'missing tables: {miss}')
     return errs
 
 

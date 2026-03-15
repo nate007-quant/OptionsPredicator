@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+
+from options_ai.db_compat import connect_compat
 
 
 def _now_utc_iso() -> str:
@@ -70,15 +71,11 @@ class ExecutionMonitor:
     def _connect(self):
         if self._connect_fn is not None:
             return self._connect_fn(self.db_path)
-        con = sqlite3.connect(self.db_path, timeout=5.0)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA busy_timeout=5000;")
-        return con
+        return connect_compat(self.db_path, timeout=5.0)
 
     def _record_order_event(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         trade_run_id: int | None,
         execution_intent_id: int | None,
@@ -107,7 +104,7 @@ class ExecutionMonitor:
 
     def _record_position_event(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         trade_run_id: int | None,
         position_key: str | None,
@@ -138,26 +135,30 @@ class ExecutionMonitor:
             ),
         )
 
-    def _audit(self, con: sqlite3.Connection, *, action: str, entity_type: str, entity_id: str, details: dict[str, Any]) -> None:
-        con.execute(
-            """
-            INSERT INTO audit_log(created_at_utc, environment, actor, action, entity_type, entity_id, details_json)
-            VALUES(?,?,?,?,?,?,?)
-            """,
-            (
-                _now_utc_iso(),
-                self.environment,
-                "execution_monitor",
-                str(action),
-                str(entity_type),
-                str(entity_id),
-                _json(details),
-            ),
-        )
+    def _audit(self, con: Any, *, action: str, entity_type: str, entity_id: str, details: dict[str, Any]) -> None:
+        try:
+            con.execute(
+                """
+                INSERT INTO audit_log(created_at_utc, environment, actor, action, entity_type, entity_id, details_json)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    _now_utc_iso(),
+                    self.environment,
+                    "execution_monitor",
+                    str(action),
+                    str(entity_type),
+                    str(entity_id),
+                    _json(details),
+                ),
+            )
+        except Exception:
+            # Do not crash monitor on transient SQLite lock contention.
+            pass
 
     def _incident(
         self,
-        con: sqlite3.Connection,
+        con: Any,
         *,
         severity: str,
         incident_type: str,
@@ -198,7 +199,7 @@ class ExecutionMonitor:
             con.commit()
         return {"ok": True, "event_type": et}
 
-    def _has_protective_exit(self, con: sqlite3.Connection, trade_run_id: int) -> bool:
+    def _has_protective_exit(self, con: Any, trade_run_id: int) -> bool:
         r = con.execute(
             """
             SELECT id FROM order_events
@@ -210,7 +211,7 @@ class ExecutionMonitor:
         return r is not None
 
 
-    def _already_alerted_missing_protection(self, con: sqlite3.Connection, trade_run_id: int) -> bool:
+    def _already_alerted_missing_protection(self, con: Any, trade_run_id: int) -> bool:
         r = con.execute(
             """
             SELECT id FROM audit_log
@@ -240,7 +241,7 @@ class ExecutionMonitor:
                     return [x for x in v if isinstance(x, dict)]
         return []
 
-    def _streamer_down_breaker(self, con: sqlite3.Connection) -> tuple[bool, dict[str, Any]]:
+    def _streamer_down_breaker(self, con: Any) -> tuple[bool, dict[str, Any]]:
         row = con.execute(
             """
             SELECT created_at_utc FROM order_events
@@ -264,14 +265,18 @@ class ExecutionMonitor:
             'threshold_seconds': self.max_streamer_downtime_seconds,
         }
 
-    def _recent_unresolved_mismatch_count(self, con: sqlite3.Connection) -> int:
+    def _recent_unresolved_mismatch_count(self, con: Any) -> int:
         row = con.execute(
             """
             SELECT COUNT(*)
-            FROM broker_reconciliation_log
-            WHERE environment=? AND broker_name=? AND resolved_bool=0
-            ORDER BY id DESC
-            LIMIT 200
+            FROM (
+              SELECT resolved_bool
+              FROM broker_reconciliation_log
+              WHERE environment=? AND broker_name=?
+              ORDER BY id DESC
+              LIMIT 200
+            ) t
+            WHERE COALESCE(t.resolved_bool, 0)=0
             """,
             (self.environment, self.broker_name),
         ).fetchone()
@@ -400,9 +405,9 @@ class ExecutionMonitor:
                 except Exception:
                     pass
 
-            # mismatch breaker threshold
+            # mismatch breaker threshold (only escalate while currently mismatched)
             mm_count = self._recent_unresolved_mismatch_count(con)
-            if mm_count >= self.max_position_mismatch_count:
+            if mismatch and (mm_count >= self.max_position_mismatch_count):
                 self._incident(
                     con,
                     severity='error',
@@ -468,6 +473,22 @@ class ExecutionMonitor:
                     payload={"positions": scoped_positions},
                 )
                 st.position_events_written += 1
+
+                tr_status = str(tr["status"] or "")
+                if tr_status == 'closing' and len(scoped_positions) == 0:
+                    con.execute(
+                        "UPDATE trade_runs SET status='closed', close_reason=COALESCE(close_reason,'operator_flatten_complete'), closed_at_utc=COALESCE(closed_at_utc, ?), updated_at_utc=? WHERE id=?",
+                        (_now_utc_iso(), _now_utc_iso(), trade_run_id),
+                    )
+                    self._record_order_event(
+                        con,
+                        trade_run_id=trade_run_id,
+                        execution_intent_id=intent_id,
+                        order_id=None,
+                        event_type="close_detected_from_positions",
+                        status="filled",
+                        payload={"positions_count": 0},
+                    )
 
                 if (not self._has_protective_exit(con, trade_run_id)) and (not self._already_alerted_missing_protection(con, trade_run_id)):
                     self._audit(

@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import json as _json
 import logging
-import sqlite3
+import subprocess
+import threading
+import uuid
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -15,7 +17,7 @@ try:
 except Exception:  # pragma: no cover
     psycopg = None  # type: ignore
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Header
 from fastapi.responses import HTMLResponse
 from fastapi import Response
 from fastapi.staticfiles import StaticFiles
@@ -36,8 +38,9 @@ from options_ai.backtest.registry import StrategyRegistry, params_hash
 from options_ai.backtest.sampler_service import BacktestSamplerService
 from options_ai.backtest.portfolio_backtest_service import PortfolioBacktestService
 from options_ai.backtest.portfolio_group_backtest_service import PortfolioGroupBacktestService
-from options_ai.backtest.sqlite_migrations import migrate_backtest_schema, backfill_params_hash
 from options_ai.execution.schema import ensure_execution_hardening_schema
+from options_ai.dashboard_api import tuning_control as tc
+from options_ai.db_compat import connect_compat
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -137,6 +140,61 @@ def _now_central_iso() -> str:
     return datetime.now(timezone.utc).astimezone(CENTRAL_TZ).replace(microsecond=0).isoformat()
 
 
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_window_seconds(window: str | None) -> int:
+    w = str(window or '15m').strip().lower()
+    try:
+        if w.endswith('s'):
+            return max(1, int(float(w[:-1])))
+        if w.endswith('m'):
+            return max(1, int(float(w[:-1]) * 60))
+        if w.endswith('h'):
+            return max(1, int(float(w[:-1]) * 3600))
+        if w.endswith('d'):
+            return max(1, int(float(w[:-1]) * 86400))
+        return max(1, int(float(w)))
+    except Exception:
+        return 900
+
+
+def _resolution_seconds(resolution: str | None) -> int:
+    r = str(resolution or '5m').strip().lower()
+    return {
+        '1m': 60,
+        '5m': 300,
+        '15m': 900,
+        '30m': 1800,
+        '1h': 3600,
+    }.get(r, 300)
+
+
+def _read_thresholds() -> dict[str, Any]:
+    return {
+        'query_runtime_sec': {'green_max': 1.0, 'yellow_max': 5.0},
+        'lag_minutes': {'green_max': 5.0, 'yellow_max': 15.0},
+        'error_rate': {'green_max': 0.01, 'yellow_max': 0.05},
+    }
+
+
+def _color_from_max(v: float | None, green_max: float, yellow_max: float) -> str:
+    if v is None:
+        return 'gray'
+    try:
+        x = float(v)
+    except Exception:
+        return 'gray'
+    if x <= float(green_max):
+        return 'green'
+    if x <= float(yellow_max):
+        return 'yellow'
+    return 'red'
+
+
 def _to_central_iso(x: Any) -> Any:
     if x is None:
         return None
@@ -157,33 +215,17 @@ def _to_central_iso(x: Any) -> Any:
 
 
 def _db_path_from_database_url(database_url: str) -> str:
-    # expected form: sqlite:////abs/path/to.db
-    if not database_url.startswith("sqlite:"):
-        raise ValueError("only sqlite DATABASE_URL supported")
-    p = database_url.replace("sqlite:", "", 1)
-    while p.startswith("////"):
-        p = p[1:]
-    if not p.startswith("/"):
-        raise ValueError("sqlite path must be absolute")
-    return p
+    d = str(database_url or "").strip()
+    if d.startswith("postgresql://") or d.startswith("postgres://"):
+        return d
+    raise ValueError("Postgres DATABASE_URL required")
 
 
-def _connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path, timeout=30.0)
-    con.row_factory = sqlite3.Row
-    # WAL + busy timeout to mitigate locking during sampler runs
-    try:
-        con.execute('PRAGMA journal_mode=WAL;')
-    except Exception:
-        pass
-    try:
-        con.execute('PRAGMA busy_timeout=10000;')
-    except Exception:
-        pass
-    return con
+def _connect(db_path: str):
+    return connect_compat(db_path, timeout=30.0)
 
 
-def _calc_metrics(rows: list[sqlite3.Row]) -> dict[str, Any]:
+def _calc_metrics(rows: list[Any]) -> dict[str, Any]:
     counts = {
         "total_scored": 0,
         "correct": 0,
@@ -275,62 +317,66 @@ def create_app() -> FastAPI:
     if not db_path:
         db_path = _db_path_from_database_url(cfg.database_url)
 
+    backtest_db_url = os.getenv("BACKTEST_DATABASE_URL", "").strip()
+    bt_use_pg = bool(backtest_db_url)
+    state_use_pg = str(db_path).startswith("postgres")
 
     # Backtest presets + run history (Option C)
     def _now_utc_iso() -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
     def _ensure_backtest_tables() -> None:
-        with _connect(db_path) as con:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS backtest_presets (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  strategy_key TEXT NOT NULL,
-                  name TEXT NOT NULL,
-                  params_json TEXT NOT NULL,
-                  schema_version INTEGER NOT NULL DEFAULT 1,
-                  created_at_utc TEXT NOT NULL,
-                  updated_at_utc TEXT NOT NULL,
-                  last_run_id INTEGER NULL,
-                  last_run_at_utc TEXT NULL,
-                  last_summary_json TEXT NULL,
-                  UNIQUE(strategy_key, name)
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS backtest_runs (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  strategy_key TEXT NOT NULL,
-                  created_at_utc TEXT NOT NULL,
-                  preset_id INTEGER NULL,
-                  preset_name_at_run TEXT NULL,
-                  params_json TEXT NOT NULL,
-                  summary_json TEXT NOT NULL
-                );
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_created
-                ON backtest_runs(strategy_key, created_at_utc DESC);
-                """
-            )
-            con.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_created
-                ON backtest_runs(preset_id, created_at_utc DESC);
-                """
-            )
-            # Migrations: add dedupe/hash + refinement latch + sampler sessions
-            migrate_backtest_schema(con)
-            # Backfill params_hash for old rows (params_json already canonical in this app)
-            backfill_params_hash(con, hash_fn=lambda strategy_key, schema_version, params_json: params_hash(strategy_key=strategy_key, schema_version=int(schema_version), params_json_canonical=str(params_json)))
+        if not bt_use_pg:
+            raise RuntimeError("BACKTEST_DATABASE_URL must be Postgres")
+        if psycopg is None:
+            raise RuntimeError("BACKTEST_DATABASE_URL is set but psycopg is not installed")
+        with psycopg.connect(backtest_db_url) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS backtest_presets (
+                      id BIGSERIAL PRIMARY KEY,
+                      strategy_key TEXT NOT NULL,
+                      name TEXT NOT NULL,
+                      params_json TEXT NOT NULL,
+                      schema_version INTEGER NOT NULL DEFAULT 1,
+                      created_at_utc TEXT NOT NULL,
+                      updated_at_utc TEXT NOT NULL,
+                      last_run_id BIGINT NULL,
+                      last_run_at_utc TEXT NULL,
+                      last_summary_json TEXT NULL,
+                      UNIQUE(strategy_key, name)
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS backtest_runs (
+                      id BIGSERIAL PRIMARY KEY,
+                      strategy_key TEXT NOT NULL,
+                      created_at_utc TEXT NOT NULL,
+                      preset_id BIGINT NULL,
+                      preset_name_at_run TEXT NULL,
+                      params_json TEXT NOT NULL,
+                      summary_json TEXT NOT NULL,
+                      result_json TEXT NULL,
+                      schema_version INTEGER NOT NULL DEFAULT 1,
+                      params_hash TEXT NOT NULL,
+                      refinement_launched INTEGER NOT NULL DEFAULT 0,
+                      refinement_sampler_id BIGINT NULL,
+                      refinement_launched_at_utc TEXT NULL,
+                      UNIQUE(strategy_key, schema_version, params_hash)
+                    );
+                    """
+                )
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_created ON backtest_runs(strategy_key, created_at_utc DESC);")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_created ON backtest_runs(preset_id, created_at_utc DESC);")
             con.commit()
 
     def _ensure_execution_tables() -> None:
+
+        if state_use_pg:
+            return
         with _connect(db_path) as con:
             con.execute(
                 """
@@ -465,10 +511,16 @@ def create_app() -> FastAPI:
         return nm
 
     _ensure_backtest_tables()
+    with _connect(db_path) as _con:
+        tc.ensure_schema(_con)
+        try:
+            tc.seed_builtin_profiles(_con)
+        except Exception:
+            pass
 
     # Backtest services
     strategy_registry = StrategyRegistry()
-    backtest_executor = BacktestExecutor(db_path=db_path, connect_fn=_connect)
+    backtest_executor = BacktestExecutor(db_path=(backtest_db_url or db_path), connect_fn=(None if bt_use_pg else _connect), pg_dsn=(backtest_db_url if bt_use_pg else None))
     sampler_service = BacktestSamplerService(db_path=db_path, connect_fn=_connect)
     portfolio_service = PortfolioBacktestService(db_path=db_path, connect_fn=_connect)
     portfolio_group_service = PortfolioGroupBacktestService(db_path=db_path, connect_fn=_connect)
@@ -488,6 +540,22 @@ def create_app() -> FastAPI:
         response.headers["Expires"] = "0"
         html_path = Path(__file__).with_name("ui.html")
         return html_path.read_text(encoding="utf-8")
+
+    def _render_tuning_ui(response: Response) -> str:
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        html_path = Path(__file__).with_name("tuning_ui.html")
+        return html_path.read_text(encoding="utf-8")
+
+    @app.get("/tuning", response_class=HTMLResponse)
+    def tuning_ui(response: Response) -> str:
+        return _render_tuning_ui(response)
+
+    # Alias for API-prefixed reverse proxies that only forward /api/* paths.
+    @app.get("/api/tuning", response_class=HTMLResponse)
+    def tuning_ui_api_alias(response: Response) -> str:
+        return _render_tuning_ui(response)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -553,7 +621,7 @@ def create_app() -> FastAPI:
                             "file": obj.get("file"),
                             "started_at": started_at,
                             "elapsed_seconds": elapsed,
-                            "stage": obj.get("stage") or "unknown",
+                            "stage": obj.get("stage") or "unreachable",
                             "snapshot_hash": obj.get("snapshot_hash"),
                             "model_used": obj.get("model_used"),
                             "pid": obj.get("pid"),
@@ -677,6 +745,13 @@ def create_app() -> FastAPI:
                     latest_dlbl = max_ts_le('spx.debit_spread_labels_0dte', latest_chain)
                     latest_score = max_ts_le('spx.debit_spread_scores_0dte', latest_chain)
 
+                    # TERM pipeline timestamps (profile selected by dashboard when 0DTE is absent)
+                    latest_feat_term = max_ts_le('spx.chain_features_term', latest_chain)
+                    latest_label_term = max_ts_le('spx.chain_labels_term', latest_chain)
+                    latest_cand_term = max_ts_le('spx.debit_spread_candidates_term', latest_chain)
+                    latest_dlbl_term = max_ts_le('spx.debit_spread_labels_term', latest_chain)
+                    latest_score_term = max_ts_le('spx.debit_spread_scores_term', latest_chain)
+
                     out['latest'] = {
                         'option_chain': latest_chain,
                         'chain_features_0dte': latest_feat,
@@ -684,6 +759,11 @@ def create_app() -> FastAPI:
                         'debit_candidates_0dte': latest_cand,
                         'debit_labels_0dte': latest_dlbl,
                         'debit_scores_0dte': latest_score,
+                        'chain_features_term': latest_feat_term,
+                        'chain_labels_term': latest_label_term,
+                        'debit_candidates_term': latest_cand_term,
+                        'debit_labels_term': latest_dlbl_term,
+                        'debit_scores_term': latest_score_term,
                     }
 
                     # horizon breakdowns
@@ -801,6 +881,11 @@ def create_app() -> FastAPI:
                         'debit_candidates_0dte': lag_minutes(latest_cand),
                         'debit_labels_0dte': lag_minutes(latest_dlbl),
                         'debit_scores_0dte': lag_minutes(latest_score),
+                        'chain_features_term': lag_minutes(latest_feat_term),
+                        'chain_labels_term': lag_minutes(latest_label_term),
+                        'debit_candidates_term': lag_minutes(latest_cand_term),
+                        'debit_labels_term': lag_minutes(latest_dlbl_term),
+                        'debit_scores_term': lag_minutes(latest_score_term),
                     }
 
 
@@ -904,7 +989,7 @@ def create_app() -> FastAPI:
                 """
             ).fetchall()
 
-        by_day: dict[str, list[sqlite3.Row]] = {}
+        by_day: dict[str, list[Any]] = {}
         for r in rows:
             ts = r["observed_ts_utc"] or r["timestamp"]
             day = _central_day_key(ts)
@@ -992,7 +1077,7 @@ def create_app() -> FastAPI:
                 """
             ).fetchall()
 
-        by_day: dict[str, list[sqlite3.Row]] = {}
+        by_day: dict[str, list[Any]] = {}
         for r in rows:
             ts = r['observed_ts_utc'] or r['timestamp']
             day = _central_day_key(ts)
@@ -1041,7 +1126,7 @@ def create_app() -> FastAPI:
         params: tuple[Any, ...] = (bucket_seconds, bucket_seconds, now_utc, int(window_days))
         return sql, params
 
-    def _postprocess_bucket_row(r: sqlite3.Row, *, min_samples: int, include_action: bool) -> dict[str, Any]:
+    def _postprocess_bucket_row(r: Any, *, min_samples: int, include_action: bool) -> dict[str, Any]:
         total = int(r['total_scored'] or 0)
         correct = int(r['correct'] or 0)
         wrong_dir = int(r['wrong_direction'] or 0)
@@ -1158,7 +1243,7 @@ def create_app() -> FastAPI:
                 (mv, int(days)),
             ).fetchall()
 
-        by_day: dict[str, list[sqlite3.Row]] = {}
+        by_day: dict[str, list[Any]] = {}
         for r in rows:
             by_day.setdefault(r['trade_day'], []).append(r)
 
@@ -1195,6 +1280,11 @@ def create_app() -> FastAPI:
             ).fetchall()
 
         items = []
+        groups = _load_parameter_groups()
+        pid_to_groups: dict[int, list[int]] = {}
+        for g in groups:
+            for pid in (g.get('portfolio_ids') or []):
+                pid_to_groups.setdefault(int(pid), []).append(int(g['id']))
         for r in rows:
             d = dict(r)
             d["timestamp"] = _to_central_iso(d.get("timestamp"))
@@ -1262,7 +1352,7 @@ def create_app() -> FastAPI:
         # DB truncate
         db_counts: dict[str, int] = {}
         with _connect(db_path) as con:
-            con.execute("PRAGMA foreign_keys=OFF")
+            
             for tbl in ("predictions", "performance_summary", "system_events", "model_usage"):
                 try:
                     n = int(con.execute(f"SELECT COUNT(1) AS n FROM {tbl}").fetchone()["n"])
@@ -1272,16 +1362,7 @@ def create_app() -> FastAPI:
                     db_counts[tbl] = -1
             con.commit()
 
-        # VACUUM
         vacuum_ran = False
-        try:
-            con2 = sqlite3.connect(db_path, timeout=30.0)
-            con2.execute("VACUUM")
-            con2.close()
-            vacuum_ran = True
-        except Exception as e:
-            if lg:
-                lg.error(component="Admin", event="reset_vacuum_failed", message="VACUUM failed", file_key="system", error=str(e))
 
         # Filesystem wipe
         errors: list[str] = []
@@ -1369,18 +1450,34 @@ def create_app() -> FastAPI:
 
     @app.get('/api/backtest/presets')
     def backtest_presets_list(strategy_key: str = Query(...)) -> dict[str, Any]:
-        with _connect(db_path) as con:
-            rows = con.execute(
-                """
-                SELECT id, strategy_key, name, params_json, schema_version,
-                       created_at_utc, updated_at_utc,
-                       last_run_id, last_run_at_utc, last_summary_json
-                FROM backtest_presets
-                WHERE strategy_key = ?
-                ORDER BY updated_at_utc DESC
-                """,
-                (strategy_key,),
-            ).fetchall()
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, strategy_key, name, params_json, schema_version,
+                               created_at_utc, updated_at_utc,
+                               last_run_id, last_run_at_utc, last_summary_json
+                        FROM backtest_presets
+                        WHERE strategy_key = %s
+                        ORDER BY updated_at_utc DESC
+                        """,
+                        (strategy_key,),
+                    )
+                    rows = cur.fetchall()
+        else:
+            with _connect(db_path) as con:
+                rows = con.execute(
+                    """
+                    SELECT id, strategy_key, name, params_json, schema_version,
+                           created_at_utc, updated_at_utc,
+                           last_run_id, last_run_at_utc, last_summary_json
+                    FROM backtest_presets
+                    WHERE strategy_key = ?
+                    ORDER BY updated_at_utc DESC
+                    """,
+                    (strategy_key,),
+                ).fetchall()
 
         items = []
         import json as _json
@@ -1425,18 +1522,35 @@ def create_app() -> FastAPI:
         now = _now_utc_iso()
         params_json = _json.dumps(params, separators=(',', ':'), sort_keys=True)
 
-        with _connect(db_path) as con:
+        if bt_use_pg:
             try:
-                con.execute(
-                    """
-                    INSERT INTO backtest_presets(strategy_key, name, params_json, schema_version, created_at_utc, updated_at_utc)
-                    VALUES(?, ?, ?, 1, ?, ?)
-                    """,
-                    (strategy_key, name, params_json, now, now),
-                )
-                con.commit()
-            except sqlite3.IntegrityError:
-                raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+                with psycopg.connect(backtest_db_url) as con:
+                    with con.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO backtest_presets(strategy_key, name, params_json, schema_version, created_at_utc, updated_at_utc)
+                            VALUES(%s, %s, %s, 1, %s, %s)
+                            """,
+                            (strategy_key, name, params_json, now, now),
+                        )
+                    con.commit()
+            except Exception as e:
+                if 'duplicate key' in str(e).lower() or 'unique' in str(e).lower():
+                    raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+                raise
+        else:
+            with _connect(db_path) as con:
+                try:
+                    con.execute(
+                        """
+                        INSERT INTO backtest_presets(strategy_key, name, params_json, schema_version, created_at_utc, updated_at_utc)
+                        VALUES(?, ?, ?, 1, ?, ?)
+                        """,
+                        (strategy_key, name, params_json, now, now),
+                    )
+                    con.commit()
+                except Exception:
+                    raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
 
         return backtest_presets_list(strategy_key=strategy_key)
 
@@ -1466,29 +1580,57 @@ def create_app() -> FastAPI:
         params.append(now)
         params.append(int(preset_id))
 
-        with _connect(db_path) as con:
-            r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
-            if not r:
-                raise HTTPException(status_code=404, detail='preset not found')
-            strategy_key = r['strategy_key']
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute('SELECT strategy_key FROM backtest_presets WHERE id=%s', (int(preset_id),))
+                    r = cur.fetchone()
+                    if not r:
+                        raise HTTPException(status_code=404, detail='preset not found')
+                    strategy_key = r['strategy_key']
+                    set_sql = ', '.join([x.replace('?', '%s') for x in sets])
+                    try:
+                        cur.execute(f"UPDATE backtest_presets SET {set_sql} WHERE id = %s", tuple(params))
+                        con.commit()
+                    except Exception as e:
+                        if 'duplicate key' in str(e).lower() or 'unique' in str(e).lower():
+                            raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+                        raise
+        else:
+            with _connect(db_path) as con:
+                r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
+                if not r:
+                    raise HTTPException(status_code=404, detail='preset not found')
+                strategy_key = r['strategy_key']
 
-            try:
-                con.execute(f"UPDATE backtest_presets SET {', '.join(sets)} WHERE id = ?", tuple(params))
-                con.commit()
-            except sqlite3.IntegrityError:
-                raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+                try:
+                    con.execute(f"UPDATE backtest_presets SET {', '.join(sets)} WHERE id = ?", tuple(params))
+                    con.commit()
+                except Exception:
+                    raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
 
         return backtest_presets_list(strategy_key=strategy_key)
 
     @app.delete('/api/backtest/presets/{preset_id}')
     def backtest_presets_delete(preset_id: int) -> dict[str, Any]:
-        with _connect(db_path) as con:
-            r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
-            if not r:
-                raise HTTPException(status_code=404, detail='preset not found')
-            strategy_key = r['strategy_key']
-            con.execute('DELETE FROM backtest_presets WHERE id=?', (int(preset_id),))
-            con.commit()
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute('SELECT strategy_key FROM backtest_presets WHERE id=%s', (int(preset_id),))
+                    r = cur.fetchone()
+                    if not r:
+                        raise HTTPException(status_code=404, detail='preset not found')
+                    strategy_key = r['strategy_key']
+                    cur.execute('DELETE FROM backtest_presets WHERE id=%s', (int(preset_id),))
+                con.commit()
+        else:
+            with _connect(db_path) as con:
+                r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
+                if not r:
+                    raise HTTPException(status_code=404, detail='preset not found')
+                strategy_key = r['strategy_key']
+                con.execute('DELETE FROM backtest_presets WHERE id=?', (int(preset_id),))
+                con.commit()
         return backtest_presets_list(strategy_key=strategy_key)
 
 
@@ -1580,9 +1722,24 @@ def create_app() -> FastAPI:
     @app.get('/api/portfolios')
     def portfolios_list() -> dict[str, Any]:
         import json as _json
+        groups = _load_parameter_groups()
+        pid_to_groups: dict[int, list[int]] = {}
+        for g in groups:
+            for pid in (g.get('portfolio_ids') or []):
+                pid_to_groups.setdefault(int(pid), []).append(int(g['id']))
+
         with _connect(db_path) as con:
             rows = con.execute(
-                """SELECT id,name,legs_json,created_at_utc,updated_at_utc
+                """SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
+                          COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
+                          COALESCE(paired_environment,'sandbox') AS paired_environment,
+                          COALESCE(paired_account_label,'') AS paired_account_label,
+                          COALESCE(signal_engine_enabled,0) AS signal_engine_enabled,
+                          COALESCE(signal_last_poll_utc,'') AS signal_last_poll_utc,
+                          COALESCE(signal_last_emit_utc,'') AS signal_last_emit_utc,
+                          COALESCE(signal_last_error,'') AS signal_last_error,
+                          COALESCE(signal_last_source_ts,'') AS signal_last_source_ts,
+                          created_at_utc,updated_at_utc
                    FROM portfolio_defs
                    ORDER BY updated_at_utc DESC, id DESC"""
             ).fetchall()
@@ -1599,6 +1756,21 @@ def create_app() -> FastAPI:
                     'legs': legs,
                     'created_at_utc': str(r['created_at_utc']),
                     'updated_at_utc': str(r['updated_at_utc']),
+                    'execution_mode': str(r['execution_mode'] or 'independent'),
+                    'group_start_day': str(r['group_start_day'] or ''),
+                    'group_end_day': str(r['group_end_day'] or ''),
+                    'paired_environment': str(r['paired_environment'] or 'sandbox'),
+                    'paired_account_label': str(r['paired_account_label'] or ''),
+                    'signal_engine_enabled': bool(int(r['signal_engine_enabled'] or 0)),
+                    'signal_last_poll_utc': str(r['signal_last_poll_utc'] or ''),
+                    'signal_last_emit_utc': str(r['signal_last_emit_utc'] or ''),
+                    'signal_last_error': str(r['signal_last_error'] or ''),
+                    'signal_last_source_ts': str(r['signal_last_source_ts'] or ''),
+                    'link_counts': {'groups': len(pid_to_groups.get(int(r['id']), []))},
+                    'upstream_refs': [{'type':'group','id':x} for x in pid_to_groups.get(int(r['id']), [])],
+                    'downstream_refs': [],
+                    'in_use': len(pid_to_groups.get(int(r['id']), [])) > 0,
+                    'eligible_next_stage': True,
                 }
             )
         return {'items': items}
@@ -1610,27 +1782,53 @@ def create_app() -> FastAPI:
         if not name:
             raise HTTPException(status_code=400, detail='name required')
         legs = (body or {}).get('legs')
+        execution_mode = str((body or {}).get('execution_mode') or 'independent').strip().lower()
+        if execution_mode not in {'independent','merged'}:
+            raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
+        group_start_day = str((body or {}).get('group_start_day') or '').strip()
+        group_end_day = str((body or {}).get('group_end_day') or '').strip()
+        paired_environment = str((body or {}).get('paired_environment') or 'sandbox').strip().lower()
+        if paired_environment not in {'sandbox','live'}:
+            raise HTTPException(status_code=400, detail='paired_environment must be sandbox|live')
+        paired_account_label = str((body or {}).get('paired_account_label') or '').strip()
+        signal_engine_enabled = bool((body or {}).get('signal_engine_enabled') or False)
         if legs is None:
             legs = []
         if not isinstance(legs, list):
             raise HTTPException(status_code=400, detail='legs must be a list')
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
+            if paired_account_label:
+                ex = con.execute(
+                    "SELECT id,name FROM portfolio_defs WHERE paired_environment=? AND paired_account_label=? LIMIT 1",
+                    (paired_environment, paired_account_label),
+                ).fetchone()
+                if ex is not None:
+                    raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
             cur = con.execute(
-                """INSERT INTO portfolio_defs(name, legs_json, created_at_utc, updated_at_utc)
-                   VALUES(?,?,?,?)""",
-                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), now, now),
+                """INSERT INTO portfolio_defs(name, legs_json, execution_mode, group_start_day, group_end_day, paired_environment, paired_account_label, signal_engine_enabled, created_at_utc, updated_at_utc)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, (group_start_day or None), (group_end_day or None), paired_environment, (paired_account_label or None), (1 if signal_engine_enabled else 0), now, now),
             )
             pid = int(cur.lastrowid)
             con.commit()
-        return {'id': pid, 'name': name, 'legs': legs}
+        return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode, 'group_start_day': group_start_day, 'group_end_day': group_end_day, 'paired_environment': paired_environment, 'paired_account_label': paired_account_label, 'signal_engine_enabled': bool(signal_engine_enabled)}
 
     @app.get('/api/portfolios/{portfolio_id}')
     def portfolios_get(portfolio_id: int) -> dict[str, Any]:
         import json as _json
         with _connect(db_path) as con:
             r = con.execute(
-                """SELECT id,name,legs_json,created_at_utc,updated_at_utc
+                """SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
+                          COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
+                          COALESCE(paired_environment,'sandbox') AS paired_environment,
+                          COALESCE(paired_account_label,'') AS paired_account_label,
+                          COALESCE(signal_engine_enabled,0) AS signal_engine_enabled,
+                          COALESCE(signal_last_poll_utc,'') AS signal_last_poll_utc,
+                          COALESCE(signal_last_emit_utc,'') AS signal_last_emit_utc,
+                          COALESCE(signal_last_error,'') AS signal_last_error,
+                          COALESCE(signal_last_source_ts,'') AS signal_last_source_ts,
+                          created_at_utc,updated_at_utc
                    FROM portfolio_defs WHERE id=?""",
                 (int(portfolio_id),),
             ).fetchone()
@@ -1646,6 +1844,16 @@ def create_app() -> FastAPI:
             'legs': legs,
             'created_at_utc': str(r['created_at_utc']),
             'updated_at_utc': str(r['updated_at_utc']),
+            'execution_mode': str(r['execution_mode'] or 'independent'),
+            'group_start_day': str(r['group_start_day'] or ''),
+            'group_end_day': str(r['group_end_day'] or ''),
+            'paired_environment': str(r['paired_environment'] or 'sandbox'),
+            'paired_account_label': str(r['paired_account_label'] or ''),
+            'signal_engine_enabled': bool(int(r['signal_engine_enabled'] or 0)),
+            'signal_last_poll_utc': str(r['signal_last_poll_utc'] or ''),
+            'signal_last_emit_utc': str(r['signal_last_emit_utc'] or ''),
+            'signal_last_error': str(r['signal_last_error'] or ''),
+            'signal_last_source_ts': str(r['signal_last_source_ts'] or ''),
         }
 
     @app.put('/api/portfolios/{portfolio_id}')
@@ -1653,6 +1861,17 @@ def create_app() -> FastAPI:
         import json as _json
         name = (body or {}).get('name')
         legs = (body or {}).get('legs')
+        execution_mode_raw = (body or {}).get('execution_mode')
+        group_start_day_raw = (body or {}).get('group_start_day')
+        group_end_day_raw = (body or {}).get('group_end_day')
+        paired_environment_raw = (body or {}).get('paired_environment')
+        paired_account_label_raw = (body or {}).get('paired_account_label')
+        signal_engine_enabled_raw = (body or {}).get('signal_engine_enabled')
+        execution_mode: str | None = None
+        if execution_mode_raw is not None:
+            execution_mode = str(execution_mode_raw).strip().lower()
+            if execution_mode not in {'independent','merged'}:
+                raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
         if name is not None:
             name = str(name).strip()
             if not name:
@@ -1662,7 +1881,7 @@ def create_app() -> FastAPI:
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
-            r = con.execute('SELECT id,name,legs_json FROM portfolio_defs WHERE id=?', (int(portfolio_id),)).fetchone()
+            r = con.execute("SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode, COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day, COALESCE(paired_environment,'sandbox') AS paired_environment, COALESCE(paired_account_label,'') AS paired_account_label, COALESCE(signal_engine_enabled,0) AS signal_engine_enabled FROM portfolio_defs WHERE id=?", (int(portfolio_id),)).fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail='portfolio not found')
             cur_name = str(r['name'])
@@ -1670,10 +1889,32 @@ def create_app() -> FastAPI:
 
             new_name = cur_name if name is None else str(name)
             new_legs_json = cur_legs_json if legs is None else _json.dumps(legs, separators=(',', ':'), sort_keys=True)
+            cur_mode = str(r['execution_mode'] or 'independent')
+            new_mode = cur_mode if execution_mode is None else str(execution_mode)
+            cur_start = str(r['group_start_day'] or '')
+            cur_end = str(r['group_end_day'] or '')
+            new_start = cur_start if group_start_day_raw is None else str(group_start_day_raw or '').strip()
+            new_end = cur_end if group_end_day_raw is None else str(group_end_day_raw or '').strip()
+            cur_env = str(r['paired_environment'] or 'sandbox')
+            new_env = cur_env if paired_environment_raw is None else str(paired_environment_raw or 'sandbox').strip().lower()
+            if new_env not in {'sandbox','live'}:
+                raise HTTPException(status_code=400, detail='paired_environment must be sandbox|live')
+            cur_label = str(r['paired_account_label'] or '')
+            new_label = cur_label if paired_account_label_raw is None else str(paired_account_label_raw or '').strip()
+            cur_sig = int(r['signal_engine_enabled'] or 0)
+            new_sig = cur_sig if signal_engine_enabled_raw is None else (1 if bool(signal_engine_enabled_raw) else 0)
+
+            if new_label:
+                ex = con.execute(
+                    "SELECT id,name FROM portfolio_defs WHERE paired_environment=? AND paired_account_label=? AND id<>? LIMIT 1",
+                    (new_env, new_label, int(portfolio_id)),
+                ).fetchone()
+                if ex is not None:
+                    raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
 
             con.execute(
-                'UPDATE portfolio_defs SET name=?, legs_json=?, updated_at_utc=? WHERE id=?',
-                (new_name, new_legs_json, now, int(portfolio_id)),
+                'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, group_start_day=?, group_end_day=?, paired_environment=?, paired_account_label=?, signal_engine_enabled=?, updated_at_utc=? WHERE id=?',
+                (new_name, new_legs_json, new_mode, (new_start or None), (new_end or None), new_env, (new_label or None), int(new_sig), now, int(portfolio_id)),
             )
             con.commit()
 
@@ -1681,10 +1922,364 @@ def create_app() -> FastAPI:
             out_legs = _json.loads(new_legs_json or '[]')
         except Exception:
             out_legs = []
-        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs}
+        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label, 'signal_engine_enabled': bool(int(new_sig))}
+
+    def _hhmm_to_minutes_local(x: str | None) -> int | None:
+        if not x:
+            return None
+        try:
+            hh, mm = str(x).split(':', 1)
+            return int(hh) * 60 + int(mm)
+        except Exception:
+            return None
+
+    def _entry_window_ct_from_params(params: dict[str, Any]) -> tuple[str | None, str | None]:
+        p = params or {}
+        mode = str(p.get('entry_mode') or 'time_range').strip().lower()
+        if mode == 'time_range':
+            a = str(p.get('entry_start_ct') or '').strip() or None
+            b = str(p.get('entry_end_ct') or '').strip() or None
+            return a, b
+        # fallback: first N minutes from session start
+        start = str(p.get('session_start_ct') or '08:30').strip() or '08:30'
+        try:
+            mins = int(p.get('entry_first_n_minutes') or 60)
+        except Exception:
+            mins = 60
+        lo = _hhmm_to_minutes_local(start)
+        if lo is None:
+            return None, None
+        hi = lo + max(1, mins)
+        return f"{lo // 60:02d}:{lo % 60:02d}", f"{hi // 60:02d}:{hi % 60:02d}"
+
+    def _is_now_in_entry_window_ct(params: dict[str, Any]) -> bool:
+        now_ct = datetime.now(timezone.utc).astimezone(CENTRAL_TZ)
+        cur = now_ct.hour * 60 + now_ct.minute
+        lo_s, hi_s = _entry_window_ct_from_params(params)
+        lo = _hhmm_to_minutes_local(lo_s)
+        hi = _hhmm_to_minutes_local(hi_s)
+        if lo is None and hi is None:
+            return True
+        if lo is not None and cur < lo:
+            return False
+        if hi is not None and cur > hi:
+            return False
+        return True
+
+    def _engine_pick_candidate_for_line(*, snapshot_ts: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        underlying = str((params or {}).get('underlying') or 'SPX').strip().upper()
+        if underlying != 'SPX':
+            # current live source tables are SPX-only; preserve forward-compatible param flow.
+            return None
+        # Respect per-line entry windows (same intent semantics as strategy params/backtest design).
+        if not _is_now_in_entry_window_ct(params or {}):
+            return None
+
+        try:
+            hz = int((params or {}).get('horizon_minutes') or 30)
+        except Exception:
+            hz = 30
+        min_p = float((params or {}).get('min_p_bigwin') or 0.0)
+        min_pred = float((params or {}).get('min_pred_change') or 0.0)
+        spread_hint = str((params or {}).get('spread_type') or (params or {}).get('option_side') or '').strip().upper()
+        allowed = None
+        if spread_hint in {'CALL','PUT'}:
+            allowed = spread_hint
+
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      c.anchor_type,
+                      c.spread_type,
+                      c.anchor_strike,
+                      c.k_long,
+                      c.k_short,
+                      c.debit_points,
+                      c.long_symbol,
+                      c.short_symbol,
+                      s.pred_change,
+                      s.p_bigwin
+                    FROM spx.debit_spread_candidates_0dte c
+                    JOIN spx.chain_features_0dte f ON f.snapshot_ts = c.snapshot_ts
+                    JOIN spx.debit_spread_scores_0dte s
+                      ON s.snapshot_ts = c.snapshot_ts
+                     AND s.horizon_minutes = %s
+                     AND s.anchor_type = c.anchor_type
+                     AND s.spread_type = c.spread_type
+                    WHERE c.snapshot_ts = %s
+                      AND c.tradable = true
+                      AND f.low_quality = false
+                      AND s.p_bigwin IS NOT NULL
+                      AND s.pred_change IS NOT NULL
+                      AND s.p_bigwin >= %s
+                      AND s.pred_change >= %s
+                      AND (%s::text IS NULL OR c.spread_type = %s::text)
+                    ORDER BY s.p_bigwin DESC NULLS LAST, s.pred_change DESC NULLS LAST, c.debit_points ASC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (int(hz), snapshot_ts, float(min_p), float(min_pred), allowed, allowed),
+                )
+                r = cur.fetchone()
+                if not r:
+                    return None
+                return {
+                    'snapshot_ts': snapshot_ts,
+                    'underlying': underlying,
+                    'anchor_type': r[0],
+                    'spread_type': r[1],
+                    'anchor_strike': float(r[2]) if r[2] is not None else None,
+                    'k_long': float(r[3]) if r[3] is not None else None,
+                    'k_short': float(r[4]) if r[4] is not None else None,
+                    'debit_points': float(r[5]) if r[5] is not None else None,
+                    'long_symbol': r[6],
+                    'short_symbol': r[7],
+                    'pred_change': float(r[8]) if r[8] is not None else None,
+                    'p_bigwin': float(r[9]) if r[9] is not None else None,
+                }
+
+    def _engine_new_snapshots_since(last_source_ts: str | None, *, max_n: int = 50) -> list[str]:
+        dsn = _pg_dsn()
+        if not dsn:
+            return []
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT snapshot_ts
+                    FROM spx.debit_spread_scores_0dte
+                    WHERE (%s::timestamptz IS NULL OR snapshot_ts > %s::timestamptz)
+                    ORDER BY snapshot_ts ASC
+                    LIMIT %s
+                    """,
+                    (last_source_ts if last_source_ts else None, last_source_ts if last_source_ts else None, int(max_n)),
+                )
+                return [str(r[0]) for r in cur.fetchall()]
+
+    def _intent_symbol_from_payload(payload: dict[str, Any]) -> str:
+        try:
+            p = (payload or {}).get('params') or {}
+            sym = str(p.get('underlying') or p.get('symbol') or 'SPX').strip().upper()
+            return sym or 'SPX'
+        except Exception:
+            return 'SPX'
+
+    def _risk_from_params(params: dict[str, Any]) -> dict[str, Any]:
+        p = params or {}
+        tp = p.get('take_profit_pct')
+        if tp is None:
+            tp = p.get('credit_take_profit_pct')
+
+        sl = p.get('stop_loss_pct')
+        if sl is None:
+            sl = p.get('credit_stop_loss_mult')
+
+        out: dict[str, Any] = {
+            'take_profit_pct': (float(tp) if tp is not None else None),
+            'stop_loss': (float(sl) if sl is not None else None),
+            'stop_loss_kind': ('pct' if p.get('stop_loss_pct') is not None else ('mult' if p.get('credit_stop_loss_mult') is not None else None)),
+        }
+        return out
+
+    @app.post('/api/portfolios/{portfolio_id}/emit_signals')
+    def portfolios_emit_signals(portfolio_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        import json as _json
+
+        # Operator expectation: when execution is OFF, do not enqueue intents.
+        overrides = load_overrides_file(overrides_path)
+        effective = apply_overrides(cfg, overrides)
+        if not bool(effective.trading_enabled):
+            raise HTTPException(status_code=409, detail='execution is OFF (TRADING_ENABLED=false); signals were not emitted')
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
+                       COALESCE(paired_environment,'sandbox') AS paired_environment,
+                       COALESCE(paired_account_label,'') AS paired_account_label
+                FROM portfolio_defs WHERE id=?
+                """,
+                (int(portfolio_id),),
+            ).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='portfolio not found')
+            try:
+                legs = _json.loads(r['legs_json'] or '[]')
+            except Exception:
+                legs = []
+            if not isinstance(legs, list) or not legs:
+                raise HTTPException(status_code=400, detail='portfolio has no parameter lines')
+
+            mode = str(r['execution_mode'] or 'independent').strip().lower()
+            if mode not in {'independent', 'merged'}:
+                mode = 'independent'
+
+            env = str((body or {}).get('environment') or r['paired_environment'] or 'sandbox').strip().lower()
+            if env not in {'sandbox','live'}:
+                raise HTTPException(status_code=400, detail='environment must be sandbox|live')
+            account_label = str((body or {}).get('account_label') or r['paired_account_label'] or '').strip()
+            if not account_label:
+                raise HTTPException(status_code=400, detail='group is not paired to an account (account_label empty)')
+
+            account_id = f"tastytrade:{env}:{account_label}"
+            with _connect(db_path) as con2:
+                _ensure_execution_account_controls(con2)
+                rr = con2.execute("SELECT enabled FROM execution_account_controls WHERE account_id=?", (account_id,)).fetchone()
+            if rr is not None and int(rr['enabled'] or 0) != 1:
+                raise HTTPException(status_code=409, detail='paired account is OFF; signals were not emitted')
+
+            broker_name = str((body or {}).get('broker_name') or cfg.broker_name or 'tastytrade').strip()
+
+            inserted = 0
+            existing = 0
+
+            def _insert_one(*, strategy_key: str, candidate_ref: str, idem: str, payload: dict[str, Any]) -> None:
+                nonlocal inserted, existing
+                ex = con.execute("SELECT id FROM execution_intents WHERE idempotency_key=?", (idem,)).fetchone()
+                if ex is not None:
+                    existing += 1
+                    return
+                con.execute(
+                    """
+                    INSERT INTO execution_intents(
+                      created_at_utc, updated_at_utc,
+                      environment, broker_name,
+                      status, strategy_key, symbol,
+                      candidate_ref, idempotency_key, intent_payload_json, error
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,NULL)
+                    """,
+                    (
+                        now,
+                        now,
+                        env,
+                        broker_name,
+                        'pending',
+                        strategy_key,
+                        _intent_symbol_from_payload(payload),
+                        candidate_ref,
+                        idem,
+                        _json.dumps(payload, separators=(',', ':'), sort_keys=True),
+                    ),
+                )
+                inserted += 1
+
+            idem_prefix = str((body or {}).get('idempotency_prefix') or '').strip()
+            emit_source = str((body or {}).get('source') or 'manual').strip().lower()
+            marker = str((body or {}).get('signal_marker') or '').strip()
+            source_snapshot_ts = str((body or {}).get('snapshot_ts') or '').strip()
+            if emit_source == 'engine' and source_snapshot_ts:
+                marker = source_snapshot_ts.replace(':','_')
+            if emit_source == 'engine' and (not marker):
+                rr2 = con.execute("SELECT COALESCE(MAX(id),0) AS mx FROM predictions").fetchone()
+                marker = str(int(rr2['mx'] or 0))
+
+            if mode == 'merged':
+                lines: list[dict[str, Any]] = []
+                strategy_keys: list[str] = []
+                for i, leg in enumerate(legs):
+                    sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
+                    strategy_keys.append(sid)
+                    params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
+                    if emit_source == 'engine' and source_snapshot_ts:
+                        cand = _engine_pick_candidate_for_line(snapshot_ts=source_snapshot_ts, params=params)
+                        if cand is None:
+                            continue
+                        p2 = dict(params)
+                        p2.update({
+                            'long_symbol': cand.get('long_symbol'),
+                            'short_symbol': cand.get('short_symbol'),
+                            'debit_points': cand.get('debit_points'),
+                        })
+                        lines.append({'line_index': int(i), 'strategy_key': sid, 'params': p2, 'candidate': cand})
+                    else:
+                        lines.append({'line_index': int(i), 'strategy_key': sid, 'params': params})
+
+                if emit_source == 'engine' and source_snapshot_ts and (not lines):
+                    return {'ok': True, 'portfolio_id': int(portfolio_id), 'mode': mode, 'environment': env, 'account_label': account_label, 'inserted': 0, 'existing': 0}
+
+                strategy_key = strategy_keys[0] if strategy_keys else 'debit_spreads'
+                primary_params = {}
+                if lines and isinstance(lines[0], dict):
+                    primary_params = dict(lines[0].get('params') or {})
+                payload = {
+                    'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name'])},
+                    'strategy_key': strategy_key,
+                    'merge_mode': 'merged',
+                    'group_lines': lines,
+                    # Executor currently requires top-level params with tradable leg symbols.
+                    # Use first qualifying line as executable representative for merged signal.
+                    'params': primary_params,
+                    # Carry TP/SL from the specific triggering line params used for executable representative.
+                    'risk': _risk_from_params(primary_params),
+                    'summary': {},
+                    'paired_account': {'environment': env, 'account_label': account_label},
+                }
+                idem = idem_prefix or (f"portfolio_group:{int(portfolio_id)}:{env}:merged:marker:{marker}" if emit_source == 'engine' else f"portfolio_group:{int(portfolio_id)}:{env}:merged:{date.today().isoformat()}")
+                _insert_one(
+                    strategy_key=strategy_key,
+                    candidate_ref=f"portfolio_group:{int(portfolio_id)}:merged",
+                    idem=idem,
+                    payload=payload,
+                )
+            else:
+                for i, leg in enumerate(legs):
+                    sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
+                    params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
+
+                    if emit_source == 'engine' and source_snapshot_ts:
+                        cand = _engine_pick_candidate_for_line(snapshot_ts=source_snapshot_ts, params=params)
+                        if cand is None:
+                            continue
+                        params = dict(params)
+                        params.update({
+                            'long_symbol': cand.get('long_symbol'),
+                            'short_symbol': cand.get('short_symbol'),
+                            'debit_points': cand.get('debit_points'),
+                        })
+
+                    payload = {
+                        'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name']), 'line_index': int(i)},
+                        'strategy_key': sid,
+                        'merge_mode': 'independent',
+                        'params': params,
+                        # Carry TP/SL from the triggering line params into executor-facing risk payload.
+                        'risk': _risk_from_params(params),
+                        'summary': {},
+                        'paired_account': {'environment': env, 'account_label': account_label},
+                    }
+                    idem = idem_prefix or (f"portfolio_group:{int(portfolio_id)}:{env}:line:{i}:marker:{marker}" if emit_source == 'engine' else f"portfolio_group:{int(portfolio_id)}:{env}:line:{i}:{date.today().isoformat()}")
+                    _insert_one(
+                        strategy_key=sid,
+                        candidate_ref=f"portfolio_group:{int(portfolio_id)}:line:{int(i)}",
+                        idem=idem,
+                        payload=payload,
+                    )
+
+            con.commit()
+        return {
+            'ok': True,
+            'portfolio_id': int(portfolio_id),
+            'mode': mode,
+            'environment': env,
+            'account_label': account_label,
+            'inserted': inserted,
+            'existing': existing,
+            'source_snapshot_ts': source_snapshot_ts,
+        }
+
 
     @app.delete('/api/portfolios/{portfolio_id}')
     def portfolios_delete(portfolio_id: int) -> dict[str, Any]:
+        groups = _load_parameter_groups()
+        linked = [g['id'] for g in groups if int(portfolio_id) in (g.get('portfolio_ids') or [])]
+        if linked:
+            raise HTTPException(status_code=409, detail=f'portfolio in use by groups: {linked}')
         with _connect(db_path) as con:
             r = con.execute('SELECT id FROM portfolio_defs WHERE id=?', (int(portfolio_id),)).fetchone()
             if not r:
@@ -1699,9 +2294,12 @@ def create_app() -> FastAPI:
     @app.post('/api/portfolio_backtest/start')
     def portfolio_backtest_start(body: dict[str, Any]) -> dict[str, Any]:
         legs = (body or {}).get('legs')
+        merge_mode = str((body or {}).get('merge_mode') or (body or {}).get('execution_mode') or 'independent').strip().lower()
+        if merge_mode not in {'independent','merged'}:
+            raise HTTPException(status_code=400, detail='merge_mode must be independent|merged')
         if not isinstance(legs, list) or not legs:
             raise HTTPException(status_code=400, detail='legs must be a non-empty list')
-        return portfolio_service.start(legs=legs)
+        return portfolio_service.start(legs=legs, merge_mode=merge_mode)
 
     @app.get('/api/portfolio_backtest/status')
     def portfolio_backtest_status(session_id: int | None = Query(None)) -> dict[str, Any]:
@@ -1746,6 +2344,111 @@ def create_app() -> FastAPI:
 
 # ---- Execution API ----
 
+    def _ensure_execution_account_controls(con: Any) -> None:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS execution_account_controls (
+              account_id TEXT PRIMARY KEY,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              updated_at_utc TEXT NOT NULL
+            )
+            """
+        )
+
+    def _execution_accounts_catalog() -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        sb_acct = str(cfg.tasty_sandbox_account_number or os.getenv('TASTY_SANDBOX_ACCOUNT_NUMBER', '') or '').strip()
+        lv_acct = str(cfg.tasty_live_account_number or os.getenv('TASTY_LIVE_ACCOUNT_NUMBER', '') or '').strip()
+
+        def _mk(env: str, acct: str, label: str) -> dict[str, Any]:
+            aid = f"tastytrade:{env}:{acct or 'unconfigured'}"
+            return {
+                'id': aid,
+                'broker_name': 'tastytrade',
+                'environment': env,
+                'account_number': acct,
+                'label': label,
+                'active': bool(acct),
+            }
+
+        items.append(_mk('sandbox', sb_acct, 'Tastytrade Sandbox'))
+        items.append(_mk('live', lv_acct, 'Tastytrade Live'))
+        return items
+
+    @app.get('/api/execution/accounts')
+    def execution_accounts() -> dict[str, Any]:
+        items = _execution_accounts_catalog()
+        with _connect(db_path) as con:
+            _ensure_execution_account_controls(con)
+            rows = con.execute("SELECT account_id, enabled FROM execution_account_controls").fetchall()
+        ctl = {str(r['account_id']): int(r['enabled'] or 0) for r in rows}
+        for it in items:
+            # default enabled=true for active accounts unless explicitly disabled
+            it['enabled'] = bool(it.get('active')) and bool(ctl.get(str(it['id']), 1))
+
+        return {
+            'items': items,
+            'active_count': int(sum(1 for x in items if x.get('active'))),
+            'enabled_count': int(sum(1 for x in items if x.get('enabled'))),
+        }
+
+    @app.post('/api/execution/accounts/{account_id}/enabled')
+    def execution_account_enabled_set(account_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        if 'enabled' not in (body or {}):
+            raise HTTPException(status_code=400, detail='enabled is required')
+        enabled = bool((body or {}).get('enabled'))
+
+        items = _execution_accounts_catalog()
+        acct = next((x for x in items if str(x.get('id')) == str(account_id)), None)
+        if acct is None:
+            raise HTTPException(status_code=404, detail='account not found')
+        if not bool(acct.get('active')):
+            raise HTTPException(status_code=400, detail='account is not active/configured')
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            _ensure_execution_account_controls(con)
+            con.execute(
+                """
+                INSERT INTO execution_account_controls(account_id, enabled, updated_at_utc)
+                VALUES(?,?,?)
+                ON CONFLICT(account_id) DO UPDATE SET enabled=excluded.enabled, updated_at_utc=excluded.updated_at_utc
+                """,
+                (str(account_id), 1 if enabled else 0, now),
+            )
+            con.commit()
+        return {'ok': True, 'account_id': str(account_id), 'enabled': bool(enabled)}
+
+    @app.get('/api/execution/trading-enabled')
+    def execution_trading_enabled() -> dict[str, Any]:
+        overrides = load_overrides_file(overrides_path)
+        effective = apply_overrides(cfg, overrides)
+        return {
+            'trading_enabled': bool(effective.trading_enabled),
+            'env_default': str(effective.broker_env),
+            'overrides_has_key': ('TRADING_ENABLED' in overrides),
+        }
+
+    @app.post('/api/execution/trading-enabled')
+    def execution_trading_enabled_set(body: dict[str, Any]) -> dict[str, Any]:
+        b = body or {}
+        if 'enabled' not in b:
+            raise HTTPException(status_code=400, detail='enabled is required')
+        enabled = bool(b.get('enabled'))
+
+        cur = load_overrides_file(overrides_path)
+        merged = dict(cur)
+        merged['TRADING_ENABLED'] = enabled
+        norm = validate_and_normalize_overrides(merged)
+        write_overrides_file_atomic(overrides_path, norm)
+
+        effective = apply_overrides(cfg, norm)
+        return {
+            'ok': True,
+            'trading_enabled': bool(effective.trading_enabled),
+            'overrides_has_key': ('TRADING_ENABLED' in norm),
+        }
+
     @app.get('/api/execution/intents')
     def execution_intents_list(
         status: str | None = Query(None),
@@ -1789,6 +2492,58 @@ def create_app() -> FastAPI:
                 'error': (str(r['error']) if r['error'] is not None else None),
             })
         return {'items': items}
+
+
+    @app.post('/api/execution/intents/{intent_id}/force-execute')
+    def execution_intent_force_execute(intent_id: int) -> dict[str, Any]:
+        # Sandbox-only operator test action: requeue an intent for execution worker.
+        if str(cfg.broker_env).strip().lower() != 'sandbox':
+            _audit_execution(actor='dashboard_api', action='intent_force_execute_denied_non_sandbox', entity_type='execution_intent', entity_id=str(intent_id), details={'reason': 'non_sandbox_env'})
+            raise HTTPException(status_code=403, detail='force execute is sandbox-only')
+
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT id, environment, status, error
+                FROM execution_intents
+                WHERE id=?
+                """,
+                (int(intent_id),),
+            ).fetchone()
+            if not r:
+                _audit_execution(actor='dashboard_api', action='intent_force_execute_not_found', entity_type='execution_intent', entity_id=str(intent_id), details={})
+                raise HTTPException(status_code=404, detail='intent not found')
+
+            env = str(r['environment'] or '')
+            st = str(r['status'] or '')
+            if env.lower() != 'sandbox':
+                _audit_execution(actor='dashboard_api', action='intent_force_execute_denied_env', entity_type='execution_intent', entity_id=str(intent_id), details={'intent_environment': env, 'status': st})
+                raise HTTPException(status_code=403, detail='intent environment is not sandbox')
+
+            terminal = {'filled', 'working', 'submitting', 'PRECHECK_PENDING'}
+            if st in terminal:
+                _audit_execution(actor='dashboard_api', action='intent_force_execute_denied_status', entity_type='execution_intent', entity_id=str(intent_id), details={'status': st})
+                raise HTTPException(status_code=409, detail=f'intent status not forceable: {st}')
+
+            con.execute(
+                """
+                UPDATE execution_intents
+                SET status='pending',
+                    error=NULL,
+                    precheck_status=NULL,
+                    precheck_payload_json=NULL,
+                    risk_gate_status=NULL,
+                    quarantine_reason=NULL,
+                    updated_at_utc=?
+                WHERE id=?
+                """,
+                (now, int(intent_id)),
+            )
+            con.commit()
+
+        _audit_execution(actor='dashboard_api', action='intent_force_execute', entity_type='execution_intent', entity_id=str(intent_id), details={'old_status': st, 'new_status': 'pending', 'environment': env})
+        return {'ok': True, 'intent_id': int(intent_id), 'old_status': st, 'new_status': 'pending'}
 
     @app.get('/api/execution/trades/open')
     def execution_trades_open(limit: int = Query(500, ge=1, le=5000)) -> dict[str, Any]:
@@ -1838,6 +2593,152 @@ def create_app() -> FastAPI:
                 'protection_status': ('armed' if rr is not None else 'missing'),
             })
         return {'items': items}
+
+    @app.get('/api/execution/broker/orders')
+    def execution_broker_orders(
+        environment: str | None = Query(None, pattern='^(sandbox|live)$'),
+        status: str | None = Query(None),
+        limit: int = Query(200, ge=1, le=2000),
+    ) -> dict[str, Any]:
+        from options_ai.brokers.tastytrade.client import TastytradeClient
+
+        env = str((environment or cfg.broker_env) or cfg.broker_env).strip().lower()
+        if env not in {'sandbox', 'live'}:
+            raise HTTPException(status_code=400, detail='environment must be sandbox|live')
+
+        if env == 'sandbox':
+            base_url = str(cfg.tasty_sandbox_base_url or cfg.tasty_base_url).strip()
+            account_number = str(cfg.tasty_sandbox_account_number or os.getenv('TASTY_ACCOUNT_NUMBER', '') or '').strip()
+        else:
+            base_url = str(cfg.tasty_live_base_url or cfg.tasty_base_url).strip()
+            account_number = str(cfg.tasty_live_account_number or os.getenv('TASTY_ACCOUNT_NUMBER', '') or '').strip()
+
+        if not account_number:
+            raise HTTPException(status_code=400, detail=f'missing account number for environment={env}')
+
+        client = TastytradeClient(
+            base_url=base_url,
+            environment=env,
+            account_number=account_number,
+            dry_run=False,
+            target_api_version=None,
+        )
+
+        try:
+            client.authenticate()
+
+            per_page = min(100, int(limit))
+            page_offset = 0
+            all_items: list[dict[str, Any]] = []
+            while len(all_items) < int(limit):
+                params: dict[str, Any] = {'per-page': per_page, 'page-offset': page_offset}
+                if status:
+                    params['status'] = str(status)
+                resp = client._request('GET', f"/accounts/{account_number}/orders", params=params)
+                data = resp.get('data') if isinstance(resp, dict) else None
+                items = (data.get('items') if isinstance(data, dict) else None) or []
+                if not isinstance(items, list):
+                    items = []
+                all_items.extend([it for it in items if isinstance(it, dict)])
+
+                pg = resp.get('pagination') if isinstance(resp, dict) else None
+                total_pages = int(pg.get('total-pages') or 0) if isinstance(pg, dict) else 0
+
+                if total_pages > 0:
+                    if page_offset + 1 < total_pages:
+                        page_offset += 1
+                        continue
+                    break
+
+                if len(items) == per_page and len(items) > 0:
+                    page_offset += 1
+                    continue
+                break
+
+            trimmed = all_items[: int(limit)]
+            out_items = []
+            for it in trimmed:
+                out_items.append({
+                    'id': it.get('id') or it.get('order-id'),
+                    'status': it.get('status'),
+                    'underlying': it.get('underlying-symbol') or it.get('underlying_symbol'),
+                    'size': it.get('size'),
+                    'order_type': it.get('order-type') or it.get('order_type'),
+                    'price': it.get('price'),
+                    'price_effect': it.get('price-effect') or it.get('price_effect'),
+                    'time_in_force': it.get('time-in-force') or it.get('time_in_force'),
+                    'received_at': it.get('received-at') or it.get('received_at'),
+                    'terminal_at': it.get('terminal-at') or it.get('terminal_at'),
+                    'cancelled_at': it.get('cancelled-at') or it.get('cancelled_at'),
+                    'client_order_id': it.get('client-order-id') or it.get('client_order_id'),
+                })
+
+            return {
+                'environment': env,
+                'source': 'tastytrade_api',
+                'base_url': base_url,
+                'account_number': account_number,
+                'count': len(out_items),
+                'items': out_items,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f'broker fetch failed: {e}')
+
+    @app.get('/api/execution/trades/history')
+    def execution_trades_history(
+        environment: str | None = Query(None, pattern='^(sandbox|live)$'),
+        limit: int = Query(200, ge=1, le=5000),
+    ) -> dict[str, Any]:
+        import json as _json
+        env = str((environment or cfg.broker_env) or cfg.broker_env).strip().lower()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, created_at_utc, updated_at_utc, environment, broker_name,
+                       execution_intent_id, status, underlying, side, qty,
+                       entry_order_id, exit_order_id,
+                       opened_at_utc, closed_at_utc,
+                       open_reason, close_reason,
+                       pnl_realized_usd, pnl_unrealized_usd,
+                       run_payload_json
+                FROM trade_runs
+                WHERE environment=? AND broker_name=?
+                ORDER BY COALESCE(closed_at_utc, opened_at_utc, updated_at_utc, created_at_utc) DESC, id DESC
+                LIMIT ?
+                """,
+                (env, str(cfg.broker_name), int(limit)),
+            ).fetchall()
+
+        items = []
+        for r in rows:
+            try:
+                payload = _json.loads(r['run_payload_json'] or '{}')
+            except Exception:
+                payload = {}
+            items.append({
+                'id': int(r['id']),
+                'created_at_utc': str(r['created_at_utc']),
+                'updated_at_utc': str(r['updated_at_utc']),
+                'environment': str(r['environment']),
+                'broker_name': str(r['broker_name']),
+                'execution_intent_id': (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
+                'status': str(r['status']),
+                'underlying': (str(r['underlying']) if r['underlying'] is not None else None),
+                'side': (str(r['side']) if r['side'] is not None else None),
+                'qty': (int(r['qty']) if r['qty'] is not None else None),
+                'entry_order_id': (str(r['entry_order_id']) if r['entry_order_id'] is not None else None),
+                'exit_order_id': (str(r['exit_order_id']) if r['exit_order_id'] is not None else None),
+                'opened_at_utc': (str(r['opened_at_utc']) if r['opened_at_utc'] is not None else None),
+                'closed_at_utc': (str(r['closed_at_utc']) if r['closed_at_utc'] is not None else None),
+                'open_reason': (str(r['open_reason']) if r['open_reason'] is not None else None),
+                'close_reason': (str(r['close_reason']) if r['close_reason'] is not None else None),
+                'pnl_realized_usd': (float(r['pnl_realized_usd']) if r['pnl_realized_usd'] is not None else None),
+                'pnl_unrealized_usd': (float(r['pnl_unrealized_usd']) if r['pnl_unrealized_usd'] is not None else None),
+                'run_payload': payload,
+            })
+        return {'environment': env, 'items': items}
 
     @app.get('/api/execution/trades/{trade_id}')
     def execution_trade_get(trade_id: int) -> dict[str, Any]:
@@ -2298,18 +3199,108 @@ def create_app() -> FastAPI:
 
     @app.post('/api/execution/flatten-all')
     def execution_flatten_all() -> dict[str, Any]:
+        from options_ai.brokers.tastytrade.client import TastytradeClient, OrderDTO, OptionLeg
+
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+        env = str(cfg.broker_env or 'sandbox').strip().lower()
+        if env == 'sandbox':
+            base_url = str(cfg.tasty_sandbox_base_url or cfg.tasty_base_url).strip()
+            account_number = str(cfg.tasty_sandbox_account_number or os.getenv('TASTY_ACCOUNT_NUMBER', '') or '').strip()
+        else:
+            base_url = str(cfg.tasty_live_base_url or cfg.tasty_base_url).strip()
+            account_number = str(cfg.tasty_live_account_number or os.getenv('TASTY_ACCOUNT_NUMBER', '') or '').strip()
+
+        client = None
+        auth_error: str | None = None
+        if account_number:
+            try:
+                client = TastytradeClient(
+                    base_url=base_url,
+                    environment=env,
+                    account_number=account_number,
+                    dry_run=(not bool(cfg.trading_enabled)),
+                    target_api_version=None,
+                )
+                if bool(cfg.trading_enabled):
+                    client.authenticate()
+            except Exception as e:
+                auth_error = str(e)
+                client = None
+
         with _connect(db_path) as con:
             rows = con.execute(
-                "SELECT id, execution_intent_id FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
+                "SELECT id, execution_intent_id, qty, underlying, run_payload_json, entry_order_id, opened_at_utc FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
                 (str(cfg.broker_env), str(cfg.broker_name)),
             ).fetchall()
             n = 0
+            submitted = 0
+            errors = 0
             for r in rows:
-                con.execute(
-                    "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', updated_at_utc=? WHERE id=?",
-                    (now, int(r['id'])),
-                )
+                rid = int(r['id'])
+                iid = (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None)
+                qty = max(1, int(r['qty'] or 1))
+                underlying = str(r['underlying'] or 'SPX')
+                payload = _json.loads(r['run_payload_json'] or '{}')
+                params = (payload.get('params') or {}) if isinstance(payload, dict) else {}
+                long_sym = str(params.get('long_symbol') or '').strip()
+                short_sym = str(params.get('short_symbol') or '').strip()
+
+                exit_order_id = None
+                event_type = 'operator_flatten_all'
+                status = 'accepted'
+                raw = {'note': 'operator flatten-all requested'}
+
+                try:
+                    if auth_error:
+                        raise RuntimeError(f'broker auth unavailable: {auth_error}')
+                    if (client is None) or (not account_number):
+                        raise RuntimeError('broker client unavailable or missing account number')
+                    if (not long_sym) or (not short_sym):
+                        raise RuntimeError('missing long_symbol/short_symbol in trade run payload')
+
+                    close_dto = OrderDTO(
+                        account_number=account_number,
+                        underlying=underlying,
+                        quantity=qty,
+                        price_effect='CREDIT',
+                        limit_price=0.05,
+                        legs=[
+                            OptionLeg(symbol=long_sym, quantity=qty, side='SELL', effect='CLOSE'),
+                            OptionLeg(symbol=short_sym, quantity=qty, side='BUY', effect='CLOSE'),
+                        ],
+                        client_order_id=f'flatten-{rid}-{int(datetime.now(timezone.utc).timestamp())}',
+                    )
+                    resp = client.place_order_with_warning_reconfirm(close_dto, dry_run=(not bool(cfg.trading_enabled)))
+                    data = (resp.get('data') if isinstance(resp, dict) else None) or {}
+                    od = (data.get('order') if isinstance(data, dict) else None) or {}
+                    exit_order_id = (data.get('id') or od.get('id') or (resp.get('order-id') if isinstance(resp, dict) else None))
+                    raw = {'response': resp, 'submitted': True}
+                    event_type = 'operator_flatten_submit'
+                    submitted += 1
+                except Exception as e:
+                    raw = {'error': str(e), 'submitted': False}
+                    event_type = 'operator_flatten_submit_error'
+                    status = 'error'
+                    errors += 1
+
+                if status == 'accepted':
+                    con.execute(
+                        "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', exit_order_id=COALESCE(?, exit_order_id), updated_at_utc=? WHERE id=?",
+                        ((str(exit_order_id) if exit_order_id is not None else None), now, rid),
+                    )
+                else:
+                    no_open = (r['entry_order_id'] is None) and (r['opened_at_utc'] is None)
+                    if no_open:
+                        con.execute(
+                            "UPDATE trade_runs SET status='closed', close_mode='operator_flatten', close_reason=COALESCE(close_reason,'operator_flatten_no_open_position'), closed_at_utc=COALESCE(closed_at_utc, ?), updated_at_utc=? WHERE id=?",
+                            (now, now, rid),
+                        )
+                    else:
+                        con.execute(
+                            "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', exit_order_id=COALESCE(?, exit_order_id), updated_at_utc=? WHERE id=?",
+                            ((str(exit_order_id) if exit_order_id is not None else None), now, rid),
+                        )
                 con.execute(
                     """
                     INSERT INTO order_events(created_at_utc, environment, broker_name, trade_run_id, execution_intent_id, order_id, event_type, status, raw_payload_json)
@@ -2319,18 +3310,18 @@ def create_app() -> FastAPI:
                         now,
                         str(cfg.broker_env),
                         str(cfg.broker_name),
-                        int(r['id']),
-                        (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None),
-                        None,
-                        'operator_flatten_all',
-                        'accepted',
-                        _json.dumps({'note': 'operator flatten-all requested; risk_guard/worker should close positions'}, separators=(',', ':'), sort_keys=True),
+                        rid,
+                        iid,
+                        (str(exit_order_id) if exit_order_id is not None else None),
+                        event_type,
+                        status,
+                        _json.dumps(raw, separators=(',', ':'), sort_keys=True),
                     ),
                 )
                 n += 1
             con.commit()
-        _audit_execution(actor='dashboard_api', action='flatten_all_requested', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'affected_trades': n})
-        return {'ok': True, 'affected_trades': n}
+        _audit_execution(actor='dashboard_api', action='flatten_all_requested', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'affected_trades': n, 'submitted': submitted, 'errors': errors})
+        return {'ok': True, 'affected_trades': n, 'submitted': submitted, 'errors': errors}
 
     @app.get('/api/execution/kpis')
     def execution_kpis(days: int = Query(7, ge=1, le=60)) -> dict[str, Any]:
@@ -2554,6 +3545,166 @@ def create_app() -> FastAPI:
         }
 
 
+
+
+    def _load_parameter_groups() -> list[dict[str, Any]]:
+        import json as _json
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """SELECT id,name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived
+                   FROM parameter_groups WHERE archived=0 ORDER BY updated_at_utc DESC, id DESC"""
+            ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                run_ids = [int(x) for x in (_json.loads(r['run_ids_json'] or '[]') or []) if str(x).isdigit()]
+            except Exception:
+                run_ids = []
+            try:
+                pids = [int(x) for x in (_json.loads(r['portfolio_ids_json'] or '[]') or []) if str(x).isdigit()]
+            except Exception:
+                pids = []
+            try:
+                tags = _json.loads(r['tags_json'] or '[]') or []
+            except Exception:
+                tags = []
+            out.append({'id': int(r['id']), 'name': str(r['name']), 'status': str(r['status'] or 'Draft'),
+                        'tags': tags, 'comment': r['comment'], 'run_ids': run_ids, 'portfolio_ids': pids,
+                        'created_at_utc': str(r['created_at_utc']), 'updated_at_utc': str(r['updated_at_utc'])})
+        return out
+
+    @app.get('/api/parameter-groups')
+    def parameter_groups_list(link_state: str | None = Query(None)) -> dict[str, Any]:
+        items = _load_parameter_groups()
+        if link_state == 'linked':
+            items = [x for x in items if x.get('run_ids') or x.get('portfolio_ids')]
+        elif link_state == 'unlinked':
+            items = [x for x in items if not x.get('run_ids') and not x.get('portfolio_ids')]
+        for x in items:
+            x['link_counts'] = {'backtests': len(x.get('run_ids') or []), 'portfolios': len(x.get('portfolio_ids') or [])}
+            x['in_use'] = len(x.get('portfolio_ids') or []) > 0
+            x['upstream_refs'] = [{'type':'backtest','id':rid} for rid in (x.get('run_ids') or [])]
+            x['downstream_refs'] = [{'type':'portfolio','id':pid} for pid in (x.get('portfolio_ids') or [])]
+            x['eligible_next_stage'] = True
+        return {'items': items}
+
+    @app.post('/api/backtest/runs/{run_id}/send-to-groups')
+    def send_run_to_groups(run_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        gid = (body or {}).get('group_id')
+        create_name = str((body or {}).get('create_group_name') or '').strip()
+        tag = str((body or {}).get('tag') or '').strip()
+        comment = str((body or {}).get('comment') or '').strip()
+        with _connect(db_path) as con:
+            rr = con.execute('SELECT id FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
+            if not rr:
+                raise HTTPException(status_code=404, detail='run not found')
+            now = _now_utc_iso()
+            if gid is None and not create_name:
+                raise HTTPException(status_code=400, detail='group_id or create_group_name required')
+            if gid is None:
+                cur = con.execute("INSERT INTO parameter_groups(name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived) VALUES(?,?,?,?,?,?,?,?,0)",
+                                  (create_name, 'Draft', _json.dumps([tag] if tag else []), comment or None, _json.dumps([int(run_id)]), _json.dumps([]), now, now))
+                gid = int(cur.lastrowid)
+            r = con.execute('SELECT run_ids_json,tags_json,comment FROM parameter_groups WHERE id=? AND archived=0', (int(gid),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='group not found')
+            run_ids = [int(x) for x in (_json.loads(r['run_ids_json'] or '[]') or []) if str(x).isdigit()]
+            if int(run_id) not in run_ids:
+                run_ids.append(int(run_id))
+            tags = _json.loads(r['tags_json'] or '[]') or []
+            if tag and tag not in tags:
+                tags.append(tag)
+            new_comment = (comment if comment else (r['comment'] or None))
+            con.execute('UPDATE parameter_groups SET run_ids_json=?, tags_json=?, comment=?, status=?, updated_at_utc=? WHERE id=?',
+                        (_json.dumps(sorted(set(run_ids))), _json.dumps(tags), new_comment, 'Sent', now, int(gid)))
+            con.commit()
+        return {'ok': True, 'run_id': int(run_id), 'group_id': int(gid)}
+
+    @app.post('/api/parameter-groups/{group_id}/send-to-portfolio')
+    def send_group_to_portfolio(group_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        pid = (body or {}).get('portfolio_id')
+        create_name = str((body or {}).get('create_portfolio_name') or '').strip()
+        with _connect(db_path) as con:
+            gr = con.execute('SELECT name,run_ids_json,portfolio_ids_json FROM parameter_groups WHERE id=? AND archived=0', (int(group_id),)).fetchone()
+            if not gr:
+                raise HTTPException(status_code=404, detail='group not found')
+            run_ids = [int(x) for x in (_json.loads(gr['run_ids_json'] or '[]') or []) if str(x).isdigit()]
+            if pid is None and not create_name:
+                raise HTTPException(status_code=400, detail='portfolio_id or create_portfolio_name required')
+            if pid is None:
+                legs = []
+                for rid in run_ids:
+                    rr = con.execute('SELECT params_json FROM backtest_runs WHERE id=?', (rid,)).fetchone()
+                    if not rr:
+                        continue
+                    try:
+                        params = _json.loads(rr['params_json'] or '{}')
+                    except Exception:
+                        params = {}
+                    legs.append({'strategy_id': 'debit_spreads', 'params': params, 'source': f'group:{group_id}:run:{rid}'})
+                now = _now_utc_iso()
+                cur = con.execute('INSERT INTO portfolio_defs(name, legs_json, created_at_utc, updated_at_utc) VALUES(?,?,?,?)',
+                                  (create_name, _json.dumps(legs, separators=(",", ":"), sort_keys=True), now, now))
+                pid = int(cur.lastrowid)
+            pids = [int(x) for x in (_json.loads(gr['portfolio_ids_json'] or '[]') or []) if str(x).isdigit()]
+            if int(pid) not in pids:
+                pids.append(int(pid))
+            now = _now_utc_iso()
+            con.execute('UPDATE parameter_groups SET portfolio_ids_json=?, status=?, updated_at_utc=? WHERE id=?',
+                        (_json.dumps(sorted(set(pids))), 'In Use', now, int(group_id)))
+            con.commit()
+        return {'ok': True, 'group_id': int(group_id), 'portfolio_id': int(pid)}
+
+    @app.get('/api/links/panel')
+    def links_panel(entity_type: str = Query(...), entity_id: int = Query(...)) -> dict[str, Any]:
+        et = str(entity_type)
+        eid = int(entity_id)
+        groups = _load_parameter_groups()
+        if et == 'backtest':
+            g = [x for x in groups if eid in (x.get('run_ids') or [])]
+            return {'entity_type': et, 'entity_id': eid, 'upstream': [], 'downstream': [{'type':'group','id':x['id'],'name':x['name']} for x in g]}
+        if et == 'group':
+            g = next((x for x in groups if x['id'] == eid), None)
+            if not g:
+                raise HTTPException(status_code=404, detail='group not found')
+            return {'entity_type': et, 'entity_id': eid, 'upstream': [{'type':'backtest','id':rid} for rid in (g.get('run_ids') or [])], 'downstream': [{'type':'portfolio','id':pid} for pid in (g.get('portfolio_ids') or [])]}
+        if et == 'portfolio':
+            g = [x for x in groups if eid in (x.get('portfolio_ids') or [])]
+            return {'entity_type': et, 'entity_id': eid, 'upstream': [{'type':'group','id':x['id'],'name':x['name']} for x in g], 'downstream': []}
+        raise HTTPException(status_code=400, detail='unsupported entity_type')
+
+
+    @app.post('/api/parameter-groups')
+    def parameter_groups_create(body: dict[str, Any]) -> dict[str, Any]:
+        import json as _json
+        name = str((body or {}).get('name') or '').strip()
+        if not name:
+            raise HTTPException(status_code=400, detail='name required')
+        status = str((body or {}).get('status') or 'Draft')
+        run_ids = [int(x) for x in ((body or {}).get('run_ids') or []) if str(x).isdigit()]
+        now = _now_utc_iso()
+        with _connect(db_path) as con:
+            cur = con.execute("INSERT INTO parameter_groups(name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived) VALUES(?,?,?,?,?,?,?,?,0)",
+                              (name, status, _json.dumps([]), None, _json.dumps(run_ids), _json.dumps([]), now, now))
+            gid = int(cur.lastrowid)
+            con.commit()
+        return {'id': gid, 'name': name, 'status': status, 'run_ids': run_ids}
+
+    @app.delete('/api/parameter-groups/{group_id}')
+    def parameter_groups_delete(group_id: int) -> dict[str, Any]:
+        import json as _json
+        with _connect(db_path) as con:
+            r = con.execute('SELECT portfolio_ids_json FROM parameter_groups WHERE id=? AND archived=0', (int(group_id),)).fetchone()
+            if not r:
+                raise HTTPException(status_code=404, detail='group not found')
+            if (_json.loads(r['portfolio_ids_json'] or '[]') or []):
+                raise HTTPException(status_code=409, detail='group in use; detach downstream portfolios first')
+            con.execute('UPDATE parameter_groups SET archived=1, updated_at_utc=? WHERE id=?', (_now_utc_iso(), int(group_id)))
+            con.commit()
+        return {'ok': True, 'deleted_id': int(group_id)}
+
 # ---- Backtest Runs (history grid) ----
 
     @app.get('/api/backtest/runs')
@@ -2580,8 +3731,15 @@ def create_app() -> FastAPI:
         sql += " ORDER BY created_at_utc DESC LIMIT ?"
         params.append(int(limit))
 
-        with _connect(db_path) as con:
-            rows = con.execute(sql, tuple(params)).fetchall()
+        if bt_use_pg:
+            sql_pg = sql.replace('?', '%s')
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute(sql_pg, tuple(params))
+                    rows = cur.fetchall()
+        else:
+            with _connect(db_path) as con:
+                rows = con.execute(sql, tuple(params)).fetchall()
 
         items = []
         for r in rows:
@@ -2616,17 +3774,84 @@ def create_app() -> FastAPI:
                 'refinement_sampler_id': (int(r['refinement_sampler_id']) if r['refinement_sampler_id'] is not None else None),
             })
 
+        groups = _load_parameter_groups()
+        run_to_groups: dict[int, list[dict[str, Any]]] = {}
+        for g in groups:
+            gref = {'id': int(g['id']), 'name': str(g.get('name') or f"Group {int(g['id'])}")}
+            for rid in (g.get('run_ids') or []):
+                run_to_groups.setdefault(int(rid), []).append(gref)
+
+        # Portfolio memberships (Parameter Group Testing tab uses portfolio_defs as groups)
+        run_to_portfolios: dict[int, list[dict[str, Any]]] = {}
+        with _connect(db_path) as con:
+            p_rows = con.execute('SELECT id, name, legs_json FROM portfolio_defs').fetchall()
+        for pr in p_rows:
+            pid = int(pr['id'])
+            pname = str(pr['name'])
+            try:
+                legs = _json.loads(pr['legs_json'] or '[]') or []
+            except Exception:
+                legs = []
+            seen: set[int] = set()
+            for leg in legs:
+                if not isinstance(leg, dict):
+                    continue
+                src = str(leg.get('source') or '')
+                if not src.startswith('run:'):
+                    continue
+                try:
+                    rid = int(src.split(':', 1)[1])
+                except Exception:
+                    continue
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                run_to_portfolios.setdefault(rid, []).append({'id': pid, 'name': pname})
+
+        for it in items:
+            rid = int(it['id'])
+            grefs = run_to_groups.get(rid, [])
+            prefs = run_to_portfolios.get(rid, [])
+            gids = [int(x.get('id')) for x in grefs if x.get('id') is not None]
+            pids = [int(x.get('id')) for x in prefs if x.get('id') is not None]
+            it['group_memberships'] = grefs
+            it['portfolio_memberships'] = prefs
+            it['link_counts'] = {'groups': len(gids), 'portfolios': len(pids)}
+            it['upstream_refs'] = []
+            it['downstream_refs'] = [
+                *([{'type':'group','id':int(x.get('id')),'name':str(x.get('name') or '')} for x in grefs]),
+                *([{'type':'portfolio','id':int(x.get('id')),'name':str(x.get('name') or '')} for x in prefs]),
+            ]
+            it['in_use'] = (len(gids) > 0 or len(pids) > 0)
+            it['eligible_next_stage'] = True
+            it['ineligible_reason'] = None
+
         return {'strategy_key': strategy_key, 'preset_id': preset_id, 'limit': int(limit), 'items': items}
 
     @app.delete('/api/backtest/runs/{run_id}')
     def backtest_runs_delete(run_id: int) -> dict[str, Any]:
-        with _connect(db_path) as con:
-            r = con.execute('SELECT strategy_key FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
-            if not r:
-                raise HTTPException(status_code=404, detail='run not found')
-            strategy_key = r['strategy_key']
-            con.execute('DELETE FROM backtest_runs WHERE id=?', (int(run_id),))
-            con.commit()
+        groups = _load_parameter_groups()
+        linked = [g['id'] for g in groups if int(run_id) in (g.get('run_ids') or [])]
+        if linked:
+            raise HTTPException(status_code=409, detail=f'run in use by groups: {linked}')
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute('SELECT strategy_key FROM backtest_runs WHERE id=%s', (int(run_id),))
+                    r = cur.fetchone()
+                    if not r:
+                        raise HTTPException(status_code=404, detail='run not found')
+                    strategy_key = r['strategy_key']
+                    cur.execute('DELETE FROM backtest_runs WHERE id=%s', (int(run_id),))
+                con.commit()
+        else:
+            with _connect(db_path) as con:
+                r = con.execute('SELECT strategy_key FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
+                if not r:
+                    raise HTTPException(status_code=404, detail='run not found')
+                strategy_key = r['strategy_key']
+                con.execute('DELETE FROM backtest_runs WHERE id=?', (int(run_id),))
+                con.commit()
         return {'ok': True, 'deleted': int(run_id), 'strategy_key': strategy_key}
 
     
@@ -2649,12 +3874,18 @@ def create_app() -> FastAPI:
         if not norm:
             raise HTTPException(status_code=400, detail={'message': 'no valid ids', 'invalid_count': len(invalid)})
 
-        q = ','.join(['?'] * len(norm))
-        with _connect(db_path) as con:
-            cur = con.execute(f'DELETE FROM backtest_runs WHERE id IN ({q})', tuple(norm))
-            con.commit()
-
-        deleted = int(cur.rowcount if cur.rowcount is not None else 0)
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url) as con:
+                with con.cursor() as cur:
+                    cur.execute('DELETE FROM backtest_runs WHERE id = ANY(%s)', (norm,))
+                    deleted = int(cur.rowcount if cur.rowcount is not None else 0)
+                con.commit()
+        else:
+            q = ','.join(['?'] * len(norm))
+            with _connect(db_path) as con:
+                cur = con.execute(f'DELETE FROM backtest_runs WHERE id IN ({q})', tuple(norm))
+                con.commit()
+            deleted = int(cur.rowcount if cur.rowcount is not None else 0)
         return {'ok': True, 'deleted_count': deleted, 'requested': len(norm)}
 
     @app.post("/api/backtest/debit_spreads/run")
@@ -2669,17 +3900,23 @@ def create_app() -> FastAPI:
         preset_id_final: int | None = None
         preset_name_at_run: str | None = None
 
-        with _connect(db_path) as con:
-            if pid_in is not None:
-                try:
-                    pid = int(pid_in)
-                    row = con.execute('SELECT id, name FROM backtest_presets WHERE id=?', (pid,)).fetchone()
-                    if row:
-                        preset_id_final = int(row['id'])
-                        preset_name_at_run = str(row['name'])
-                except Exception:
-                    preset_id_final = None
-                    preset_name_at_run = None
+        if pid_in is not None:
+            try:
+                pid = int(pid_in)
+                if bt_use_pg:
+                    with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                        with con.cursor() as cur:
+                            cur.execute('SELECT id, name FROM backtest_presets WHERE id=%s', (pid,))
+                            row = cur.fetchone()
+                else:
+                    with _connect(db_path) as con:
+                        row = con.execute('SELECT id, name FROM backtest_presets WHERE id=?', (pid,)).fetchone()
+                if row:
+                    preset_id_final = int(row['id'])
+                    preset_name_at_run = str(row['name'])
+            except Exception:
+                preset_id_final = None
+                preset_name_at_run = None
 
         force_run = bool((payload or {}).get('force_run') or False)
 
@@ -2700,449 +3937,1679 @@ def create_app() -> FastAPI:
         if preset_id_final is not None:
             run_id = int(result.get('run_id')) if isinstance(result, dict) and result.get('run_id') else None
             if run_id is not None:
-                with _connect(db_path) as con:
-                    row = con.execute('SELECT summary_json FROM backtest_runs WHERE id=?', (run_id,)).fetchone()
-                    summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
-                    now = _now_utc_iso()
-                    con.execute(
-                        """
-                        UPDATE backtest_presets
-                        SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
-                        WHERE id=?
-                        """,
-                        (run_id, now, summary_json, now, preset_id_final),
-                    )
-                    con.commit()
+                try:
+                    if bt_use_pg:
+                        with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                            with con.cursor() as cur:
+                                cur.execute('SELECT summary_json FROM backtest_runs WHERE id=%s', (run_id,))
+                                row = cur.fetchone()
+                                summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
+                                now = _now_utc_iso()
+                                cur.execute(
+                                    """
+                                    UPDATE backtest_presets
+                                    SET last_run_id=%s, last_run_at_utc=%s, last_summary_json=%s, updated_at_utc=%s
+                                    WHERE id=%s
+                                    """,
+                                    (run_id, now, summary_json, now, preset_id_final),
+                                )
+                            con.commit()
+                    else:
+                        with _connect(db_path) as con:
+                            row = con.execute('SELECT summary_json FROM backtest_runs WHERE id=?', (run_id,)).fetchone()
+                            summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
+                            now = _now_utc_iso()
+                            con.execute(
+                                """
+                                UPDATE backtest_presets
+                                SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
+                                WHERE id=?
+                                """,
+                                (run_id, now, summary_json, now, preset_id_final),
+                            )
+                            con.commit()
+                except Exception as e:
+                    if isinstance(result, dict):
+                        result.setdefault('persistence_warning', 'persist_update_failed')
+                        result.setdefault('persistence_error', str(e))
 
         return result
 
-    @app.get("/api/debit_spreads/top")
-    def debit_spreads_top(limit: int = Query(12, ge=1, le=100)) -> dict[str, Any]:
-        dsn = _pg_dsn()
-        if not dsn:
-            raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
-
-
-        anchor_policy, call_anchors, put_anchors = _anchor_policy_sets()
-
-        with _pg_connect(dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_candidates_0dte")
-                r = cur.fetchone()
-                latest = r[0] if r else None
-                if latest is None:
-                    return {"snapshot_ts": None, "levels": None, "candidates": [], "tz": "America/Chicago"}
-
-                cur.execute("SELECT atm_strike, spot, expiration_date FROM spx.chain_features_0dte WHERE snapshot_ts=%s", (latest,))
-                feat = cur.fetchone()
-                atm_strike = float(feat[0]) if feat and feat[0] is not None else None
-                spot = float(feat[1]) if feat and feat[1] is not None else None
-                exp_date = feat[2] if feat and feat[2] is not None else None
-
-                cur.execute("SELECT call_wall, put_wall, magnet FROM spx.gex_levels_0dte WHERE snapshot_ts=%s", (latest,))
-                lev = cur.fetchone()
-                levels = None
-                if lev:
-                    levels = {"atm": atm_strike, "call_wall": float(lev[0]) if lev[0] is not None else None, "put_wall": float(lev[1]) if lev[1] is not None else None, "magnet": float(lev[2]) if lev[2] is not None else None, "spot": spot, "expiration_date": str(exp_date) if exp_date is not None else None}
-                else:
-                    levels = {"atm": atm_strike, "call_wall": None, "put_wall": None, "magnet": None, "spot": spot, "expiration_date": str(exp_date) if exp_date is not None else None}
-
-                # Join candidates with 30m labels if present; rank by label change desc when available.
-                cur.execute(
-                    """
-                    SELECT
-                      c.anchor_type, c.spread_type, c.anchor_strike,
-                      c.k_long, c.k_short, c.debit_points,
-                      c.long_symbol, c.short_symbol,
-                      l.horizon_minutes, l.change, l.is_missing_future,
-                      s.pred_change, s.p_bigwin
-                    FROM spx.debit_spread_candidates_0dte c
-                    LEFT JOIN spx.debit_spread_labels_0dte l
-                      ON l.snapshot_ts = c.snapshot_ts
-                     AND l.anchor_type = c.anchor_type
-                     AND l.spread_type = c.spread_type
-                     AND l.horizon_minutes = 30
-                    LEFT JOIN spx.debit_spread_scores_0dte s
-                      ON s.snapshot_ts = c.snapshot_ts
-                     AND s.anchor_type = c.anchor_type
-                     AND s.spread_type = c.spread_type
-                     AND s.horizon_minutes = 30
-                    WHERE c.snapshot_ts = %s
-                      AND c.tradable = true
-                      AND (
-                        (%s::text[] IS NULL AND %s::text[] IS NULL)
-                        OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
-                        OR (c.spread_type='PUT' AND c.anchor_type = ANY(%s::text[]))
-                      )
-                    ORDER BY
-                      CASE WHEN s.p_bigwin IS NULL THEN 1 ELSE 0 END ASC,
-                      s.p_bigwin DESC NULLS LAST,
-                      CASE WHEN s.pred_change IS NULL THEN 1 ELSE 0 END ASC,
-                      s.pred_change DESC NULLS LAST,
-                      CASE WHEN l.change IS NULL THEN 1 ELSE 0 END ASC,
-                      l.change DESC NULLS LAST,
-                      c.debit_points ASC NULLS LAST
-                    LIMIT %s
-                    """,
-                    (latest, call_anchors, put_anchors, call_anchors, put_anchors, int(limit)),
-                )
-                items = []
-                for rr in cur.fetchall():
-                    items.append({
-                        "anchor_type": rr[0],
-                        "spread_type": rr[1],
-                        "anchor_strike": float(rr[2]) if rr[2] is not None else None,
-                        "k_long": float(rr[3]) if rr[3] is not None else None,
-                        "k_short": float(rr[4]) if rr[4] is not None else None,
-                        "debit_points": float(rr[5]) if rr[5] is not None else None,
-                        "long_symbol": rr[6],
-                        "short_symbol": rr[7],
-                        "horizon_minutes": int(rr[8]) if rr[8] is not None else 30,
-                        "change": float(rr[9]) if rr[9] is not None else None,
-                        "is_missing_future": bool(rr[10]) if rr[10] is not None else None,
-                        "pred_change": float(rr[11]) if rr[11] is not None else None,
-                        "p_bigwin": float(rr[12]) if rr[12] is not None else None,
-                    })
-
+    @app.get('/api/metrics')
+    def metrics_catalog() -> dict[str, Any]:
         return {
-            "snapshot_ts": _to_central_iso(latest),
-            "levels": levels,
-            "candidates": items,
-            "tz": "America/Chicago",
+            'ok': True,
+            'generated_at': _now_central_iso(),
+            'thresholds': _read_thresholds(),
+            'windows_supported': ['1m', '5m', '15m', '1h', '24h', '7d'],
+            'resolutions_supported': ['1m', '5m', '15m', '30m', '1h'],
         }
 
+    def _load_processing_summary(window: str) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            r = con.execute(
+                """
+                SELECT
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN result='wrong_direction' THEN 1 ELSE 0 END) AS failed,
+                  0.0 AS runtime_ms_avg
+                FROM predictions
+                WHERE COALESCE(observed_ts_utc, timestamp) >= ?
+                """,
+                (cutoff,),
+            ).fetchone()
+        n = int((r['n'] or 0) if r else 0)
+        failed = int((r['failed'] or 0) if r else 0)
+        runtime_ms_avg = float((r['runtime_ms_avg'] or 0.0) if r else 0.0)
+        return {
+            'window': window,
+            'generated_at': _now_central_iso(),
+            'processed': n,
+            'failed': failed,
+            'error_rate': (float(failed) / float(n)) if n > 0 else 0.0,
+            'runtime_ms_avg': runtime_ms_avg,
+            'throughput_items_per_min': float(n) / max(1.0, ws / 60.0),
+        }
 
-    
+    @app.get('/api/metrics/processing/summary')
+    def metrics_processing_summary(window: str = Query('15m')) -> dict[str, Any]:
+        return _load_processing_summary(window)
 
-    @app.get("/api/debit_spreads/daily_pick")
-    def debit_spreads_daily_pick(
-        day_local: str | None = Query(None, description="YYYY-MM-DD in America/Chicago"),
-        window_minutes: int = Query(int(os.getenv("DAILY_PICK_WINDOW_MINUTES", "30")), ge=5, le=180),
-        session_start: str = Query(os.getenv("DAILY_PICK_SESSION_START_CT", "08:30"), description="CT time HH:MM"),
-        min_p_bigwin: float = Query(float(os.getenv("DAILY_PICK_MIN_P_BIGWIN", "0.0")), ge=0.0, le=1.0),
-        min_pred_change: float = Query(float(os.getenv("DAILY_PICK_MIN_PRED_CHANGE", "0.0"))),
-        allowed_anchors: str | None = Query(os.getenv("DAILY_PICK_ALLOWED_ANCHORS", "" ) or None, description="comma list e.g. ATM,CALL_WALL,PUT_WALL,MAGNET"),
-        allowed_spreads: str | None = Query(os.getenv("DAILY_PICK_ALLOWED_SPREAD_TYPES", "") or None, description="comma list e.g. CALL,PUT"),
-    ) -> dict[str, Any]:
-        """Pick a single best trade per day from the first N minutes of the session.
+    @app.get('/api/metrics/processing/timeseries')
+    def metrics_processing_timeseries(window: str = Query('24h'), resolution: str = Query('5m')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        rs = _resolution_seconds(resolution)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        rows: list[dict[str, Any]] = []
+        with _connect(db_path) as con:
+            q = con.execute(
+                """
+                SELECT
+                  datetime((strftime('%s', COALESCE(observed_ts_utc, timestamp)) / ?) * ?, 'unixepoch') AS bucket_start_utc,
+                  COUNT(*) AS processed,
+                  SUM(CASE WHEN result='wrong_direction' THEN 1 ELSE 0 END) AS failed
+                FROM predictions
+                WHERE COALESCE(observed_ts_utc, timestamp) >= ?
+                GROUP BY bucket_start_utc
+                ORDER BY bucket_start_utc ASC
+                """,
+                (int(rs), int(rs), cutoff),
+            ).fetchall()
+            for r in q:
+                processed = int(r['processed'] or 0)
+                failed = int(r['failed'] or 0)
+                rows.append({
+                    'bucket_start': _to_central_iso(str(r['bucket_start_utc']) + '+00:00'),
+                    'lag_sec': None,
+                    'throughput_items_per_min': float(processed) / max(1.0, rs / 60.0),
+                    'error_rate': float(failed) / max(float(processed), 1.0),
+                })
+        return {'window': window, 'resolution': resolution, 'series': rows}
 
-        Objective #2: rank by p_bigwin desc, pred_change desc, debit asc, and require pred_change > 0.
-        """
-        dsn = _pg_dsn()
-        if not dsn:
-            raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
+    @app.get('/api/metrics/processing/pipeline')
+    def metrics_processing_pipeline(window: str = Query('15m')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff_dt = _now_utc() - timedelta(seconds=ws)
+        cutoff_iso = cutoff_dt.replace(microsecond=0).isoformat()
 
-        # Determine day in CT
-        if day_local:
+        pp = status_pipelines(window=max(50, min(5000, int(ws / 3))))
+        counts = pp.get('counts_recent') or {}
+        n_0dte = int(((counts.get('features_missing') or {}).get('n')) or 0)
+
+        latest = pp.get('latest') or {}
+        latest_chain = latest.get('option_chain')
+        latest_0dte_feat = latest.get('chain_features_0dte')
+        lag_0dte_min = None
+        try:
+            if latest_chain is not None and latest_0dte_feat is not None:
+                lag_0dte_min = (latest_chain - latest_0dte_feat).total_seconds() / 60.0
+        except Exception:
+            lag_0dte_min = None
+
+        use_term = (n_0dte == 0) or (lag_0dte_min is None) or (lag_0dte_min > 120.0)
+        profile = 'term' if use_term else '0dte'
+
+        stage_defs = [
+            {'key': 'option_chain', 'label': 'Ingest', 'table': 'spx.option_chain', 'future_dependent': False},
+            {'key': 'chain_features_term' if use_term else 'chain_features_0dte', 'label': 'Feature Build', 'table': 'spx.chain_features_term' if use_term else 'spx.chain_features_0dte', 'future_dependent': False},
+            {'key': 'chain_labels_term' if use_term else 'chain_labels_0dte', 'label': 'Label Build', 'table': 'spx.chain_labels_term' if use_term else 'spx.chain_labels_0dte', 'future_dependent': True},
+            {'key': 'debit_candidates_term' if use_term else 'debit_candidates_0dte', 'label': 'Candidate Build', 'table': 'spx.debit_spread_candidates_term' if use_term else 'spx.debit_spread_candidates_0dte', 'future_dependent': False},
+            {'key': 'debit_scores_term' if use_term else 'debit_scores_0dte', 'label': 'Score Build', 'table': 'spx.debit_spread_scores_term' if use_term else 'spx.debit_spread_scores_0dte', 'future_dependent': False},
+            {'key': 'signal_emit', 'label': 'Signal Emit', 'table': None, 'future_dependent': False},
+            {'key': 'execution', 'label': 'Execution', 'table': None, 'future_dependent': False},
+        ]
+
+        stage_metrics: dict[str, dict[str, Any]] = {}
+
+        try:
+            dsn = _pg_dsn()
+            if dsn:
+                with _pg_connect(dsn) as conn:
+                    with conn.cursor() as cur:
+                        time_cols: dict[str, str] = {}
+                        for sd in stage_defs:
+                            tb = sd.get('table')
+                            if not tb:
+                                continue
+                            try:
+                                sch, tbl = str(tb).split('.', 1)
+                                cur.execute(
+                                    """
+                                    SELECT column_name
+                                    FROM information_schema.columns
+                                    WHERE table_schema=%s AND table_name=%s
+                                      AND column_name IN ('computed_at', 'snapshot_ts')
+                                    ORDER BY CASE WHEN column_name='computed_at' THEN 0 ELSE 1 END
+                                    LIMIT 1
+                                    """,
+                                    (sch, tbl),
+                                )
+                                rr = cur.fetchone()
+                                time_cols[str(tb)] = str(rr[0]) if rr and rr[0] else 'snapshot_ts'
+                            except Exception:
+                                time_cols[str(tb)] = 'snapshot_ts'
+
+                        for sd in stage_defs:
+                            key = str(sd['key'])
+                            tb = sd.get('table')
+                            if not tb:
+                                continue
+                            tcol = time_cols.get(str(tb), 'snapshot_ts')
+                            cur.execute(
+                                f"SELECT COUNT(*), COUNT(DISTINCT snapshot_ts), MAX(snapshot_ts), MAX({tcol}) FROM {tb} WHERE {tcol} >= %s",
+                                (cutoff_dt,),
+                            )
+                            r = cur.fetchone()
+                            stage_metrics[key] = {
+                                'rows_window': int((r[0] or 0) if r else 0),
+                                'snapshots_window': int((r[1] or 0) if r else 0),
+                                'latest_ts': (r[2] if r else None),
+                                'latest_loaded_at': (r[3] if r else None),
+                            }
+        except Exception:
+            pass
+
+        try:
+            with _connect(db_path) as con:
+                r = con.execute(
+                    "SELECT COUNT(*) AS n, MAX(created_at_utc) AS mx FROM execution_intents WHERE created_at_utc >= ?",
+                    (cutoff_iso,),
+                ).fetchone()
+                stage_metrics['signal_emit'] = {
+                    'rows_window': int((r['n'] or 0) if r else 0),
+                    'snapshots_window': None,
+                    'latest_ts': (datetime.fromisoformat(str(r['mx']).replace('Z', '+00:00')) if r and r['mx'] else None),
+                    'latest_loaded_at': (datetime.fromisoformat(str(r['mx']).replace('Z', '+00:00')) if r and r['mx'] else None),
+                }
+                r2 = con.execute(
+                    "SELECT COUNT(*) AS n, MAX(updated_at_utc) AS mx FROM trade_runs WHERE updated_at_utc >= ?",
+                    (cutoff_iso,),
+                ).fetchone()
+                stage_metrics['execution'] = {
+                    'rows_window': int((r2['n'] or 0) if r2 else 0),
+                    'snapshots_window': None,
+                    'latest_ts': (datetime.fromisoformat(str(r2['mx']).replace('Z', '+00:00')) if r2 and r2['mx'] else None),
+                    'latest_loaded_at': (datetime.fromisoformat(str(r2['mx']).replace('Z', '+00:00')) if r2 and r2['mx'] else None),
+                }
+        except Exception:
+            pass
+
+        stages = []
+        worst = ('green', None)
+        for sd in stage_defs:
+            key = str(sd['key'])
+            label = str(sd['label'])
+            met = stage_metrics.get(key, {})
+            lag_min = (pp.get('lags_minutes') or {}).get(key)
+            if key == 'option_chain':
+                lag_min = 0.0
+
+            color = _color_from_max(float(lag_min) if lag_min is not None else None, 5.0, 15.0)
+            cause = 'Backlog at stage' if color != 'green' else None
+
+            if bool(sd.get('future_dependent')):
+                rw = int(met.get('rows_window') or 0)
+                if rw == 0:
+                    color = 'gray'
+                    cause = 'Future-dependent stage (no horizons matured in window)'
+
+            if key in {'signal_emit', 'execution'}:
+                rw = int(met.get('rows_window') or 0)
+                color = 'green' if rw > 0 else 'yellow'
+                cause = None if rw > 0 else 'No events in selected window'
+                lag_min = None
+
+            if color == 'red':
+                worst = ('red', label)
+            elif color == 'yellow' and worst[0] != 'red':
+                worst = ('yellow', label)
+
+            rows_window = met.get('rows_window')
+            snapshots_window = met.get('snapshots_window')
+            stages.append({
+                'key': key,
+                'label': label,
+                'lag_minutes': lag_min,
+                'rows_window': rows_window,
+                'snapshots_window': snapshots_window,
+                'latest_ts': met.get('latest_ts'),
+                'latest_loaded_at': met.get('latest_loaded_at'),
+                'throughput_rows_per_min': (float(rows_window) / max(1.0, ws / 60.0)) if rows_window is not None else None,
+                'status_color': color,
+                'inflight': None,
+                'success': None,
+                'fail': None,
+                'retry': None,
+                'p95_latency_ms': None,
+                'likely_cause': cause,
+            })
+
+        return {
+            'window': window,
+            'window_seconds': int(ws),
+            'generated_at': _now_central_iso(),
+            'profile': profile,
+            'stages': stages,
+            'bottleneck_stage': worst[1],
+            'bottleneck_status': worst[0],
+            'raw': pp,
+        }
+
+    @app.get('/api/metrics/processing/stages')
+    def metrics_processing_stages(window: str = Query('15m')) -> dict[str, Any]:
+        p = metrics_processing_pipeline(window=window)
+        return {'window': window, 'stages': p.get('stages') or []}
+
+    @app.get('/api/metrics/processing/errors/top')
+    def metrics_processing_errors_top(window: str = Query('24h')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT event, component, COUNT(*) AS n
+                FROM system_events
+                WHERE timestamp >= ? AND upper(level) IN ('ERROR','CRITICAL')
+                GROUP BY event, component
+                ORDER BY n DESC
+                LIMIT 20
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {'window': window, 'items': [{'event': r['event'], 'component': r['component'], 'count': int(r['n'] or 0)} for r in rows]}
+
+    def _infer_service_meta(name: str) -> tuple[str, str, bool]:
+        n = str(name or '')
+        if n.startswith('spx_chain_ingester'):
+            return ('Ingest', 'pipeline', True)
+        if n.startswith('spx_chain_phase2'):
+            return ('Feature Build', 'pipeline', True)
+        if n.startswith('spx_debit_spreads'):
+            return ('Candidate Build', 'pipeline', True)
+        if n.startswith('spx_debit_ml'):
+            return ('Backtest Queue', 'pipeline', True)
+        if n.startswith('options_ai_execution'):
+            return ('Execution', 'execution', True)
+        if n.startswith('options_ai_risk_guard'):
+            return ('Control', 'control', True)
+        if n.startswith('options_ai_dashboard_api'):
+            return ('Control', 'control', True)
+        if n.startswith('options_ai_storage_monitor'):
+            return ('Control', 'control', True)
+        if n.startswith('options_ai_market_scheduler'):
+            return ('Control', 'control', True)
+        if n.startswith('options_predicator'):
+            return ('Control', 'control', True)
+        if n.startswith('strategy_factory_daily'):
+            return ('Strategy Factory', 'scheduler', False)
+        if n.startswith('optionspredicator-stack'):
+            return ('Dependencies', 'orchestrator', False)
+        return ('Unknown', 'misc', False)
+
+    def _default_services() -> list[dict[str, Any]]:
+        names = [
+            'options_ai_dashboard_api',
+            'options_predicator',
+            'options_ai_execution',
+            'options_ai_execution_monitor',
+            'options_ai_risk_guard',
+            'options_ai_storage_monitor',
+            'spx_chain_ingester',
+            'spx_chain_phase2',
+            'spx_chain_phase2_term_dte7t2',
+            'spx_chain_phase2_term_dte14t2',
+            'spx_chain_phase2_term_dte21t3',
+            'spx_chain_phase2_term_dte30t5',
+            'spx_debit_spreads',
+            'spx_debit_spreads_term_dte7t2',
+            'spx_debit_spreads_term_dte14t2',
+            'spx_debit_spreads_term_dte21t3',
+            'spx_debit_spreads_term_dte30t5',
+            'spx_debit_ml',
+            'spx_debit_ml_term_dte7t2',
+            'spx_debit_ml_term_dte14t2',
+            'spx_debit_ml_term_dte21t3',
+            'spx_debit_ml_term_dte30t5',
+            'strategy_factory_daily',
+            'optionspredicator-stack',
+        ]
+        out = []
+        for n in names:
+            stage, group, critical = _infer_service_meta(n)
+            out.append({'id': n, 'name': n, 'stage': stage, 'group': group, 'critical': critical, 'log_name': n})
+        return out
+
+    def _discover_systemd_services() -> list[str]:
+        allow_prefixes = ('options_', 'spx_', 'strategy_factory_', 'optionspredicator-')
+        out: list[str] = []
+        try:
+            p = subprocess.run(
+                ['systemctl', 'list-unit-files', '--type=service', '--no-legend', '--no-pager'],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            for line in (p.stdout or '').splitlines():
+                unit = (line.strip().split() or [''])[0]
+                if not unit.endswith('.service'):
+                    continue
+                base = unit[:-8]
+                if any(base.startswith(pref) for pref in allow_prefixes):
+                    out.append(base)
+        except Exception:
+            return []
+        seen = set()
+        uniq = []
+        for x in out:
+            if x in seen:
+                continue
+            seen.add(x)
+            uniq.append(x)
+        return uniq
+
+    def _load_services_registry() -> list[dict[str, Any]]:
+        raw = os.getenv('PROCESSING_SERVICES_JSON', '').strip()
+        if raw:
             try:
-                # validate format
-                _ = datetime.fromisoformat(day_local)
+                obj = _json.loads(raw)
+                if isinstance(obj, list):
+                    out = []
+                    for it in obj:
+                        if not isinstance(it, dict):
+                            continue
+                        sid = str(it.get('id') or it.get('name') or '').strip()
+                        if not sid:
+                            continue
+                        stage, group, critical_guess = _infer_service_meta(str(it.get('name') or sid))
+                        out.append({
+                            'id': sid,
+                            'name': str(it.get('name') or sid),
+                            'stage': str(it.get('stage') or stage),
+                            'group': str(it.get('group') or group),
+                            'critical': bool(it.get('critical', critical_guess)),
+                            'log_name': str(it.get('log_name') or sid),
+                        })
+                    if out:
+                        return out
             except Exception:
-                raise HTTPException(status_code=400, detail="day_local must be YYYY-MM-DD")
-            day_ct = day_local
-        else:
-            day_ct = datetime.now(tz=CENTRAL_TZ).date().isoformat()
+                pass
 
-        # Compute CT time window
+        discovered = _discover_systemd_services()
+        if discovered:
+            out = []
+            for n in discovered:
+                stage, group, critical = _infer_service_meta(n)
+                out.append({'id': n, 'name': n, 'stage': stage, 'group': group, 'critical': critical, 'log_name': n})
+            return out
+        return _default_services()
+
+    def _service_show(service: str) -> dict[str, Any]:
+        out = {
+            'active_state': 'unknown',
+            'sub_state': 'unknown',
+            'main_pid': None,
+            'memory_current': None,
+            'cpu_usage_nsec': None,
+            'n_restarts': 0,
+            'active_enter_ts': None,
+            'exec_main_start_ts': None,
+        }
         try:
-            hh, mm = session_start.strip().split(":", 1)
-            start_h = int(hh)
-            start_m = int(mm)
+            p = subprocess.run(
+                ['systemctl', 'show', service, '--property=ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec,NRestarts,ActiveEnterTimestamp,ExecMainStartTimestamp'],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if p.returncode != 0:
+                return out
+            for line in p.stdout.splitlines():
+                if '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                v = v.strip()
+                if k == 'ActiveState':
+                    out['active_state'] = v or 'unknown'
+                elif k == 'SubState':
+                    out['sub_state'] = v or 'unknown'
+                elif k == 'MainPID':
+                    out['main_pid'] = int(v) if v.isdigit() else None
+                elif k == 'MemoryCurrent':
+                    out['memory_current'] = int(v) if v.isdigit() else None
+                elif k == 'CPUUsageNSec':
+                    out['cpu_usage_nsec'] = int(v) if v.isdigit() else None
+                elif k == 'NRestarts':
+                    out['n_restarts'] = int(v) if v.isdigit() else 0
+                elif k == 'ActiveEnterTimestamp':
+                    out['active_enter_ts'] = v or None
+                elif k == 'ExecMainStartTimestamp':
+                    out['exec_main_start_ts'] = v or None
         except Exception:
-            raise HTTPException(status_code=400, detail="session_start must be HH:MM")
+            pass
+        return out
 
-        start_time = f"{start_h:02d}:{start_m:02d}:00"
-        # end time within same day
-        dt0 = datetime(2000, 1, 1, start_h, start_m, 0)
-        dt1 = dt0 + timedelta(minutes=int(window_minutes))
-        end_time = dt1.time().strftime("%H:%M:%S")
-
-        # Convert CT day + window into a UTC timestamp range so Postgres can use snapshot_ts indexes
+    def _pid_usage(pid: int | None) -> dict[str, Any]:
+        out = {'cpu_pct': None, 'mem_pct': None, 'rss_bytes': None}
+        if not pid or pid <= 0:
+            return out
         try:
-            y, m, d = (int(x) for x in day_ct.split("-", 2))
+            p = subprocess.run(
+                ['ps', '-p', str(pid), '-o', '%cpu=,%mem=,rss='],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=1,
+            )
+            line = (p.stdout or '').strip()
+            if not line:
+                return out
+            parts = line.split()
+            if len(parts) >= 1:
+                out['cpu_pct'] = float(parts[0])
+            if len(parts) >= 2:
+                out['mem_pct'] = float(parts[1])
+            if len(parts) >= 3 and parts[2].isdigit():
+                out['rss_bytes'] = int(parts[2]) * 1024
         except Exception:
-            raise HTTPException(status_code=400, detail="day_local must be YYYY-MM-DD")
-        dt_start_ct = datetime(y, m, d, start_h, start_m, 0, tzinfo=CENTRAL_TZ)
-        dt_end_ct = dt_start_ct + timedelta(minutes=int(window_minutes))
-        dt_start_utc = dt_start_ct.astimezone(timezone.utc)
-        dt_end_utc = dt_end_ct.astimezone(timezone.utc)
+            return out
+        return out
 
-        anchors = None
-        if allowed_anchors:
-            anchors = [a.strip().upper() for a in allowed_anchors.split(",") if a.strip()]
-        spreads = None
-        if allowed_spreads:
-            spreads = [s.strip().upper() for s in allowed_spreads.split(",") if s.strip()]
 
-        anchor_policy, call_anchors, put_anchors = _anchor_policy_sets()
+    def _app_version() -> str:
+        v = os.getenv('OPTIONS_AI_VERSION', '').strip()
+        if v:
+            return v
+        try:
+            repo = Path(__file__).resolve().parents[2]
+            r = subprocess.run(
+                ['git', '-C', str(repo), 'rev-parse', '--short', 'HEAD'],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            g = (r.stdout or '').strip()
+            if r.returncode == 0 and g:
+                return g
+        except Exception:
+            pass
+        return 'unknown'
 
-        with _pg_connect(dsn) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    WITH eligible AS (
-                      SELECT
-                        c.snapshot_ts,
-                        c.anchor_type,
-                        c.spread_type,
-                        c.anchor_strike,
-                        c.k_long,
-                        c.k_short,
-                        c.debit_points,
-                        c.long_symbol,
-                        c.short_symbol,
-                        s.pred_change,
-                        s.p_bigwin
-                      FROM spx.debit_spread_candidates_0dte c
-                      JOIN spx.chain_features_0dte f
-                        ON f.snapshot_ts = c.snapshot_ts
-                      JOIN spx.debit_spread_scores_0dte s
-                        ON s.snapshot_ts = c.snapshot_ts
-                       AND s.horizon_minutes = 30
-                       AND s.anchor_type = c.anchor_type
-                       AND s.spread_type = c.spread_type
-                      WHERE c.tradable = true
-                        AND f.low_quality = false
-                        AND c.snapshot_ts >= %s
-                        AND c.snapshot_ts < %s
-                        AND s.p_bigwin IS NOT NULL
-                        AND s.pred_change IS NOT NULL
-                        AND s.p_bigwin >= %s
-                        AND s.pred_change > 0
-                        AND s.pred_change >= %s
-                        AND (
-                          (%s::text[] IS NULL AND %s::text[] IS NULL)
-                          OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
-                          OR (c.spread_type='PUT' AND c.anchor_type = ANY(%s::text[]))
-                        )
-                    ),
-                    ranked_per_snapshot AS (
-                      SELECT
-                        *,
-                        ROW_NUMBER() OVER (
-                          PARTITION BY snapshot_ts
-                          ORDER BY
-                            p_bigwin DESC NULLS LAST,
-                            pred_change DESC NULLS LAST,
-                            debit_points ASC NULLS LAST
-                        ) AS rn_snap
-                      FROM eligible
-                      WHERE (%s::text[] IS NULL OR anchor_type = ANY(%s::text[]))
-                        AND (%s::text[] IS NULL OR spread_type = ANY(%s::text[]))
-                    ),
-                    ranked_day AS (
-                      SELECT
-                        *,
-                        ROW_NUMBER() OVER (
-                          ORDER BY
-                            p_bigwin DESC NULLS LAST,
-                            pred_change DESC NULLS LAST,
-                            debit_points ASC NULLS LAST,
-                            snapshot_ts ASC
-                        ) AS rn_day
-                      FROM ranked_per_snapshot
-                      WHERE rn_snap = 1
-                    )
-                    SELECT
-                      snapshot_ts,
-                      anchor_type,
-                      spread_type,
-                      anchor_strike,
-                      k_long,
-                      k_short,
-                      debit_points,
-                      long_symbol,
-                      short_symbol,
-                      pred_change,
-                      p_bigwin
-                    FROM ranked_day
-                    WHERE rn_day = 1
-                    LIMIT 1
-""",
-                    (
-                        dt_start_utc,
-                        dt_end_utc,
-                        float(min_p_bigwin),
-                        float(min_pred_change),
-                        call_anchors,
-                        put_anchors,
-                        call_anchors,
-                        put_anchors,
-                        anchors,
-                        anchors,
-                        spreads,
-                        spreads,
-                    ),
-                )
-                r = cur.fetchone()
+    def _service_color(active_state: str, sub_state: str | None, heartbeat_age_sec: float | None, restarts_24h: int, oom_events_24h: int) -> str:
+        if oom_events_24h > 0:
+            return 'red'
+        st = str(active_state or '').lower()
+        sub = str(sub_state or '').lower()
+        if st == 'failed' or sub == 'failed':
+            return 'red'
+        if st in {'inactive', 'deactivating'} or sub in {'dead', 'exited'}:
+            return 'gray'
+        if st in {'activating', 'reloading'}:
+            return 'yellow'
+        if st == 'active':
+            return 'green'
+        return 'gray'
 
-        pick = None
-        if r:
-            pick = {
-                "snapshot_ts": _to_central_iso(r[0]),
-                "anchor_type": r[1],
-                "spread_type": r[2],
-                "anchor_strike": float(r[3]) if r[3] is not None else None,
-                "k_long": float(r[4]) if r[4] is not None else None,
-                "k_short": float(r[5]) if r[5] is not None else None,
-                "debit_points": float(r[6]) if r[6] is not None else None,
-                "long_symbol": r[7],
-                "short_symbol": r[8],
-                "pred_change": float(r[9]) if r[9] is not None else None,
-                "p_bigwin": float(r[10]) if r[10] is not None else None,
+    def _collect_services() -> list[dict[str, Any]]:
+        services = _load_services_registry()
+        now = _now_utc()
+        out = []
+        for it in services:
+            show = _service_show(it['name'])
+            hb_age = None
+            uptime_sec = None
+            if show.get('active_enter_ts'):
+                try:
+                    dt = datetime.strptime(str(show['active_enter_ts']), '%a %Y-%m-%d %H:%M:%S %Z')
+                    dt = dt.replace(tzinfo=timezone.utc)
+                    hb_age = max(0.0, (now - dt).total_seconds())
+                    uptime_sec = hb_age
+                except Exception:
+                    pass
+            restarts = int(show.get('n_restarts') or 0)
+            oom = 0
+            color = _service_color(str(show.get('active_state') or 'unknown'), str(show.get('sub_state') or 'unknown'), hb_age, restarts, oom)
+            usage = _pid_usage(show.get('main_pid'))
+            memory_bytes = usage.get('rss_bytes') or show.get('memory_current')
+            out.append({
+                **it,
+                'status': str(show.get('active_state') or 'unknown'),
+                'sub_status': str(show.get('sub_state') or 'unknown'),
+                'status_color': color,
+                'heartbeat_age_sec': hb_age,
+                'uptime_sec': uptime_sec,
+                'version': _app_version(),
+                'instance_count': 1,
+                'cpu_util_pct': usage.get('cpu_pct'),
+                'memory_util_pct': usage.get('mem_pct'),
+                'memory_bytes': memory_bytes,
+                'restart_count_24h': restarts,
+                'oom_events_24h': oom,
+                'crash_loop_flag': restarts >= 3,
+            })
+        return out
+
+    def _require_role(role: str, needed: set[str]) -> None:
+        if role not in needed:
+            raise HTTPException(status_code=403, detail=f'role {role} not allowed')
+
+    _service_ops: dict[str, dict[str, Any]] = {}
+    _service_ops_lock = threading.Lock()
+
+    def _run_service_action(op_id: str, service_name: str, action: str) -> None:
+        final_status = 'failed'
+        message = ''
+        try:
+            attempts = [
+                ['sudo', '-n', 'systemctl', action, service_name],
+                ['systemctl', action, service_name],
+            ]
+            p = None
+            for cmd in attempts:
+                p = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=20)
+                if p.returncode == 0:
+                    break
+                stderr = (p.stderr or '').strip().lower()
+                if ('interactive authentication required' in stderr) or ('a password is required' in stderr):
+                    continue
+                break
+            if p and p.returncode == 0:
+                final_status = 'succeeded'
+                message = (p.stdout or '').strip() or 'ok'
+            else:
+                message = (((p.stderr if p else '') or '').strip() or (((p.stdout if p else '') or '').strip()) or f'rc={(p.returncode if p else -1)}')
+        except Exception as e:
+            message = str(e)
+        with _service_ops_lock:
+            item = _service_ops.get(op_id) or {}
+            item['status'] = final_status
+            item['finished_at'] = _now_utc_iso()
+            item['message'] = message
+            _service_ops[op_id] = item
+
+    @app.get('/api/services')
+    def services_list(window: str = Query('15m')) -> dict[str, Any]:
+        return {'window': window, 'generated_at': _now_central_iso(), 'items': _collect_services()}
+
+    @app.get('/api/services/{service_id}/logs')
+    def services_logs(service_id: str, tail: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+        svc = next((x for x in _load_services_registry() if x['id'] == service_id), None)
+        if not svc:
+            raise HTTPException(status_code=404, detail='service not found')
+        name = str(svc.get('log_name') or svc.get('name'))
+        path = logs_root / f'{name}.log'
+        if not path.exists():
+            return {'service_id': service_id, 'tail': []}
+        try:
+            lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()[-int(tail):]
+        except Exception:
+            lines = []
+        return {'service_id': service_id, 'tail': lines}
+
+    @app.get('/api/services/operations/{operation_id}')
+    def services_operation(operation_id: str) -> dict[str, Any]:
+        with _service_ops_lock:
+            it = _service_ops.get(operation_id)
+        if not it:
+            raise HTTPException(status_code=404, detail='operation not found')
+        return {'operation_id': operation_id, **it}
+
+
+    def _service_action(service_id: str, action: str, role: str, body: dict[str, Any] | None) -> dict[str, Any]:
+        _require_role(role, {'operator', 'admin'})
+        svc = next((x for x in _load_services_registry() if x['id'] == service_id), None)
+        if not svc:
+            raise HTTPException(status_code=404, detail='service not found')
+        if action in {'stop', 'restart'} and svc.get('critical'):
+            if role != 'admin':
+                raise HTTPException(status_code=403, detail='critical service action requires admin role')
+            chk = str((body or {}).get('confirm_critical') or '')
+            if chk != str(svc.get('name')):
+                raise HTTPException(status_code=400, detail='confirm_critical must match service name for critical actions')
+        confirm = str((body or {}).get('confirm') or '').upper()
+        if confirm != 'YES':
+            raise HTTPException(status_code=400, detail='confirmation required: confirm=YES')
+
+        op_id = str(uuid.uuid4())
+        item = {
+            'service_id': service_id,
+            'service_name': svc['name'],
+            'action': action,
+            'status': 'running',
+            'started_at': _now_utc_iso(),
+            'requested_by_role': role,
+        }
+        with _service_ops_lock:
+            _service_ops[op_id] = item
+
+        _audit_execution(actor=f'dashboard_api:{role}', action=f'service_{action}', entity_type='service', entity_id=str(service_id), details={'service_name': svc['name'], 'operation_id': op_id})
+
+        t = threading.Thread(target=_run_service_action, args=(op_id, svc['name'], action), daemon=True)
+        t.start()
+        return {'operation_id': op_id, 'status': 'accepted'}
+
+    def _service_global_action(action: str, role: str, body: dict[str, Any] | None) -> dict[str, Any]:
+        _require_role(role, {'operator', 'admin'})
+        items = _collect_services()
+        by_id = {str(x.get('id')): x for x in items}
+
+        def _inactive(svc_id: str) -> bool:
+            svc = by_id.get(svc_id)
+            if not svc:
+                return False
+            return str(svc.get('status')) not in {'active', 'activating'}
+
+        def _ordered_targets(service_ids: list[str], dependencies: list[str] | None = None) -> list[dict[str, Any]]:
+            ordered_ids: list[str] = []
+            for sid in list(dependencies or []) + list(service_ids):
+                if sid not in ordered_ids:
+                    ordered_ids.append(sid)
+            return [by_id[sid] for sid in ordered_ids if _inactive(sid)]
+
+        if action == 'start-zero-dte':
+            zero_ids = [
+                'options_predicator',
+                'spx_chain_ingester',
+                'spx_chain_phase2',
+                'spx_debit_spreads',
+                'spx_debit_ml',
+            ]
+            deps = ['optionspredicator-stack']
+            targets = _ordered_targets(zero_ids, deps)
+            svc_action = 'start'
+        elif action in {'stop-all-processing', 'stop-processing-execution'}:
+            keep_set = {
+                'options_ai_dashboard_api',
+                'options_ai_storage_monitor',
+                'options_ai_market_scheduler',
             }
+            targets = [
+                x for x in items
+                if str(x.get('status')) in {'active', 'activating'}
+                and str(x.get('id')) not in keep_set
+            ]
+            svc_action = 'stop'
+        elif action == 'start-term-services':
+            term_ids = [str(x.get('id')) for x in items if '_term_' in str(x.get('id'))]
+            deps = ['optionspredicator-stack']
+            targets = _ordered_targets(term_ids, deps)
+            svc_action = 'start'
+        elif action == 'start-execution':
+            exec_ids = [
+                'options_ai_execution',
+                'options_ai_execution_monitor',
+                'options_ai_risk_guard',
+            ]
+            deps = ['optionspredicator-stack', 'options_ai_dashboard_api']
+            targets = _ordered_targets(exec_ids, deps)
+            svc_action = 'start'
+        else:
+            raise HTTPException(status_code=404, detail='unknown global action')
 
+        out = []
+        for svc in targets:
+            svc_body = dict(body or {})
+            if svc_action in {'stop', 'restart'} and bool(svc.get('critical')) and role == 'admin':
+                svc_body['confirm_critical'] = str(svc.get('name') or svc.get('id') or '')
+            op = _service_action(str(svc.get('id')), svc_action, role, svc_body)
+            out.append({'service_id': svc.get('id'), 'operation_id': op.get('operation_id')})
+
+        _audit_execution(
+            actor=f'dashboard_api:{role}',
+            action=f'service_global_{action}',
+            entity_type='service_group',
+            entity_id=action,
+            details={'count': len(out), 'service_ids': [x.get('service_id') for x in out]},
+        )
+        return {'status': 'accepted', 'count': len(out), 'operations': out}
+
+    @app.post('/api/services/{service_id}/start')
+    def services_start(service_id: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        return _service_action(service_id, 'start', str(x_role or 'viewer').lower(), body)
+
+    @app.post('/api/services/{service_id}/stop')
+    def services_stop(service_id: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        return _service_action(service_id, 'stop', str(x_role or 'viewer').lower(), body)
+
+    @app.post('/api/services/{service_id}/restart')
+    def services_restart(service_id: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        return _service_action(service_id, 'restart', str(x_role or 'viewer').lower(), body)
+
+    @app.post('/api/services/{service_id}/drain')
+    def services_drain(service_id: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        _require_role(str(x_role or 'viewer').lower(), {'operator', 'admin'})
+        _audit_execution(actor=f'dashboard_api:{x_role}', action='service_drain', entity_type='service', entity_id=service_id, details=body or {})
+        return {'operation_id': str(uuid.uuid4()), 'status': 'accepted', 'note': 'drain requested (no-op in v1)'}
+
+    @app.post('/api/services/actions/{action}')
+    def services_global_action(action: str, body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        return _service_global_action(str(action), str(x_role or 'viewer').lower(), body)
+
+    _scheduler_cfg_path = data_root / 'state' / 'market_scheduler_config.json'
+
+    def _scheduler_cfg_defaults() -> dict[str, Any]:
         return {
-            "day_local": day_ct,
-            "session_start": start_time,
-            "window_end": end_time,
-            "criteria": {
-                "objective": "p_bigwin desc, pred_change desc, debit asc",
-                "require_pred_positive": True,
-                "min_p_bigwin": float(min_p_bigwin),
-                "min_pred_change": float(min_pred_change),
-                "allowed_anchors": anchors,
-                "allowed_spreads": spreads,
-            },
-            "pick": pick,
-            "tz": "America/Chicago",
+            'include_start_zero_dte': True,
+            'include_start_term': True,
+            'include_start_execution': True,
         }
 
-    @app.get("/api/debit_spreads/history")
-    def debit_spreads_history(
-        limit: int = Query(100, ge=1, le=500),
-        horizon_minutes: int = Query(30, ge=5, le=120),
-        only_recommended: bool = Query(False),
-    ) -> dict[str, Any]:
-        """Historical realized debit spread outcomes.
+    def _load_scheduler_cfg() -> dict[str, Any]:
+        cfg = _scheduler_cfg_defaults()
+        try:
+            if _scheduler_cfg_path.exists():
+                raw = _json.loads(_scheduler_cfg_path.read_text(encoding='utf-8', errors='ignore'))
+                if isinstance(raw, dict):
+                    for k in cfg.keys():
+                        if k in raw:
+                            cfg[k] = bool(raw.get(k))
+        except Exception:
+            pass
+        return cfg
 
-        If only_recommended=true, returns **one** candidate per snapshot_ts (the "trade I'd take")
-        based on current ranking: p_bigwin desc, pred_change desc, debit_points asc.
-        """
+    def _write_scheduler_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+        out = _scheduler_cfg_defaults()
+        out.update({k: bool(cfg.get(k)) for k in out.keys()})
+        _scheduler_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        _scheduler_cfg_path.write_text(_json.dumps(out, separators=(',', ':'), sort_keys=True))
+        return out
+
+    @app.get('/api/scheduler/status')
+    def scheduler_status() -> dict[str, Any]:
+        svc = next((x for x in _collect_services() if str(x.get('id')) == 'options_ai_market_scheduler'), None)
+        enabled = bool(svc and str(svc.get('status')) in {'active', 'activating'})
+        return {
+            'service_id': 'options_ai_market_scheduler',
+            'enabled': enabled,
+            'status': (svc.get('status') if svc else 'unknown'),
+            'status_color': (svc.get('status_color') if svc else 'yellow'),
+            'config': _load_scheduler_cfg(),
+            'updated_at': _now_central_iso(),
+        }
+
+    @app.post('/api/scheduler/enabled')
+    def scheduler_set_enabled(body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        role = str(x_role or 'viewer').lower()
+        _require_role(role, {'operator', 'admin'})
+        want = bool((body or {}).get('enabled'))
+        cmd = ['sudo', '-n', 'systemctl', 'start' if want else 'stop', 'options_ai_market_scheduler']
+        p = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=20)
+        if p.returncode != 0:
+            msg = ((p.stderr or '').strip() or (p.stdout or '').strip() or f'rc={p.returncode}')
+            raise HTTPException(status_code=500, detail=f'scheduler toggle failed: {msg}')
+        _audit_execution(actor=f'dashboard_api:{role}', action=('scheduler_enabled' if want else 'scheduler_disabled'), entity_type='service', entity_id='options_ai_market_scheduler', details={})
+        return scheduler_status()
+
+    @app.get('/api/scheduler/config')
+    def scheduler_config_get() -> dict[str, Any]:
+        return {'config': _load_scheduler_cfg(), 'updated_at': _now_central_iso()}
+
+    @app.post('/api/scheduler/config')
+    def scheduler_config_put(body: dict[str, Any] | None = None, x_role: str | None = Header(default='viewer')) -> dict[str, Any]:
+        role = str(x_role or 'viewer').lower()
+        _require_role(role, {'operator', 'admin'})
+        cur = _load_scheduler_cfg()
+        patch = body or {}
+        for k in cur.keys():
+            if k in patch:
+                cur[k] = bool(patch.get(k))
+        saved = _write_scheduler_cfg(cur)
+        _audit_execution(actor=f'dashboard_api:{role}', action='scheduler_config_updated', entity_type='service', entity_id='options_ai_market_scheduler', details={'config': saved})
+        return {'config': saved, 'updated_at': _now_central_iso()}
+
+    @app.get('/api/metrics/dependencies')
+    def metrics_dependencies(window: str = Query('15m')) -> dict[str, Any]:
+        db_ok = True
+        db_error = None
+        try:
+            with _connect(db_path) as con:
+                con.execute('SELECT 1').fetchone()
+        except Exception as e:
+            db_ok = False
+            db_error = str(e)
+        deps = [
+            {'name': 'database', 'type': 'db', 'status_color': ('green' if db_ok else 'red'), 'metrics': {'latency_p95_ms': None, 'error_rate': 0.0 if db_ok else 1.0}, 'error': db_error},
+            {'name': 'broker', 'type': 'broker', 'status_color': 'green', 'metrics': {'consumer_lag': None}},
+            {'name': 'storage', 'type': 'storage', 'status_color': 'green', 'metrics': {'read_p95_ms': None, 'write_p95_ms': None}},
+            {'name': 'external_api', 'type': 'api', 'status_color': 'yellow', 'metrics': {'timeout_rate': None, 'error_rate': None}},
+        ]
+        return {'window': window, 'generated_at': _now_central_iso(), 'items': deps}
+
+
+    def _safe_path_size_bytes(path: Path) -> int:
+        try:
+            if not path.exists():
+                return 0
+            if path.is_file():
+                return int(path.stat().st_size)
+            p = subprocess.run(['du', '-sb', str(path)], check=False, capture_output=True, text=True, timeout=6)
+            if p.returncode == 0:
+                tok = (p.stdout or '').strip().split()[0]
+                if tok.isdigit():
+                    return int(tok)
+            return 0
+        except Exception:
+            return 0
+
+    @app.get('/api/metrics/storage/trends')
+    def metrics_storage_trends(window: str = Query('24h'), resolution: str = Query('5m')) -> dict[str, Any]:
+        res_sec = max(60, _parse_window_seconds(resolution))
+
+        with _connect(db_path) as con:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS storage_metrics_samples (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  sample_minute_utc TEXT NOT NULL UNIQUE,
+                  postgres_bytes INTEGER,
+                  timescale_bytes INTEGER,
+                  disk_used_bytes INTEGER,
+                  disk_free_bytes INTEGER,
+                  postgres_db_name TEXT,
+                  timescale_db_name TEXT
+                )
+                """
+            )
+            con.execute("CREATE INDEX IF NOT EXISTS idx_storage_metrics_samples_minute ON storage_metrics_samples(sample_minute_utc DESC)")
+
+            cutoff_clause = ""
+            params: tuple[Any, ...] = ()
+            if str(window).lower() != 'all':
+                ws = _parse_window_seconds(window)
+                cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+                cutoff_clause = "WHERE sample_minute_utc >= ?"
+                params = (cutoff,)
+
+            rows = con.execute(
+                f"""
+                SELECT sample_minute_utc, postgres_bytes, timescale_bytes,
+                       disk_used_bytes, disk_free_bytes,
+                       postgres_db_name, timescale_db_name
+                FROM storage_metrics_samples
+                {cutoff_clause}
+                ORDER BY sample_minute_utc ASC
+                """,
+                params,
+            ).fetchall()
+
+        series = []
+        last_keep_ts = None
+        for r in rows:
+            ts = str(r['sample_minute_utc'])
+            cur = {
+                'sample_minute_utc': _to_central_iso(ts),
+                'postgres_bytes': (int(r['postgres_bytes']) if r['postgres_bytes'] is not None else None),
+                'timescale_bytes': (int(r['timescale_bytes']) if r['timescale_bytes'] is not None else None),
+                'disk_used_bytes': (int(r['disk_used_bytes']) if r['disk_used_bytes'] is not None else None),
+                'disk_free_bytes': (int(r['disk_free_bytes']) if r['disk_free_bytes'] is not None else None),
+                'postgres_db_name': (str(r['postgres_db_name']) if r['postgres_db_name'] is not None else None),
+                'timescale_db_name': (str(r['timescale_db_name']) if r['timescale_db_name'] is not None else None),
+            }
+            try:
+                dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                unix = int(dt.timestamp())
+                if (last_keep_ts is not None) and (unix - last_keep_ts < res_sec):
+                    if series:
+                        series[-1] = cur
+                    continue
+                last_keep_ts = unix
+            except Exception:
+                pass
+            series.append(cur)
+
+        latest = series[-1] if series else None
+        return {
+            'window': window,
+            'resolution': resolution,
+            'generated_at': _now_central_iso(),
+            'series': series,
+            'latest': latest,
+            'postgres_db': (latest.get('postgres_db_name') if latest else None),
+            'timescale_db': (latest.get('timescale_db_name') if latest else None),
+            'postgres_dsn_configured': bool(os.getenv('POSTGRES_DATABASE_URL', '').strip() or os.getenv('PRIMARY_POSTGRES_DATABASE_URL', '').strip() or os.getenv('DATABASE_URL', '').strip().startswith('postgres')),
+            'timescale_dsn_configured': bool(os.getenv('TIMESCALE_DATABASE_URL', '').strip() or _pg_dsn()),
+        }
+
+    @app.get('/api/metrics/database/summary')
+    def metrics_database_summary(window: str = Query('15m')) -> dict[str, Any]:
         dsn = _pg_dsn()
         if not dsn:
-            raise HTTPException(status_code=503, detail="SPX_CHAIN_DATABASE_URL not configured")
+            return {
+                'window': window,
+                'engine': 'postgres',
+                'availability': True,
+                'connections_active': None,
+                'connections_max': None,
+                'query_latency_p50_ms': None,
+                'query_latency_p95_ms': None,
+                'slow_queries_per_min': None,
+                'lock_wait_p95_ms': None,
+                'deadlocks': None,
+                'replication_lag_sec': None,
+                'disk_usage_pct': None,
+                'read_iops': None,
+                'write_iops': None,
+                'cache_hit_ratio': None,
+            }
+        try:
+            with _pg_connect(dsn) as conn:
+                with conn.cursor() as cur:
+                    cur.execute('SELECT count(*) FROM pg_stat_activity')
+                    active = int(cur.fetchone()[0] or 0)
+                    cur.execute('SHOW max_connections')
+                    maxc = int(cur.fetchone()[0] or 0)
+            return {
+                'window': window,
+                'engine': 'postgres',
+                'availability': True,
+                'connections_active': active,
+                'connections_max': maxc,
+                'query_latency_p50_ms': None,
+                'query_latency_p95_ms': None,
+                'slow_queries_per_min': None,
+                'lock_wait_p95_ms': None,
+                'deadlocks': None,
+                'replication_lag_sec': None,
+                'disk_usage_pct': None,
+                'read_iops': None,
+                'write_iops': None,
+                'cache_hit_ratio': None,
+            }
+        except Exception as e:
+            return {'window': window, 'engine': 'postgres', 'availability': False, 'error': str(e)}
 
-        mult_atm = float(os.getenv("DEBIT_BIGWIN_MULT_ATM", "2.0"))
-        mult_wall = float(os.getenv("DEBIT_BIGWIN_MULT_WALL", "4.0"))
+    @app.get('/api/metrics/database/queries/long-running')
+    def metrics_database_long_running(window: str = Query('15m')) -> dict[str, Any]:
+        dsn = _pg_dsn()
+        items: list[dict[str, Any]] = []
+        if dsn:
+            try:
+                th = _read_thresholds()
+                with _pg_connect(dsn) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT
+                              left(regexp_replace(query, '\s+', ' ', 'g'), 200) AS query_fingerprint,
+                              extract(epoch from (now() - query_start)) AS runtime_sec,
+                              usename,
+                              state,
+                              wait_event_type,
+                              wait_event
+                            FROM pg_stat_activity
+                            WHERE query_start IS NOT NULL
+                              AND state <> 'idle'
+                            ORDER BY runtime_sec DESC
+                            LIMIT 50
+                            """
+                        )
+                        for r in cur.fetchall():
+                            runtime = float(r[1] or 0.0)
+                            blocked = (str(r[4] or '').lower() == 'lock')
+                            color = _color_from_max(runtime, th['query_runtime_sec']['green_max'], th['query_runtime_sec']['yellow_max'])
+                            if blocked and runtime > float(th.get('query_blocked_sec_red', 10)):
+                                color = 'red'
+                            items.append({
+                                'query_fingerprint': r[0],
+                                'current_runtime_sec': runtime,
+                                'total_executions': None,
+                                'avg_latency_ms': None,
+                                'p95_latency_ms': None,
+                                'rows_scanned': None,
+                                'rows_returned': None,
+                                'lock_wait_sec': runtime if blocked else 0.0,
+                                'blocked_by': None,
+                                'blocking_count': None,
+                                'source_service_user': r[2],
+                                'status': 'blocked' if blocked else str(r[3] or 'running'),
+                                'status_color': color,
+                            })
+            except Exception:
+                items = []
+        return {'window': window, 'items': items}
 
-        anchor_policy, call_anchors, put_anchors = _anchor_policy_sets()
+    @app.get('/api/metrics/database/queries/blocked')
+    def metrics_database_blocked(window: str = Query('15m')) -> dict[str, Any]:
+        lr = metrics_database_long_running(window=window)
+        blocked = [x for x in (lr.get('items') or []) if str(x.get('status')) in {'blocked', 'waiting'}]
+        return {'window': window, 'items': blocked}
 
-        with _pg_connect(dsn) as conn:
-            with conn.cursor() as cur:
+    @app.get('/api/metrics/database/index-recommendations')
+    def metrics_database_index_recommendations(window: str = Query('24h')) -> dict[str, Any]:
+        dsn = _pg_dsn()
+        items: list[dict[str, Any]] = []
+        if dsn:
+            try:
+                with _pg_connect(dsn) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT schemaname, relname, seq_scan, idx_scan
+                            FROM pg_stat_user_tables
+                            WHERE seq_scan > 50 AND (idx_scan = 0 OR seq_scan > idx_scan * 5)
+                            ORDER BY seq_scan DESC
+                            LIMIT 25
+                            """
+                        )
+                        for r in cur.fetchall():
+                            tbl = f"{r[0]}.{r[1]}"
+                            items.append({
+                                'table_columns': tbl,
+                                'recommended_index_type': 'btree',
+                                'reason': f'high seq_scan={int(r[2] or 0)} vs idx_scan={int(r[3] or 0)}',
+                                'estimated_benefit': 'medium',
+                                'estimated_write_overhead': 'low-medium',
+                                'confidence_score': 0.62,
+                                'status': 'new',
+                            })
+            except Exception:
+                items = []
+        return {'window': window, 'items': items, 'advisory_only': True}
+
+    @app.get('/api/audit/actions')
+    def audit_actions(window: str = Query('24h')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT created_at_utc, actor, action, entity_type, entity_id, details_json
+                FROM audit_log
+                WHERE created_at_utc >= ?
+                ORDER BY created_at_utc DESC
+                LIMIT 200
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {
+            'window': window,
+            'items': [
+                {
+                    'timestamp': _to_central_iso(r['created_at_utc']),
+                    'actor': r['actor'],
+                    'action': r['action'],
+                    'entity_type': r['entity_type'],
+                    'entity_id': r['entity_id'],
+                    'details': (_json.loads(r['details_json']) if r['details_json'] else {}),
+                }
+                for r in rows
+            ],
+        }
+
+    @app.get('/api/audit/incidents')
+    def audit_incidents(window: str = Query('24h')) -> dict[str, Any]:
+        ws = _parse_window_seconds(window)
+        cutoff = (_now_utc() - timedelta(seconds=ws)).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT timestamp, level, component, event, message
+                FROM system_events
+                WHERE timestamp >= ? AND upper(level) IN ('WARN','WARNING','ERROR','CRITICAL')
+                ORDER BY timestamp DESC
+                LIMIT 200
+                """,
+                (cutoff,),
+            ).fetchall()
+        return {
+            'window': window,
+            'items': [
+                {
+                    'timestamp': _to_central_iso(r['timestamp']),
+                    'level': r['level'],
+                    'component': r['component'],
+                    'event': r['event'],
+                    'message': r['message'],
+                }
+                for r in rows
+            ],
+        }
+
+
+    # ---- Background signal engine (per-group, every 15s, market-hours only) ----
+    def _is_market_hours_central(now_utc: datetime) -> bool:
+        try:
+            dt = now_utc.astimezone(CENTRAL_TZ)
+            if dt.weekday() >= 5:  # Sat/Sun
+                return False
+            hm = dt.hour * 60 + dt.minute
+            # 08:30-15:00 America/Chicago (regular session)
+            return (8 * 60 + 30) <= hm <= (15 * 60)
+        except Exception:
+            return False
+
+    def _signal_engine_tick() -> None:
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with _connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT id, COALESCE(signal_engine_enabled,0) AS signal_engine_enabled
+                FROM portfolio_defs
+                WHERE COALESCE(signal_engine_enabled,0)=1
+                ORDER BY id ASC
+                """
+            ).fetchall()
+
+        if not rows:
+            return
+
+        market_open = _is_market_hours_central(datetime.now(timezone.utc))
+        for r in rows:
+            pid = int(r['id'])
+            # load last source marker
+            try:
+                with _connect(db_path) as con:
+                    rr = con.execute("SELECT COALESCE(signal_last_source_ts,'') AS signal_last_source_ts FROM portfolio_defs WHERE id=?", (pid,)).fetchone()
+                    last_src = str(rr['signal_last_source_ts'] or '') if rr else ''
+                    con.execute("UPDATE portfolio_defs SET signal_last_poll_utc=? WHERE id=?", (now, pid))
+                    con.commit()
+            except Exception:
+                # transient lock contention; skip this cycle for this portfolio
+                continue
+
+            if not market_open:
+                continue
+
+            try:
+                snaps = _engine_new_snapshots_since(last_src or None, max_n=20)
+                if not snaps:
+                    with _connect(db_path) as con:
+                        con.execute("UPDATE portfolio_defs SET signal_last_error=NULL WHERE id=?", (pid,))
+                        con.commit()
+                    continue
+
+                inserted_total = 0
+                newest = last_src
+                for ss in snaps:
+                    out = portfolios_emit_signals(pid, {'source': 'engine', 'snapshot_ts': ss})
+                    inserted_total += int(out.get('inserted') or 0)
+                    newest = ss
+
+                with _connect(db_path) as con:
+                    if inserted_total > 0:
+                        con.execute(
+                            "UPDATE portfolio_defs SET signal_last_source_ts=?, signal_last_error=?, signal_last_emit_utc=? WHERE id=?",
+                            (newest or last_src, None, now, pid),
+                        )
+                    else:
+                        con.execute(
+                            "UPDATE portfolio_defs SET signal_last_source_ts=?, signal_last_error=? WHERE id=?",
+                            (newest or last_src, None, pid),
+                        )
+                    con.commit()
+            except Exception as e:
+                msg = str(getattr(e, 'detail', None) or str(e))[:240]
+                with _connect(db_path) as con:
+                    con.execute("UPDATE portfolio_defs SET signal_last_error=? WHERE id=?", (msg, pid))
+                    con.commit()
+
+    def _signal_engine_loop() -> None:
+        lg = logging.getLogger('options_ai.signal_engine')
+        lg.info('signal engine loop started (15s cadence)')
+        while True:
+            try:
+                _signal_engine_tick()
+            except Exception:
+                lg.exception('signal engine tick failed')
+            # fixed 15s cadence requested
+            threading.Event().wait(15.0)
+
+    # Start a single daemon thread for signal engine
+    try:
+        t = threading.Thread(target=_signal_engine_loop, name='signal-engine', daemon=True)
+        t.start()
+        app.state.signal_engine_thread = t
+    except Exception:
+        logging.getLogger('options_ai.signal_engine').exception('failed to start signal engine thread')
+
+
+    # ---------------- Model Tuning Control Center (model-only, no execution writes) ----------------
+    _ml_job_lock = threading.Lock()
+
+    def _actor(v: str | None) -> str:
+        a = str(v or "operator").strip()
+        return a[:80] if a else "operator"
+
+    def _pipeline_health() -> dict[str, Any]:
+        dsn = _pg_dsn()
+        if not dsn:
+            return {"ok": False, "error": "SPX_CHAIN_DATABASE_URL not configured"}
+        try:
+            with _pg_connect(dsn) as conn, conn.cursor() as cur:
+                cur.execute("SELECT max(snapshot_ts) FROM spx.chain_features_0dte")
+                feat = cur.fetchone()[0]
+                cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_scores_0dte")
+                scr = cur.fetchone()[0]
+                return {"ok": True, "latest_feature_ts": _to_central_iso(feat), "latest_score_ts": _to_central_iso(scr)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def _training_rows_estimate(horizon_minutes: int = 30, *, train_start_ts: str | None = None, train_end_ts: str | None = None) -> int | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        try:
+            with _pg_connect(dsn) as conn, conn.cursor() as cur:
                 cur.execute(
                     """
-                    WITH ranked AS (
-                      SELECT
-                        l.snapshot_ts,
-                        l.anchor_type,
-                        l.spread_type,
-                        l.horizon_minutes,
-                        l.debit_t,
-                        l.debit_tH,
-                        l.change,
-                        c.debit_points,
-                        c.k_long,
-                        c.k_short,
-                        s.pred_change,
-                        s.p_bigwin,
-                        ROW_NUMBER() OVER (
-                          PARTITION BY l.snapshot_ts
-                          ORDER BY
-                            CASE WHEN s.p_bigwin IS NULL THEN 1 ELSE 0 END ASC,
-                            s.p_bigwin DESC NULLS LAST,
-                            CASE WHEN s.pred_change IS NULL THEN 1 ELSE 0 END ASC,
-                            s.pred_change DESC NULLS LAST,
-                            c.debit_points ASC NULLS LAST
-                        ) AS rn
-                      FROM spx.debit_spread_labels_0dte l
-                      JOIN spx.debit_spread_candidates_0dte c
-                        ON c.snapshot_ts = l.snapshot_ts
-                       AND c.anchor_type = l.anchor_type
-                       AND c.spread_type = l.spread_type
-                      LEFT JOIN spx.debit_spread_scores_0dte s
-                        ON s.snapshot_ts = l.snapshot_ts
-                       AND s.anchor_type = l.anchor_type
-                       AND s.spread_type = l.spread_type
-                       AND s.horizon_minutes = l.horizon_minutes
-                      WHERE l.horizon_minutes = %s
-                        AND l.is_missing_future = false
-                        AND c.tradable = true
-                        AND (
-                          (%s::text[] IS NULL AND %s::text[] IS NULL)
-                          OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
-                          OR (c.spread_type='PUT' AND c.anchor_type = ANY(%s::text[]))
-                        )
+                    SELECT count(*)
+                    FROM spx.debit_spread_labels_0dte l
+                    JOIN spx.debit_spread_candidates_0dte c
+                      ON c.snapshot_ts=l.snapshot_ts AND c.anchor_type=l.anchor_type AND c.spread_type=l.spread_type
+                    JOIN spx.chain_features_0dte f ON f.snapshot_ts=l.snapshot_ts
+                    WHERE l.horizon_minutes=%s AND l.is_missing_future=false AND l.change IS NOT NULL AND c.tradable=true AND f.low_quality=false
+                      AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts >= NULLIF(%s::text,'')::timestamptz)
+                      AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts <= NULLIF(%s::text,'')::timestamptz)
+                    """,
+                    (int(horizon_minutes), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
+                )
+                return int(cur.fetchone()[0])
+        except Exception:
+            return None
+
+    def _training_window_info(horizon_minutes: int = 30, *, train_start_ts: str | None = None, train_end_ts: str | None = None) -> dict[str, Any] | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        try:
+            with _pg_connect(dsn) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      min(l.snapshot_ts) AS min_ts,
+                      max(l.snapshot_ts) AS max_ts,
+                      count(*) AS rows,
+                      count(DISTINCT (l.snapshot_ts AT TIME ZONE 'America/Chicago')::date) AS days
+                    FROM spx.debit_spread_labels_0dte l
+                    JOIN spx.debit_spread_candidates_0dte c
+                      ON c.snapshot_ts=l.snapshot_ts AND c.anchor_type=l.anchor_type AND c.spread_type=l.spread_type
+                    JOIN spx.chain_features_0dte f ON f.snapshot_ts=l.snapshot_ts
+                    WHERE l.horizon_minutes=%s
+                      AND l.is_missing_future=false
+                      AND l.change IS NOT NULL
+                      AND c.tradable=true
+                      AND f.low_quality=false
+                      AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts >= NULLIF(%s::text,'')::timestamptz)
+                      AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts <= NULLIF(%s::text,'')::timestamptz)
+                    """,
+                    (int(horizon_minutes), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
+                )
+                r = cur.fetchone()
+                if not r:
+                    return None
+                min_ts, max_ts, rows, days = r
+                return {
+                    'start_ts': _to_central_iso(min_ts),
+                    'end_ts': _to_central_iso(max_ts),
+                    'rows': (int(rows) if rows is not None else 0),
+                    'days': (int(days) if days is not None else 0),
+                }
+        except Exception as e:
+            return {'error': str(e)}
+
+
+
+    def _scoring_status(horizon_minutes: int, model_version: str) -> dict[str, Any] | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        try:
+            with _pg_connect(dsn) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      count(*) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS score_rows_24h,
+                      count(DISTINCT snapshot_ts) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS scored_snapshots_24h,
+                      avg(pred_return) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS avg_pred_return_24h,
+                      avg(p_bigwin) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS avg_p_bigwin_24h,
+                      max(snapshot_ts) AS latest_score_ts
+                    FROM spx.debit_spread_scores_0dte
+                    WHERE horizon_minutes=%s AND model_version=%s
+                    """,
+                    (int(horizon_minutes), str(model_version)),
+                )
+                r = cur.fetchone()
+                score_rows_24h, scored_snapshots_24h, avg_pred_return_24h, avg_p_bigwin_24h, latest_score_ts = r
+
+                cur.execute(
+                    """
+                    WITH trad AS (
+                      SELECT DISTINCT snapshot_ts, anchor_type, spread_type
+                      FROM spx.debit_spread_candidates_0dte
+                      WHERE tradable=true
+                        AND snapshot_ts >= now() - interval '7 days'
                     )
                     SELECT
-                      snapshot_ts,
-                      anchor_type,
-                      spread_type,
-                      horizon_minutes,
-                      debit_t,
-                      debit_tH,
-                      change,
-                      debit_points,
-                      k_long,
-                      k_short,
-                      pred_change,
-                      p_bigwin
-                    FROM ranked
-                    WHERE (NOT %s) OR rn = 1
-                    ORDER BY snapshot_ts DESC
-                    LIMIT %s
+                      count(*) AS tradable_keys_7d,
+                      sum(CASE WHEN s.snapshot_ts IS NOT NULL THEN 1 ELSE 0 END) AS scored_keys_7d
+                    FROM trad t
+                    LEFT JOIN spx.debit_spread_scores_0dte s
+                      ON s.snapshot_ts=t.snapshot_ts
+                     AND s.anchor_type=t.anchor_type
+                     AND s.spread_type=t.spread_type
+                     AND s.horizon_minutes=%s
+                     AND s.model_version=%s
                     """,
-                    (int(horizon_minutes), call_anchors, put_anchors, call_anchors, put_anchors, bool(only_recommended), int(limit)),
+                    (int(horizon_minutes), str(model_version)),
                 )
+                t = cur.fetchone()
+                tradable_keys_7d, scored_keys_7d = (t[0] or 0), (t[1] or 0)
+                coverage_7d = (float(scored_keys_7d) / float(tradable_keys_7d)) if tradable_keys_7d else None
 
-                items = []
-                for r in cur.fetchall():
-                    snapshot_ts = r[0]
-                    anchor_type = str(r[1])
-                    spread_type = str(r[2])
-                    debit_t = float(r[4]) if r[4] is not None else None
-                    debit_tH = float(r[5]) if r[5] is not None else None
-                    change = float(r[6]) if r[6] is not None else None
+                return {
+                    'score_rows_24h': int(score_rows_24h or 0),
+                    'scored_snapshots_24h': int(scored_snapshots_24h or 0),
+                    'avg_pred_return_24h': (float(avg_pred_return_24h) if avg_pred_return_24h is not None else None),
+                    'avg_p_bigwin_24h': (float(avg_p_bigwin_24h) if avg_p_bigwin_24h is not None else None),
+                    'latest_score_ts': _to_central_iso(latest_score_ts),
+                    'coverage_7d': coverage_7d,
+                    'tradable_keys_7d': int(tradable_keys_7d or 0),
+                    'scored_keys_7d': int(scored_keys_7d or 0),
+                }
+        except Exception as e:
+            return {'error': str(e)}
 
-                    req_mult = mult_atm if anchor_type.upper() == 'ATM' else mult_wall
+    def _run_ml_job(action: str, actor: str) -> None:
+        started = datetime.now(timezone.utc)
+        job_id = str(uuid.uuid4())
+        with _connect(db_path) as con:
+            tc.set_job_state(con, job_id=job_id, action=action, status="running", progress="starting", started_at=started.isoformat().replace("+00:00", "Z"), finished_at=None, duration_sec=None, error_text=None)
+        try:
+            dsn = _pg_dsn()
+            if not dsn:
+                raise RuntimeError("SPX_CHAIN_DATABASE_URL not configured")
+            with _connect(db_path) as con:
+                cfg = tc.get_current_config(con)
+                tr = tc.get_training_range(con)
+            overrides = tc.config_to_env_overrides(cfg)
+            overrides['DEBIT_ML_TRAIN_START_TS'] = str((tr or {}).get('start_ts') or '')
+            overrides['DEBIT_ML_TRAIN_END_TS'] = str((tr or {}).get('end_ts') or '')
 
-                    width = None
-                    if r[8] is not None and r[9] is not None:
-                        width = abs(float(r[9]) - float(r[8]))
+            from options_ai.debit_spread_ml import load_config_from_env, train_if_needed, _latest_candidate_snapshot_ts, _score_snapshot, score_recent_backfill
+            import psycopg as _ps
 
-                    bigwin = None
-                    if debit_t is not None and debit_tH is not None and debit_t > 0:
-                        bigwin = bool(debit_tH >= req_mult * debit_t)
+            old_env = {}
+            for k, v in overrides.items():
+                old_env[k] = os.environ.get(k)
+                os.environ[k] = str(v)
+            try:
+                ml_cfg = load_config_from_env()
+                with _ps.connect(ml_cfg.db_dsn) as conn:
+                    with _connect(db_path) as con:
+                        tc.set_job_state(con, progress="training")
+                    tm = train_if_needed(conn, ml_cfg, force=(action == "retrain"))
+                    if tm is None:
+                        raise RuntimeError("insufficient training rows for retrain")
+                    with _connect(db_path) as con:
+                        tc.set_job_state(con, progress="scoring latest")
+                    latest = _latest_candidate_snapshot_ts(conn)
+                    n1 = _score_snapshot(conn, ml_cfg, tm, snapshot_ts=latest) if latest else 0
+                    with _connect(db_path) as con:
+                        tc.set_job_state(con, progress="backfill scoring")
+                    n2 = score_recent_backfill(conn, ml_cfg, tm, limit=500)
+                details = {"latest_scored": int(n1), "backfill_scored": int(n2)}
+            finally:
+                for k, old in old_env.items():
+                    if old is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = old
 
-                    bigwin_possible = None
-                    if debit_t is not None and width is not None and debit_t > 0:
-                        bigwin_possible = bool(width >= req_mult * debit_t)
+            finished = datetime.now(timezone.utc)
+            dur = (finished - started).total_seconds()
+            with _connect(db_path) as con:
+                tc.set_job_state(con, status="success", progress="done", finished_at=finished.isoformat().replace("+00:00", "Z"), duration_sec=float(dur), error_text=None)
+                tc.audit(con, actor=actor, action=f"ml.{action}", old_values=None, new_values=details, result="success")
+        except Exception as e:
+            finished = datetime.now(timezone.utc)
+            dur = (finished - started).total_seconds()
+            with _connect(db_path) as con:
+                tc.set_job_state(con, status="failed", progress="error", finished_at=finished.isoformat().replace("+00:00", "Z"), duration_sec=float(dur), error_text=str(e)[:300])
+                tc.audit(con, actor=actor, action=f"ml.{action}", old_values=None, new_values=None, result="fail", error_detail=str(e)[:300])
 
-                    roi = None
-                    if change is not None and debit_t is not None and debit_t > 0:
-                        roi = float(change) / float(debit_t)
+    def _launch_ml_job(action: str, actor: str) -> dict[str, Any]:
+        if _ml_job_lock.locked():
+            raise HTTPException(status_code=409, detail="ML job already running")
+        def _worker() -> None:
+            with _ml_job_lock:
+                _run_ml_job(action, actor)
+        t = threading.Thread(target=_worker, name=f"ml-{action}", daemon=True)
+        t.start()
+        return {"ok": True, "action": action, "status": "started"}
 
-                    items.append({
-                        "snapshot_ts": _to_central_iso(snapshot_ts),
-                        "anchor_type": anchor_type,
-                        "spread_type": spread_type,
-                        "horizon_minutes": int(r[3]) if r[3] is not None else int(horizon_minutes),
-                        "debit_t": debit_t,
-                        "debit_tH": debit_tH,
-                        "change": change,
-                        "roi": roi,
-                        "req_mult": float(req_mult),
-                        "bigwin": bigwin,
-                        "bigwin_possible": bigwin_possible,
-                        "debit_points": float(r[7]) if r[7] is not None else None,
-                        "k_long": float(r[8]) if r[8] is not None else None,
-                        "k_short": float(r[9]) if r[9] is not None else None,
-                        "pred_change": float(r[10]) if r[10] is not None else None,
-                        "p_bigwin": float(r[11]) if r[11] is not None else None,
-                    })
-        return {"items": items, "tz": "America/Chicago", "anchor_policy": anchor_policy}
+    @app.get('/config/current')
+    def tuning_config_current() -> dict[str, Any]:
+        with _connect(db_path) as con:
+            return {"ok": True, "current": tc.get_current_config(con), "specs": tc.field_specs()}
+
+    @app.get('/config/profiles')
+    def tuning_profiles() -> dict[str, Any]:
+        with _connect(db_path) as con:
+            return {"ok": True, "profiles": tc.list_profiles(con)}
+
+    @app.post('/config/profiles')
+    def tuning_profile_create(body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        payload = dict(body or {})
+        bad = tc.reject_forbidden(payload)
+        if bad:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="profile.create", old_values=None, new_values=payload, result="fail", error_detail=f"forbidden keys: {bad}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad}")
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        cfg_raw = dict(payload.get("config") or {})
+        bad_cfg = tc.reject_forbidden(cfg_raw)
+        if bad_cfg:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="profile.create", old_values=None, new_values=cfg_raw, result="fail", error_detail=f"forbidden keys: {bad_cfg}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad_cfg}")
+        cfg, errs = tc.normalize_config(cfg_raw)
+        if errs:
+            raise HTTPException(status_code=400, detail={"errors": errs})
+        with _connect(db_path) as con:
+            tc.upsert_profile(con, name=name, config=cfg, actor=actor)
+        return {"ok": True}
+
+    @app.put('/config/profiles/{name}')
+    def tuning_profile_update(name: str, body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        payload = dict(body or {})
+        bad = tc.reject_forbidden(payload)
+        if bad:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="profile.update", old_values=None, new_values=payload, result="fail", error_detail=f"forbidden keys: {bad}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad}")
+        cfg_raw = dict(payload.get("config") or {})
+        bad_cfg = tc.reject_forbidden(cfg_raw)
+        if bad_cfg:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="profile.update", old_values=None, new_values=cfg_raw, result="fail", error_detail=f"forbidden keys: {bad_cfg}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad_cfg}")
+        cfg, errs = tc.normalize_config(cfg_raw)
+        if errs:
+            raise HTTPException(status_code=400, detail={"errors": errs})
+        with _connect(db_path) as con:
+            tc.upsert_profile(con, name=name, config=cfg, actor=actor)
+        return {"ok": True}
+
+    @app.post('/config/profiles/{name}/apply')
+    def tuning_profile_apply(name: str, x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        with _connect(db_path) as con:
+            try:
+                ver = tc.apply_profile(con, name=name, actor=actor)
+                return {"ok": True, "version": ver}
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+
+    @app.post('/config/profiles/apply-current')
+    def tuning_apply_current(body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        payload = dict(body or {})
+        bad = tc.reject_forbidden(payload)
+        if bad:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="config.apply", old_values=None, new_values=payload, result="fail", error_detail=f"forbidden keys: {bad}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad}")
+        cfg_raw = dict(payload.get("config") or {})
+        bad_cfg = tc.reject_forbidden(cfg_raw)
+        if bad_cfg:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="config.apply", old_values=None, new_values=cfg_raw, result="fail", error_detail=f"forbidden keys: {bad_cfg}")
+            raise HTTPException(status_code=403, detail=f"forbidden keys: {bad_cfg}")
+        cfg, errs = tc.normalize_config(cfg_raw)
+        if errs:
+            raise HTTPException(status_code=400, detail={"errors": errs})
+        with _connect(db_path) as con:
+            ver = tc.set_current_config(con, cfg, actor=actor, action="config.apply")
+        return {"ok": True, "version": ver}
+
+    @app.post('/config/rollback/{version}')
+    def tuning_rollback(version: int, x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        with _connect(db_path) as con:
+            try:
+                ver = tc.rollback_to_version(con, version=int(version), actor=actor)
+                return {"ok": True, "version": ver}
+            except ValueError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+
+    @app.get('/config/audit-log')
+    def tuning_audit(limit: int = Query(200)) -> dict[str, Any]:
+        with _connect(db_path) as con:
+            return {"ok": True, "items": tc.list_audit(con, limit=max(1, min(1000, int(limit))))}
+
+    @app.post('/ml/retrain-now')
+    def ml_retrain_now(x_actor: str | None = Header(None)) -> dict[str, Any]:
+        return _launch_ml_job("retrain", _actor(x_actor))
+
+    @app.post('/ml/rescore-now')
+    def ml_rescore_now(x_actor: str | None = Header(None)) -> dict[str, Any]:
+        return _launch_ml_job("rescore", _actor(x_actor))
+
+    @app.post('/ml/auto-retrain')
+    def ml_auto_retrain(body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        enabled = bool((body or {}).get("enabled", True))
+        try:
+            cmd = ["sudo", "systemctl", "start" if enabled else "stop", "spx_debit_ml.service"]
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except Exception as e:
+            with _connect(db_path) as con:
+                tc.audit(con, actor=actor, action="ml.auto_retrain", old_values=None, new_values={"enabled": enabled}, result="fail", error_detail=str(e)[:300])
+            raise HTTPException(status_code=500, detail=f"failed to toggle service: {e}")
+        with _connect(db_path) as con:
+            tc.set_auto_retrain_enabled(con, enabled)
+            tc.audit(con, actor=actor, action="ml.auto_retrain", old_values=None, new_values={"enabled": enabled}, result="success")
+        return {"ok": True, "enabled": enabled}
 
 
+    @app.post('/ml/training-range')
+    def ml_training_range_set(body: dict[str, Any], x_actor: str | None = Header(None)) -> dict[str, Any]:
+        actor = _actor(x_actor)
+        b = dict(body or {})
+        start_ts = str(b.get('start_ts') or '').strip() or None
+        end_ts = str(b.get('end_ts') or '').strip() or None
+        # lightweight ISO validation
+        try:
+            if start_ts:
+                datetime.fromisoformat(start_ts.replace('Z', '+00:00'))
+            if end_ts:
+                datetime.fromisoformat(end_ts.replace('Z', '+00:00'))
+            if start_ts and end_ts:
+                if datetime.fromisoformat(start_ts.replace('Z', '+00:00')) > datetime.fromisoformat(end_ts.replace('Z', '+00:00')):
+                    raise ValueError('start_ts must be <= end_ts')
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f'invalid training range: {e}')
+        with _connect(db_path) as con:
+            old = tc.get_training_range(con)
+            tc.set_training_range(con, start_ts=start_ts, end_ts=end_ts)
+            tc.audit(con, actor=actor, action='ml.training_range.set', old_values=old, new_values={'start_ts': start_ts, 'end_ts': end_ts}, result='success')
+            cur = tc.get_training_range(con)
+        return {'ok': True, 'training_range_config': cur}
+
+    @app.get('/ml/status')
+    def ml_status() -> dict[str, Any]:
+        model_version = os.getenv("DEBIT_ML_MODEL_VERSION", "debit_ridge_v2_flow")
+        models_dir = os.getenv("DEBIT_ML_MODELS_DIR", "/mnt/options_ai/models/debit_spread")
+        model_path = Path(models_dir) / f"{model_version}_h{int(os.getenv('DEBIT_ML_HORIZON_MINUTES','30'))}.joblib"
+        trained_at = None
+        if model_path.exists():
+            try:
+                import joblib
+                obj = joblib.load(model_path)
+                ta = obj.get("trained_at") if isinstance(obj, dict) else None
+                trained_at = _to_central_iso(ta)
+            except Exception:
+                trained_at = None
+
+        with _connect(db_path) as con:
+            job = tc.get_job_state(con)
+            auto_enabled = tc.get_auto_retrain_enabled(con)
+            train_range_cfg = tc.get_training_range(con)
+
+        model_state = "Training" if job.get("status") == "running" else ("Failed" if job.get("status") == "failed" else ("Ready" if trained_at else "Idle"))
+        last_err = job.get("error_text") if job.get("status") == "failed" else None
+
+        retrain_secs = int(os.getenv("DEBIT_ML_RETRAIN_SECONDS", "900"))
+        countdown = None
+        if trained_at:
+            try:
+                dt = datetime.fromisoformat(str(trained_at).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+                countdown = max(0, int(retrain_secs - age))
+            except Exception:
+                countdown = None
+
+        return {
+            "ok": True,
+            "model_state": model_state,
+            "model_version": model_version,
+            "last_retrain_ts": trained_at,
+            "last_retrain_duration_sec": job.get("duration_sec"),
+            "training_rows": _training_rows_estimate(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")), train_start_ts=(train_range_cfg or {}).get('start_ts'), train_end_ts=(train_range_cfg or {}).get('end_ts')),
+            "min_train_rows": int(os.getenv("DEBIT_ML_MIN_TRAIN_ROWS", "300")),
+            "training_window": _training_window_info(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")), train_start_ts=(train_range_cfg or {}).get('start_ts'), train_end_ts=(train_range_cfg or {}).get('end_ts')),
+            "training_range_config": train_range_cfg,
+            "job": job,
+            "next_retrain_countdown_sec": countdown,
+            "last_error": last_err,
+            "auto_retrain_enabled": auto_enabled,
+            "pipeline_freshness": _pipeline_health(),
+            "scoring_status": _scoring_status(int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")), model_version),
+        }
+
+    @app.get('/health/pipeline')
+    def health_pipeline() -> dict[str, Any]:
+        return _pipeline_health()
 
 
     return app

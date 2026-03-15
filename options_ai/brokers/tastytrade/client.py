@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 import os
+import re
 import time
 
 import httpx
@@ -121,7 +122,7 @@ def map_order_dto_to_tasty_payload(dto: OrderDTO) -> dict[str, Any]:
         legs_payload.append(
             {
                 "instrument-type": "Equity Option",
-                "symbol": str(leg.symbol).upper(),
+                "symbol": normalize_option_symbol_for_tasty(str(leg.symbol)),
                 "quantity": int(leg.quantity),
                 "action": _tasty_action(leg.side, leg.effect),
             }
@@ -138,6 +139,27 @@ def map_order_dto_to_tasty_payload(dto: OrderDTO) -> dict[str, Any]:
         payload["client-order-id"] = str(dto.client_order_id)
     return payload
 
+
+def normalize_option_symbol_for_tasty(symbol: str) -> str:
+    """Convert compact OCC symbols to Tastytrade padded-root format.
+
+    Example:
+      SPXW260311P06775000 -> SPXW  260311P06775000
+    """
+    sym = str(symbol or '').strip().upper()
+    if not sym:
+        return sym
+    # Already padded/root-separated
+    m = re.match(r'^([A-Z ]{1,6})(\d{6})([CP])(\d{8})$', sym)
+    if m:
+        root = m.group(1).strip().ljust(6)
+        return f"{root}{m.group(2)}{m.group(3)}{m.group(4)}"
+    # Compact OCC (root + date + C/P + strike)
+    m = re.match(r'^([A-Z]{1,6})(\d{6})([CP])(\d{8})$', sym)
+    if m:
+        root = m.group(1).ljust(6)
+        return f"{root}{m.group(2)}{m.group(3)}{m.group(4)}"
+    return sym
 
 class TastytradeClient:
     """Minimal Tastytrade REST adapter with dry-run support.
@@ -182,7 +204,9 @@ class TastytradeClient:
             "Content-Type": "application/json",
         }
         if self.session_token:
-            h["Authorization"] = f"Bearer {self.session_token}"
+            # Tastytrade expects raw session token in Authorization header
+            # (not Bearer scheme). If caller provides a prefixed value, preserve it.
+            h["Authorization"] = self.session_token
         if self.target_api_version:
             h["Accept-Version"] = str(self.target_api_version)
         return h
@@ -192,11 +216,22 @@ class TastytradeClient:
             path = "/" + path
         url = f"{self.base_url}{path}"
 
+        # Lazy auth: services can start with username/password in env and no pre-seeded token.
+        if (path != "/sessions") and (not self.session_token) and self.username and self.password:
+            self.authenticate()
+
         last_exc: Exception | None = None
+        did_reauth = False
         for attempt in range(0, self.http_max_retries + 1):
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
                     resp = client.request(method.upper(), url, headers=self._headers(), json=json_body, params=params)
+                    # 401 can happen when token expired/invalid; re-auth once then retry immediately.
+                    if resp.status_code == 401 and (path != "/sessions") and self.username and self.password and (not did_reauth):
+                        did_reauth = True
+                        self.session_token = None
+                        self.authenticate()
+                        continue
                     # Retryable statuses
                     if resp.status_code == 429 or resp.status_code >= 500:
                         if attempt < self.http_max_retries:
@@ -234,21 +269,31 @@ class TastytradeClient:
         if not self.username or not self.password:
             raise RuntimeError("tasty credentials missing (set TASTY_SESSION_TOKEN or TASTY_USERNAME/TASTY_PASSWORD)")
 
-        # Endpoint contract can evolve; keep payload minimal and persist token from known keys.
-        resp = self._request(
-            "POST",
-            "/sessions",
-            json_body={"login": self.username, "password": self.password},
-        )
-        data = resp.get("data") if isinstance(resp, dict) else None
-        token = None
-        if isinstance(data, dict):
-            token = data.get("session-token") or data.get("session_token")
-        if not token:
-            token = resp.get("session-token") if isinstance(resp, dict) else None
-        if token:
-            self.session_token = str(token)
-        return resp
+        payload = {"login": self.username, "password": self.password}
+        last_exc: Exception | None = None
+        for path in ("/sessions", "/sessions/"):
+            try:
+                resp = self._request("POST", path, json_body=payload)
+                data = resp.get("data") if isinstance(resp, dict) else None
+                token = None
+                if isinstance(data, dict):
+                    token = data.get("session-token") or data.get("session_token")
+                if not token:
+                    token = resp.get("session-token") if isinstance(resp, dict) else None
+                if token:
+                    self.session_token = str(token)
+                return resp
+            except httpx.HTTPStatusError as e:
+                last_exc = e
+                code = int(e.response.status_code) if e.response is not None else 0
+                if code not in {404, 405}:
+                    raise
+                # try next path variant
+                continue
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("tasty authenticate failed")
 
     def place_order(self, dto: OrderDTO, *, dry_run: bool | None = None) -> dict[str, Any]:
         payload = map_order_dto_to_tasty_payload(dto)

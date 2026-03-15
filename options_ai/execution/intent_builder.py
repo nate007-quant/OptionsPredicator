@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+
+from options_ai.db_compat import connect_compat
 
 
 def _now_utc_iso() -> str:
@@ -55,11 +56,7 @@ class ExecutionIntentBuilder:
     def _connect(self):
         if self._connect_fn is not None:
             return self._connect_fn(self.db_path)
-        con = sqlite3.connect(self.db_path, timeout=5.0)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA busy_timeout=5000;")
-        return con
+        return connect_compat(self.db_path, timeout=5.0)
 
     @staticmethod
     def _entry_window_ct(params: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -121,7 +118,7 @@ class ExecutionIntentBuilder:
                 return False
         return False
 
-    def _intent_payload_from_run(self, *, run_row: sqlite3.Row, params: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    def _intent_payload_from_run(self, *, run_row: Any, params: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
         first_ct, last_ct = self._entry_window_ct(params)
         payload = {
             "source": {

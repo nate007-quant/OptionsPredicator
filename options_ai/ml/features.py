@@ -67,6 +67,13 @@ def build_features(snapshot_summary: dict[str, Any], model_signals: dict[str, An
     flip, dist_flip = lv("flip")
 
     regime_label = (gex.get("regime_label") or "") if isinstance(gex.get("regime_label"), str) else ""
+    regime_payload = (model_signals.get("regime") or {}) if isinstance(model_signals.get("regime"), dict) else {}
+    regime_v1_label = (regime_payload.get("label") or "") if isinstance(regime_payload.get("label"), str) else ""
+
+    session = (regime_payload.get("inputs_used") or {}).get("session_flags")
+    session = session if isinstance(session, dict) else {}
+
+    chain = ((regime_payload.get("inputs_used") or {}) if isinstance(regime_payload.get("inputs_used"), dict) else {})
 
     feats: dict[str, float] = {
         # spot/vol
@@ -95,6 +102,23 @@ def build_features(snapshot_summary: dict[str, Any], model_signals: dict[str, An
         "gex_put_wall_dist_pct": float(dist_put or 0.0),
         "gex_magnet_dist_pct": float(dist_mag or 0.0),
         "gex_flip_dist_pct": float(dist_flip or 0.0),
+
+        # deterministic regime features
+        "regime_confidence": float(_as_float(regime_payload.get("confidence")) or 0.0),
+        "regime_trend_up": 1.0 if regime_v1_label == "trend_up" else 0.0,
+        "regime_trend_down": 1.0 if regime_v1_label == "trend_down" else 0.0,
+        "regime_pin_mean_revert": 1.0 if regime_v1_label == "pin_mean_revert" else 0.0,
+        "regime_vol_expansion_breakout": 1.0 if regime_v1_label == "vol_expansion_breakout" else 0.0,
+        "regime_event_unstable": 1.0 if regime_v1_label == "event_unstable" else 0.0,
+
+        # session flags
+        "session_open": float(_as_float(session.get("session_open")) or 0.0),
+        "session_lunch": float(_as_float(session.get("session_lunch")) or 0.0),
+        "session_power_hour": float(_as_float(session.get("session_power_hour")) or 0.0),
+
+        # quality proxies (safe defaults)
+        "quality_chain_low": 1.0 if bool(chain.get("chain_low_quality", False)) else 0.0,
+        "quality_has_ohlcv": 1.0 if bool(snapshot_summary.get("has_ohlcv", False)) else 0.0,
     }
 
     # Relative features

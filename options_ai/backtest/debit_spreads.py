@@ -8,13 +8,15 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 
+from options_ai.regime import classify_regime
+
 
 EntryMode = Literal["first_n_minutes", "time_range"]
 AnchorMode = Literal["ATM", "WALLS", "MAGNET", "ALL"]
 AnchorPolicy = Literal["any", "opposite_wall", "same_wall"]
 PriceMode = Literal["mid"]
 
-StrategyMode = Literal["anchor_based", "structural_walls"]
+StrategyMode = Literal["anchor_based", "flow_regime", "structural_walls"]
 LongLegMoneyness = Literal["ATM", "1_ITM"]
 RotationFilter = Literal["none", "spot_delta_5m"]
 ExpirationMode = Literal["0dte", "target_dte"]
@@ -69,7 +71,22 @@ class DebitBacktestConfig:
     anchor_policy: AnchorPolicy = "any"
     min_p_bigwin: float = 0.0
     min_pred_change: float = 0.0
+    min_pred_return: float = 0.0
+    contrarian_enabled: bool = False
+    contrarian_mode: str = "direction_only"  # direction_only|ml_invert|full
+    contrarian_fallback_same_direction: bool = True
     allowed_spreads: tuple[str, ...] = ("CALL", "PUT")
+
+    # Optional flow gate (disabled by default)
+    flow_gate_enabled: bool = False
+    flow_live_ok_filter_enabled: bool = False
+    flow_gate_min_bucket_z: float = 1.5
+    flow_gate_min_breadth: float = 0.60
+    flow_gate_min_confidence: float = 0.60
+
+    # Regime-aware gating/routing (optional)
+    regime_enabled: bool = False
+    regime_min_confidence: float = 0.55
 
     # --- structural walls mode knobs ---
     enable_pw_trade: bool = True
@@ -536,6 +553,129 @@ def _pick_contract_at_strike(
         return best_sym, best_mid
 
 
+def _build_regime_payload_from_row(r: dict[str, Any], *, tz_local: str) -> dict[str, Any]:
+    spot = float(r.get("spot") or 0.0)
+    call_wall = float(r.get("call_wall")) if r.get("call_wall") is not None else None
+    put_wall = float(r.get("put_wall")) if r.get("put_wall") is not None else None
+    magnet = float(r.get("magnet")) if r.get("magnet") is not None else None
+
+    dist_call = ((call_wall - spot) / spot) if (call_wall is not None and spot) else None
+    dist_put = ((put_wall - spot) / spot) if (put_wall is not None and spot) else None
+    dist_mag = ((magnet - spot) / spot) if (magnet is not None and spot) else None
+
+    trend = "neutral"
+    sma5 = r.get("sma_spot_5")
+    sma20 = r.get("sma_spot_20")
+    if sma5 is not None and sma20 is not None:
+        if float(sma5) > float(sma20):
+            trend = "bullish"
+        elif float(sma5) < float(sma20):
+            trend = "bearish"
+
+    volume_class = "normal"
+    d_tot_vol = r.get("d_tot_vol")
+    if d_tot_vol is not None:
+        if float(d_tot_vol) > 0:
+            volume_class = "high"
+        elif float(d_tot_vol) < 0:
+            volume_class = "low"
+
+    gex_regime = "positive_gamma"
+    if call_wall is not None and put_wall is not None and (spot < put_wall or spot > call_wall):
+        gex_regime = "negative_gamma"
+
+    snapshot_summary = {
+        "observed_utc": r.get("snapshot_ts").astimezone(ZoneInfo("UTC")).isoformat() if r.get("snapshot_ts") else None,
+        "spot_price": spot,
+        "has_ohlcv": True,
+    }
+    model_signals = {
+        "trend": trend,
+        "volume_class": volume_class,
+        "expected_move_abs": float(r.get("atm_iv") or 0.0) * spot,
+        "expected_move_pct": float(r.get("atm_iv") or 0.0) * 0.5,
+        "atm_iv": float(r.get("atm_iv") or 0.0),
+        "put_call_oi_ratio": float(r.get("pcr_oi") or 1.0),
+        "put_call_volume_ratio": float(r.get("pcr_volume") or 1.0),
+        "unusual_activity_count": 1 if abs(float(r.get("flow_bucket_robust_z") or 0.0)) >= 2.0 else 0,
+        "gex": {
+            "regime_label": gex_regime,
+            "levels": {
+                "call_wall": {"strike": call_wall, "distance_pct": dist_call},
+                "put_wall": {"strike": put_wall, "distance_pct": dist_put},
+                "magnet": {"strike": magnet, "distance_pct": dist_mag},
+            },
+        },
+    }
+    extra_ctx = {
+        "regime_version": "regime_v1",
+        "hysteresis_snapshots": 1,
+        "prior_labels": [],
+        "chain_features_0dte": {
+            "skew_25d": r.get("skew_25d"),
+            "bf_25d": r.get("bf_25d"),
+            "atm_bidask_spread": r.get("atm_bidask_spread"),
+            "valid_mid_count": r.get("valid_mid_count"),
+            "contract_count": r.get("contract_count"),
+            "low_quality": bool(r.get("low_quality") or False),
+        },
+    }
+    return classify_regime(snapshot_summary, model_signals, extra_ctx)
+
+
+def _regime_allows_trade(label: str, spread_type: str) -> bool:
+    st = str(spread_type or "").upper()
+    if label == "trend_up":
+        return st == "CALL"
+    if label == "trend_down":
+        return st == "PUT"
+    if label == "vol_expansion_breakout":
+        return True
+    if label == "pin_mean_revert":
+        return True
+    if label == "event_unstable":
+        return False
+    return True
+
+
+def _fetch_regime_context_row(conn: psycopg.Connection, *, snapshot_ts: datetime) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT f.snapshot_ts, f.spot, f.atm_iv, f.pcr_oi, f.pcr_volume,
+                   f.skew_25d, f.bf_25d, f.atm_bidask_spread, f.valid_mid_count,
+                   f.contract_count, f.low_quality, f.sma_spot_5, f.sma_spot_20, f.d_tot_vol,
+                   g.call_wall, g.put_wall, g.magnet
+            FROM spx.chain_features_0dte f
+            LEFT JOIN spx.gex_levels_0dte g ON g.snapshot_ts = f.snapshot_ts
+            WHERE f.snapshot_ts = %s
+            LIMIT 1
+            """,
+            (snapshot_ts,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None
+        return {
+            "snapshot_ts": r[0], "spot": float(r[1]) if r[1] is not None else None,
+            "atm_iv": float(r[2]) if r[2] is not None else None,
+            "pcr_oi": float(r[3]) if r[3] is not None else None,
+            "pcr_volume": float(r[4]) if r[4] is not None else None,
+            "skew_25d": float(r[5]) if r[5] is not None else None,
+            "bf_25d": float(r[6]) if r[6] is not None else None,
+            "atm_bidask_spread": float(r[7]) if r[7] is not None else None,
+            "valid_mid_count": int(r[8]) if r[8] is not None else None,
+            "contract_count": int(r[9]) if r[9] is not None else None,
+            "low_quality": bool(r[10]) if r[10] is not None else None,
+            "sma_spot_5": float(r[11]) if r[11] is not None else None,
+            "sma_spot_20": float(r[12]) if r[12] is not None else None,
+            "d_tot_vol": float(r[13]) if r[13] is not None else None,
+            "call_wall": float(r[14]) if r[14] is not None else None,
+            "put_wall": float(r[15]) if r[15] is not None else None,
+            "magnet": float(r[16]) if r[16] is not None else None,
+        }
+
+
 def _fetch_candidates_for_window(
     conn: psycopg.Connection,
     *,
@@ -544,10 +684,18 @@ def _fetch_candidates_for_window(
     max_debit_points: float,
     min_p_bigwin: float,
     min_pred_change: float,
+    min_pred_return: float,
     allowed_anchors: list[str],
     allowed_spreads: tuple[str, ...],
     call_anchors: list[str] | None,
     put_anchors: list[str] | None,
+    flow_gate_enabled: bool,
+    flow_live_ok_filter_enabled: bool,
+    flow_gate_min_bucket_z: float,
+    flow_gate_min_breadth: float,
+    flow_gate_min_confidence: float,
+    contrarian_enabled: bool,
+    contrarian_ml_invert: bool,
 ) -> dict[datetime, list[dict[str, Any]]]:
     if not snapshots:
         return {}
@@ -567,10 +715,22 @@ def _fetch_candidates_for_window(
               c.short_symbol,
               c.debit_points,
               s.pred_change,
-              s.p_bigwin
+              s.pred_return,
+              s.p_bigwin,
+              f.flow_bias_summary,
+              f.flow_bucket_robust_z,
+              f.flow_breadth,
+              f.flow_confidence,
+              f.flow_live_ok_default,
+              f.spot, f.atm_iv, f.pcr_oi, f.pcr_volume, f.skew_25d, f.bf_25d,
+              f.atm_bidask_spread, f.valid_mid_count, f.contract_count, f.low_quality,
+              f.sma_spot_5, f.sma_spot_20, f.d_tot_vol,
+              g.call_wall, g.put_wall, g.magnet
             FROM spx.debit_spread_candidates_0dte c
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
+            LEFT JOIN spx.gex_levels_0dte g
+              ON g.snapshot_ts = c.snapshot_ts
             LEFT JOIN spx.debit_spread_scores_0dte s
               ON s.snapshot_ts = c.snapshot_ts
              AND s.horizon_minutes = %s
@@ -586,6 +746,8 @@ def _fetch_candidates_for_window(
               AND (%s <= 0 OR (s.p_bigwin IS NOT NULL AND s.p_bigwin >= %s))
               AND (%s <= 0 OR (s.pred_change IS NOT NULL AND s.pred_change >= %s))
               AND (%s <= 0 OR (s.pred_change IS NOT NULL AND s.pred_change > 0))
+              AND (%s <= 0 OR (s.pred_return IS NOT NULL AND s.pred_return >= %s))
+              AND (%s <= 0 OR (s.pred_return IS NOT NULL AND s.pred_return > 0))
               AND (
                 (%s::text[] IS NULL AND %s::text[] IS NULL)
                 OR (c.spread_type='CALL' AND c.anchor_type = ANY(%s::text[]))
@@ -610,6 +772,9 @@ def _fetch_candidates_for_window(
                 float(min_pred_change),
                 float(min_pred_change),
                 float(min_pred_change),
+                float(min_pred_return),
+                float(min_pred_return),
+                float(min_pred_return),
                 call_anchors,
                 put_anchors,
                 call_anchors,
@@ -633,16 +798,132 @@ def _fetch_candidates_for_window(
                     "short_symbol": r[8],
                     "debit_points": float(r[9]) if r[9] is not None else None,
                     "pred_change": float(r[10]) if r[10] is not None else None,
-                    "p_bigwin": float(r[11]) if r[11] is not None else None,
+                    "pred_return": float(r[11]) if r[11] is not None else None,
+                    "p_bigwin": float(r[12]) if r[12] is not None else None,
+                    "flow_bias_summary": r[13],
+                    "flow_bucket_robust_z": float(r[14]) if r[14] is not None else None,
+                    "flow_breadth": float(r[15]) if r[15] is not None else None,
+                    "flow_confidence": float(r[16]) if r[16] is not None else None,
+                    "flow_live_ok_default": bool(r[17]) if r[17] is not None else None,
+                    "spot": float(r[18]) if r[18] is not None else None,
+                    "atm_iv": float(r[19]) if r[19] is not None else None,
+                    "pcr_oi": float(r[20]) if r[20] is not None else None,
+                    "pcr_volume": float(r[21]) if r[21] is not None else None,
+                    "skew_25d": float(r[22]) if r[22] is not None else None,
+                    "bf_25d": float(r[23]) if r[23] is not None else None,
+                    "atm_bidask_spread": float(r[24]) if r[24] is not None else None,
+                    "valid_mid_count": int(r[25]) if r[25] is not None else None,
+                    "contract_count": int(r[26]) if r[26] is not None else None,
+                    "low_quality": bool(r[27]) if r[27] is not None else None,
+                    "sma_spot_5": float(r[28]) if r[28] is not None else None,
+                    "sma_spot_20": float(r[29]) if r[29] is not None else None,
+                    "d_tot_vol": float(r[30]) if r[30] is not None else None,
+                    "call_wall": float(r[31]) if r[31] is not None else None,
+                    "put_wall": float(r[32]) if r[32] is not None else None,
+                    "magnet": float(r[33]) if r[33] is not None else None,
                 }
             )
+
+        for ts in list(by_ts.keys()):
+            filt: list[dict[str, Any]] = []
+            for c in by_ts[ts]:
+                if flow_live_ok_filter_enabled and c.get("flow_live_ok_default") is False:
+                    continue
+
+                if flow_gate_enabled:
+                    st = str(c.get("spread_type") or "").upper()
+                    bias = str(c.get("flow_bias_summary") or "")
+                    z = float(c.get("flow_bucket_robust_z") or 0.0)
+                    breadth = float(c.get("flow_breadth") or 0.0)
+                    conf = float(c.get("flow_confidence") or 0.0)
+
+                    if st == "CALL":
+                        gate_ok = (
+                            (
+                                bias in ({"Moderate Bearish", "Strong Bearish"} if contrarian_enabled else {"Moderate Bullish", "Strong Bullish"})
+                            )
+                            and (
+                                z <= -float(flow_gate_min_bucket_z) if contrarian_enabled else z >= float(flow_gate_min_bucket_z)
+                            )
+                            and breadth >= float(flow_gate_min_breadth)
+                            and conf >= float(flow_gate_min_confidence)
+                        )
+                    else:
+                        gate_ok = (
+                            (
+                                bias in ({"Moderate Bullish", "Strong Bullish"} if contrarian_enabled else {"Moderate Bearish", "Strong Bearish"})
+                            )
+                            and (
+                                z >= float(flow_gate_min_bucket_z) if contrarian_enabled else z <= -float(flow_gate_min_bucket_z)
+                            )
+                            and breadth >= float(flow_gate_min_breadth)
+                            and conf >= float(flow_gate_min_confidence)
+                        )
+                    if not gate_ok:
+                        continue
+
+                if contrarian_ml_invert:
+                    pb = c.get("p_bigwin")
+                    pc = c.get("pred_change")
+                    pr = c.get("pred_return")
+                    if float(min_p_bigwin) > 0 and (pb is None or float(pb) > float(min_p_bigwin)):
+                        continue
+                    if float(min_pred_change) > 0 and (pc is None or float(pc) > -abs(float(min_pred_change))):
+                        continue
+                    if float(min_pred_return) > 0 and (pr is None or float(pr) > -abs(float(min_pred_return))):
+                        continue
+
+                filt.append(c)
+            by_ts[ts] = _rank_candidates(filt, contrarian_ml_invert=bool(contrarian_ml_invert))
         return by_ts
+
+
+def _rank_candidates(cands: list[dict[str, Any]], *, contrarian_ml_invert: bool) -> list[dict[str, Any]]:
+    if not cands:
+        return []
+    def k_norm(c: dict[str, Any]):
+        pb = c.get("p_bigwin")
+        pr = c.get("pred_return")
+        pc = c.get("pred_change")
+        d = float(c.get("debit_points") or 1e9)
+        return (
+            pb is None, -(float(pb) if pb is not None else -1e9),
+            pr is None, -(float(pr) if pr is not None else -1e9),
+            pc is None, -(float(pc) if pc is not None else -1e9),
+            d,
+        )
+    def k_inv(c: dict[str, Any]):
+        pb = c.get("p_bigwin")
+        pr = c.get("pred_return")
+        pc = c.get("pred_change")
+        d = float(c.get("debit_points") or 1e9)
+        return (
+            pb is None, (float(pb) if pb is not None else 1e9),
+            pr is None, (float(pr) if pr is not None else 1e9),
+            pc is None, (float(pc) if pc is not None else 1e9),
+            d,
+        )
+    key = k_inv if contrarian_ml_invert else k_norm
+    return sorted(cands, key=key)
 
 
 def _select_best_candidate(cands: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not cands:
         return None
-    return cands[0]  # pre-sorted by SQL
+    return cands[0]  # ranked upstream
+
+
+def _select_opposite_candidate(base: dict[str, Any], cands: list[dict[str, Any]]) -> dict[str, Any] | None:
+    st = str(base.get("spread_type") or "").upper()
+    target = "PUT" if st == "CALL" else "CALL"
+    a = str(base.get("anchor_type") or "")
+    for c in cands:
+        if str(c.get("spread_type") or "").upper() == target and str(c.get("anchor_type") or "") == a:
+            return c
+    for c in cands:
+        if str(c.get("spread_type") or "").upper() == target:
+            return c
+    return None
 
 
 def _fetch_path_snapshots(
@@ -933,6 +1214,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
     eq_points: list[float] = []
 
     strike_cache: dict[tuple[datetime, date], list[float]] = {}
+    regime_cache: dict[datetime, dict[str, Any] | None] = {}
 
     for day_local in _daterange(cfg.start_day, cfg.end_day):
         day_trades = 0
@@ -942,19 +1224,29 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
         snaps = _fetch_snapshots_in_window(conn, day_local=day_local, start_t=start_t, end_t=end_t, tz_local=tz_local)
 
         by_ts: dict[datetime, list[dict[str, Any]]] = {}
-        if cfg.strategy_mode == "anchor_based":
+        if cfg.strategy_mode in {"anchor_based", "flow_regime"}:
             if cfg.expiration_mode == "0dte":
+                flow_mode = (cfg.strategy_mode == "flow_regime")
+                contrarian_ml_invert = bool(cfg.contrarian_enabled and str(cfg.contrarian_mode).lower() in {"ml_invert", "full"})
                 by_ts = _fetch_candidates_for_window(
                     conn,
                     snapshots=snaps,
                     horizon_minutes=cfg.horizon_minutes,
                     max_debit_points=cfg.max_debit_points,
-                    min_p_bigwin=cfg.min_p_bigwin,
-                    min_pred_change=cfg.min_pred_change,
-                    allowed_anchors=allowed_anchors,
+                    min_p_bigwin=(0.0 if contrarian_ml_invert else cfg.min_p_bigwin),
+                    min_pred_change=(0.0 if contrarian_ml_invert else cfg.min_pred_change),
+                    min_pred_return=(0.0 if contrarian_ml_invert else cfg.min_pred_return),
+                    allowed_anchors=(['ATM', 'CALL_WALL', 'PUT_WALL', 'MAGNET'] if flow_mode else allowed_anchors),
                     allowed_spreads=cfg.allowed_spreads,
-                    call_anchors=call_anchors,
-                    put_anchors=put_anchors,
+                    call_anchors=(None if flow_mode else call_anchors),
+                    put_anchors=(None if flow_mode else put_anchors),
+                    flow_gate_enabled=(True if flow_mode else cfg.flow_gate_enabled),
+                    flow_live_ok_filter_enabled=cfg.flow_live_ok_filter_enabled,
+                    flow_gate_min_bucket_z=cfg.flow_gate_min_bucket_z,
+                    flow_gate_min_breadth=cfg.flow_gate_min_breadth,
+                    flow_gate_min_confidence=cfg.flow_gate_min_confidence,
+                    contrarian_enabled=cfg.contrarian_enabled,
+                    contrarian_ml_invert=contrarian_ml_invert,
                 )
             else:
                 by_ts = _fetch_candidates_term_anchor_based(
@@ -985,10 +1277,18 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             direction: str | None = None
             cand: dict[str, Any] | None = None
 
-            if cfg.strategy_mode == "anchor_based":
-                cand = _select_best_candidate(by_ts.get(ts, []))
+            if cfg.strategy_mode in {"anchor_based", "flow_regime"}:
+                cands_now = by_ts.get(ts, [])
+                cand = _select_best_candidate(cands_now)
                 if not cand:
                     continue
+                if cfg.contrarian_enabled and str(cfg.contrarian_mode).lower() in {"direction_only", "full"} and not (cfg.flow_gate_enabled or cfg.strategy_mode == "flow_regime"):
+                    inv = _select_opposite_candidate(cand, cands_now)
+                    if inv is None:
+                        if not bool(cfg.contrarian_fallback_same_direction):
+                            continue
+                    else:
+                        cand = inv
                 entry_debit = float(cand["debit_points"]) if cand.get("debit_points") is not None else None
                 if entry_debit is None or entry_debit <= 0:
                     continue
@@ -1122,6 +1422,22 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 width_points = float(cand["width"])
                 direction = str(cand.get("direction") or "")
 
+            if cfg.regime_enabled:
+                rp = regime_cache.get(ts)
+                if ts not in regime_cache:
+                    rr = _fetch_regime_context_row(conn, snapshot_ts=ts)
+                    rp = _build_regime_payload_from_row(rr, tz_local=tz_local) if isinstance(rr, dict) else None
+                    regime_cache[ts] = rp
+                if not isinstance(rp, dict):
+                    continue
+                if float(rp.get("confidence") or 0.0) < float(cfg.regime_min_confidence):
+                    continue
+                if cand is None:
+                    cand = {}
+                cand["regime"] = rp
+                if not _regime_allows_trade(str(rp.get("label") or ""), str((cand or {}).get("spread_type") or "")):
+                    continue
+
             if exp_date is None or long_sym is None or short_sym is None or entry_debit is None:
                 continue
 
@@ -1252,6 +1568,8 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 "spot": (cand or {}).get("spot"),
                 "put_wall": (cand or {}).get("put_wall"),
                 "call_wall": (cand or {}).get("call_wall"),
+                "regime_label": ((cand or {}).get("regime") or {}).get("label") if isinstance((cand or {}).get("regime"), dict) else None,
+                "regime_confidence": ((cand or {}).get("regime") or {}).get("confidence") if isinstance((cand or {}).get("regime"), dict) else None,
             }
             trades.append(tdict)
 
@@ -1323,7 +1641,18 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
             "anchor_policy": cfg.anchor_policy,
             "min_p_bigwin": float(cfg.min_p_bigwin),
             "min_pred_change": float(cfg.min_pred_change),
+            "min_pred_return": float(cfg.min_pred_return),
+            "contrarian_enabled": bool(cfg.contrarian_enabled),
+            "contrarian_mode": str(cfg.contrarian_mode),
+            "contrarian_fallback_same_direction": bool(cfg.contrarian_fallback_same_direction),
             "allowed_spreads": list(cfg.allowed_spreads),
+            "flow_gate_enabled": bool(cfg.flow_gate_enabled),
+            "flow_live_ok_filter_enabled": bool(cfg.flow_live_ok_filter_enabled),
+            "flow_gate_min_bucket_z": float(cfg.flow_gate_min_bucket_z),
+            "flow_gate_min_breadth": float(cfg.flow_gate_min_breadth),
+            "flow_gate_min_confidence": float(cfg.flow_gate_min_confidence),
+            "regime_enabled": bool(cfg.regime_enabled),
+            "regime_min_confidence": float(cfg.regime_min_confidence),
             "enable_pw_trade": bool(cfg.enable_pw_trade),
             "enable_cw_trade": bool(cfg.enable_cw_trade),
             "long_leg_moneyness": cfg.long_leg_moneyness,

@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS spx.debit_spread_labels_0dte (
   debit_t NUMERIC,
   debit_tH NUMERIC,
   change NUMERIC,
+  ret_pct NUMERIC,
 
   is_missing_future BOOLEAN NOT NULL DEFAULT FALSE,
   computed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -84,6 +85,7 @@ CREATE TABLE IF NOT EXISTS spx.debit_spread_labels_0dte (
 );
 
 CREATE INDEX IF NOT EXISTS debit_spread_labels_ts_idx ON spx.debit_spread_labels_0dte (snapshot_ts DESC);
+ALTER TABLE spx.debit_spread_labels_0dte ADD COLUMN IF NOT EXISTS ret_pct NUMERIC;
 """
 
 
@@ -129,15 +131,16 @@ ON CONFLICT (snapshot_ts, anchor_type, spread_type) DO UPDATE SET
 UPSERT_LABEL_SQL = """
 INSERT INTO spx.debit_spread_labels_0dte (
   snapshot_ts, horizon_minutes, anchor_type, spread_type,
-  debit_t, debit_tH, change, is_missing_future
+  debit_t, debit_tH, change, ret_pct, is_missing_future
 ) VALUES (
   %(snapshot_ts)s, %(horizon_minutes)s, %(anchor_type)s, %(spread_type)s,
-  %(debit_t)s, %(debit_tH)s, %(change)s, %(is_missing_future)s
+  %(debit_t)s, %(debit_tH)s, %(change)s, %(ret_pct)s, %(is_missing_future)s
 )
 ON CONFLICT (snapshot_ts, horizon_minutes, anchor_type, spread_type) DO UPDATE SET
   debit_t = EXCLUDED.debit_t,
   debit_tH = EXCLUDED.debit_tH,
   change = EXCLUDED.change,
+  ret_pct = EXCLUDED.ret_pct,
   is_missing_future = EXCLUDED.is_missing_future,
   computed_at = now();
 """
@@ -563,8 +566,11 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
                     missing = True
 
             change = None
+            ret_pct = None
             if debit_t_val is not None and debit_tH is not None:
                 change = float(debit_tH - debit_t_val)
+                if debit_t_val > 0:
+                    ret_pct = float(change) / float(debit_t_val)
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -577,6 +583,7 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
                         "debit_t": debit_t_val,
                         "debit_tH": debit_tH,
                         "change": change,
+                        "ret_pct": ret_pct,
                         "is_missing_future": bool(missing),
                     },
                 )

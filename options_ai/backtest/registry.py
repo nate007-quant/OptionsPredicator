@@ -88,6 +88,10 @@ class StrategyDefinition:
             anchor_policy=str(g("anchor_policy", os.getenv("DEBIT_ANCHOR_POLICY", "any"))),
             min_p_bigwin=float(g("min_p_bigwin", 0.0)),
             min_pred_change=float(g("min_pred_change", 0.0)),
+            min_pred_return=float(g("min_pred_return", 0.0)),
+            contrarian_enabled=bool(g("contrarian_enabled", False)),
+            contrarian_mode=str(g("contrarian_mode", "direction_only")),
+            contrarian_fallback_same_direction=bool(g("contrarian_fallback_same_direction", True)),
             strategy_mode=str(g("strategy_mode", "anchor_based")),
             enable_pw_trade=bool(g("enable_pw_trade", True)),
             enable_cw_trade=bool(g("enable_cw_trade", True)),
@@ -101,6 +105,13 @@ class StrategyDefinition:
             short_put_offset_steps=int(g("short_put_offset_steps", 0)),
             short_call_offset_steps=int(g("short_call_offset_steps", 0)),
             allowed_spreads=tuple(g("allowed_spreads", ["CALL", "PUT"])),
+            flow_gate_enabled=bool(g("flow_gate_enabled", False)),
+            flow_live_ok_filter_enabled=bool(g("flow_live_ok_filter_enabled", False)),
+            flow_gate_min_bucket_z=float(g("flow_gate_min_bucket_z", 1.5)),
+            flow_gate_min_breadth=float(g("flow_gate_min_breadth", 0.60)),
+            flow_gate_min_confidence=float(g("flow_gate_min_confidence", 0.60)),
+            regime_enabled=bool(g("regime_enabled", False)),
+            regime_min_confidence=float(g("regime_min_confidence", 0.55)),
             max_debit_points=float(g("max_debit_points", 5.0)),
             stop_loss_pct=float(g("stop_loss_pct", 0.50)),
             take_profit_pct=float(g("take_profit_pct", 2.00)),
@@ -173,6 +184,12 @@ class DebitSpreadsStrategy(StrategyDefinition):
             v = payload.get(key, default)
             return bool(v) if v is not None else bool(default)
 
+        def e(key: str, default: str, choices: list[str]) -> str:
+            v = s(key, default)
+            vv = str(v).strip().lower()
+            norm = {str(c).strip().lower(): c for c in choices}
+            return norm.get(vv, default)
+
         start_day = s("start_day", "")
         end_day = s("end_day", "")
         if strict and (not start_day or not end_day):
@@ -216,8 +233,19 @@ class DebitSpreadsStrategy(StrategyDefinition):
             "anchor_mode": s("anchor_mode", "ATM"),
             "anchor_policy": s("anchor_policy", os.getenv("DEBIT_ANCHOR_POLICY", "any")),
             "allowed_spreads": [str(x).upper() for x in allowed_spreads],
+            "flow_gate_enabled": b("flow_gate_enabled", False),
+            "flow_live_ok_filter_enabled": b("flow_live_ok_filter_enabled", False),
+            "flow_gate_min_bucket_z": f("flow_gate_min_bucket_z", 1.5),
+            "flow_gate_min_breadth": f("flow_gate_min_breadth", 0.60),
+            "flow_gate_min_confidence": f("flow_gate_min_confidence", 0.60),
+            "regime_enabled": b("regime_enabled", False),
+            "regime_min_confidence": f("regime_min_confidence", 0.55),
             "min_p_bigwin": f("min_p_bigwin", 0.0),
             "min_pred_change": f("min_pred_change", 0.0),
+            "min_pred_return": f("min_pred_return", 0.0),
+            "contrarian_enabled": b("contrarian_enabled", False),
+            "contrarian_mode": e("contrarian_mode", "direction_only", ["direction_only", "ml_invert", "full"]),
+            "contrarian_fallback_same_direction": b("contrarian_fallback_same_direction", True),
             "enable_pw_trade": b("enable_pw_trade", True),
             "enable_cw_trade": b("enable_cw_trade", True),
             "long_leg_moneyness": s("long_leg_moneyness", "ATM"),
