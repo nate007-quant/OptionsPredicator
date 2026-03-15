@@ -660,6 +660,29 @@ def _set_sequence(cur: psycopg.Cursor, schema: str, table: str, id_col: str = "i
     cur.execute("SELECT setval(%s, %s, true)", (seq, mx if mx > 0 else 1))
 
 
+
+def _ensure_id_sequence_default(cur: psycopg.Cursor, schema: str, table: str) -> None:
+    cur.execute(
+        """
+        SELECT column_default
+        FROM information_schema.columns
+        WHERE table_schema=%s AND table_name=%s AND column_name='id'
+        """,
+        (schema, table),
+    )
+    r = cur.fetchone()
+    if not r:
+        return
+    if r[0]:
+        return
+    seq = f"{table}_id_seq"
+    cur.execute(f"CREATE SEQUENCE IF NOT EXISTS {schema}.{seq}")
+    cur.execute(f"ALTER TABLE {schema}.{table} ALTER COLUMN id SET DEFAULT nextval('{schema}.{seq}'::regclass)")
+    cur.execute(f"SELECT COALESCE(MAX(id),0) FROM {schema}.{table}")
+    mx = int(cur.fetchone()[0] or 0)
+    cur.execute(f"SELECT setval('{schema}.{seq}'::regclass, %s, true)", (mx if mx > 0 else 1,))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Migrate sqlite app-state tables to Postgres (id-preserving)")
     ap.add_argument("--sqlite", default="/mnt/options_ai/database/predictions.db")
@@ -680,6 +703,8 @@ def main() -> None:
             for spec in TABLE_SPECS:
                 for stmt in [s.strip() for s in spec.create_sql.format(schema=args.schema).split(";") if s.strip()]:
                     cur.execute(stmt)
+                if 'id' in spec.pk_cols:
+                    _ensure_id_sequence_default(cur, args.schema, spec.name)
         pg.commit()
 
         summary: list[tuple[str, int, int, str]] = []
@@ -695,6 +720,7 @@ def main() -> None:
                 if args.apply:
                     inserted = _upsert_rows(cur, args.schema, spec.name, cols, spec.pk_cols, rows)
                     if "id" in spec.pk_cols and "id" in cols:
+                        _ensure_id_sequence_default(cur, args.schema, spec.name)
                         _set_sequence(cur, args.schema, spec.name, "id")
                     pg.commit()
 

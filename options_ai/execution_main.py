@@ -16,11 +16,15 @@ def main() -> None:
     paths = build_paths(cfg.data_root, cfg.ticker)
     ensure_runtime_dirs(paths)
 
-    db_path = db_path_from_url(cfg.database_url)
-    schema_path = Path(__file__).parent / "db" / "schema.sql"
-    init_db(db_path, schema_sql_path=str(schema_path))
-
-    init_logger(logs_root=paths.data_root / "logs", db_path=db_path)
+    state_db = str(getattr(cfg, "execution_database_url", "") or cfg.database_url)
+    if state_db.startswith("postgresql://") or state_db.startswith("postgres://"):
+        db_path = state_db
+        init_logger(logs_root=paths.data_root / "logs", db_path=None)
+    else:
+        db_path = db_path_from_url(state_db)
+        schema_path = Path(__file__).parent / "db" / "schema.sql"
+        init_db(db_path, schema_sql_path=str(schema_path))
+        init_logger(logs_root=paths.data_root / "logs", db_path=db_path)
 
     poll_s = max(1, int(getattr(cfg, "execution_poll_seconds", 5)))
 

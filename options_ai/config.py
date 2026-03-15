@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 class Config:
     openai_api_key: str
     database_url: str
+    execution_database_url: str = ""
     ticker: str
     data_root: str
 
@@ -246,6 +247,7 @@ def load_config() -> Config:
     return Config(
         openai_api_key=openai_api_key,
         database_url=database_url,
+        execution_database_url=(os.getenv("EXECUTION_DATABASE_URL", "").strip() or database_url),
         ticker=ticker,
         data_root=data_root,
         trading_enabled=trading_enabled,

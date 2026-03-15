@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from options_ai.db_compat import connect_compat
+
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -70,11 +72,7 @@ class ExecutionMonitor:
     def _connect(self):
         if self._connect_fn is not None:
             return self._connect_fn(self.db_path)
-        con = sqlite3.connect(self.db_path, timeout=5.0)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA busy_timeout=5000;")
-        return con
+        return connect_compat(self.db_path, timeout=5.0)
 
     def _record_order_event(
         self,
