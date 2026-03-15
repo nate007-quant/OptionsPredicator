@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,23 +19,28 @@ class BacktestExecutor:
         self.db_path = str(db_path)
         self.registry = StrategyRegistry()
         self._connect_fn = connect_fn
+        self._lock = threading.RLock()
 
     def _connect(self) -> sqlite3.Connection:
         if self._connect_fn is not None:
             return self._connect_fn(self.db_path)
-        con = sqlite3.connect(self.db_path, timeout=30.0)
+        con = sqlite3.connect(self.db_path, timeout=120.0)
         con.row_factory = sqlite3.Row
         try:
             con.execute("PRAGMA journal_mode=WAL")
         except Exception:
             pass
         try:
-            con.execute("PRAGMA busy_timeout=10000")
+            con.execute("PRAGMA busy_timeout=60000")
         except Exception:
             pass
         return con
 
-    def _with_sqlite_retry(self, fn, *, retries: int = 8, base_sleep: float = 0.15):
+    def _serialized(self, fn):
+        with self._lock:
+            return fn()
+
+    def _with_sqlite_retry(self, fn, *, retries: int = 12, base_sleep: float = 0.20):
         last = None
         for i in range(max(1, int(retries))):
             try:
@@ -79,7 +85,7 @@ class BacktestExecutor:
                     (strategy_key, int(schema_version), ph),
                 ).fetchone()
 
-        row = self._with_sqlite_retry(_read_existing)
+        row = self._with_sqlite_retry(lambda: self._serialized(_read_existing))
         existing_run_id: int | None = int(row[0]) if row is not None else None
 
         # Dedup only when force_run is OFF.
@@ -113,7 +119,7 @@ class BacktestExecutor:
             return cached
 
         # Execute backtest
-        result = strat.run(canonical_params)
+        result = self._serialized(lambda: strat.run(canonical_params))
 
         summary = (result or {}).get("summary") or {}
         summary_json = json.dumps(summary, separators=(",", ":"), sort_keys=True)
@@ -167,7 +173,7 @@ class BacktestExecutor:
                 con.commit()
                 return run_id
 
-        run_id = int(self._with_sqlite_retry(_write_run))
+        run_id = int(self._with_sqlite_retry(lambda: self._serialized(_write_run)))
 
         if isinstance(result, dict):
             forced = bool(force_run and existing_run_id is not None)
