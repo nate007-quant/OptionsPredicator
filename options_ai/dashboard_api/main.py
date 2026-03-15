@@ -512,6 +512,12 @@ def create_app() -> FastAPI:
 
     _ensure_backtest_tables()
     with _connect(db_path) as _con:
+        try:
+            _con.execute("ALTER TABLE portfolio_defs ADD COLUMN IF NOT EXISTS execution_exit_policy TEXT NOT NULL DEFAULT 'any_leg'")
+            _con.execute("UPDATE portfolio_defs SET execution_exit_policy='any_leg' WHERE execution_exit_policy IS NULL OR execution_exit_policy='' OR execution_exit_policy NOT IN ('any_leg','entry_leg')")
+            _con.commit()
+        except Exception:
+            pass
         tc.ensure_schema(_con)
         try:
             tc.seed_builtin_profiles(_con)
@@ -1731,6 +1737,7 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             rows = con.execute(
                 """SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
+                          COALESCE(execution_exit_policy,'any_leg') AS execution_exit_policy,
                           COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
                           COALESCE(paired_environment,'sandbox') AS paired_environment,
                           COALESCE(paired_account_label,'') AS paired_account_label,
@@ -1757,6 +1764,7 @@ def create_app() -> FastAPI:
                     'created_at_utc': str(r['created_at_utc']),
                     'updated_at_utc': str(r['updated_at_utc']),
                     'execution_mode': str(r['execution_mode'] or 'independent'),
+            'execution_exit_policy': str(r['execution_exit_policy'] or 'any_leg'),
                     'group_start_day': str(r['group_start_day'] or ''),
                     'group_end_day': str(r['group_end_day'] or ''),
                     'paired_environment': str(r['paired_environment'] or 'sandbox'),
@@ -1785,6 +1793,9 @@ def create_app() -> FastAPI:
         execution_mode = str((body or {}).get('execution_mode') or 'independent').strip().lower()
         if execution_mode not in {'independent','merged'}:
             raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
+        execution_exit_policy = str((body or {}).get('execution_exit_policy') or 'any_leg').strip().lower()
+        if execution_exit_policy not in {'any_leg','entry_leg'}:
+            raise HTTPException(status_code=400, detail='execution_exit_policy must be any_leg|entry_leg')
         group_start_day = str((body or {}).get('group_start_day') or '').strip()
         group_end_day = str((body or {}).get('group_end_day') or '').strip()
         paired_environment = str((body or {}).get('paired_environment') or 'sandbox').strip().lower()
@@ -1806,14 +1817,14 @@ def create_app() -> FastAPI:
                 if ex is not None:
                     raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
             cur = con.execute(
-                """INSERT INTO portfolio_defs(name, legs_json, execution_mode, group_start_day, group_end_day, paired_environment, paired_account_label, signal_engine_enabled, created_at_utc, updated_at_utc)
-                   VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id""",
-                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, (group_start_day or None), (group_end_day or None), paired_environment, (paired_account_label or None), (1 if signal_engine_enabled else 0), now, now),
+                """INSERT INTO portfolio_defs(name, legs_json, execution_mode, execution_exit_policy, group_start_day, group_end_day, paired_environment, paired_account_label, signal_engine_enabled, created_at_utc, updated_at_utc)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id""",
+                (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, execution_exit_policy, (group_start_day or None), (group_end_day or None), paired_environment, (paired_account_label or None), (1 if signal_engine_enabled else 0), now, now),
             )
             rr_new = cur.fetchone()
             pid = int(rr_new[0] if not isinstance(rr_new, dict) else rr_new.get('id'))
             con.commit()
-        return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode, 'group_start_day': group_start_day, 'group_end_day': group_end_day, 'paired_environment': paired_environment, 'paired_account_label': paired_account_label, 'signal_engine_enabled': bool(signal_engine_enabled)}
+        return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode, 'execution_exit_policy': execution_exit_policy, 'group_start_day': group_start_day, 'group_end_day': group_end_day, 'paired_environment': paired_environment, 'paired_account_label': paired_account_label, 'signal_engine_enabled': bool(signal_engine_enabled)}
 
     @app.get('/api/portfolios/{portfolio_id}')
     def portfolios_get(portfolio_id: int) -> dict[str, Any]:
@@ -1821,6 +1832,7 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             r = con.execute(
                 """SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
+                          COALESCE(execution_exit_policy,'any_leg') AS execution_exit_policy,
                           COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
                           COALESCE(paired_environment,'sandbox') AS paired_environment,
                           COALESCE(paired_account_label,'') AS paired_account_label,
@@ -1846,6 +1858,7 @@ def create_app() -> FastAPI:
             'created_at_utc': str(r['created_at_utc']),
             'updated_at_utc': str(r['updated_at_utc']),
             'execution_mode': str(r['execution_mode'] or 'independent'),
+            'execution_exit_policy': str(r['execution_exit_policy'] or 'any_leg'),
             'group_start_day': str(r['group_start_day'] or ''),
             'group_end_day': str(r['group_end_day'] or ''),
             'paired_environment': str(r['paired_environment'] or 'sandbox'),
@@ -1863,16 +1876,22 @@ def create_app() -> FastAPI:
         name = (body or {}).get('name')
         legs = (body or {}).get('legs')
         execution_mode_raw = (body or {}).get('execution_mode')
+        execution_exit_policy_raw = (body or {}).get('execution_exit_policy')
         group_start_day_raw = (body or {}).get('group_start_day')
         group_end_day_raw = (body or {}).get('group_end_day')
         paired_environment_raw = (body or {}).get('paired_environment')
         paired_account_label_raw = (body or {}).get('paired_account_label')
         signal_engine_enabled_raw = (body or {}).get('signal_engine_enabled')
         execution_mode: str | None = None
+        execution_exit_policy: str | None = None
         if execution_mode_raw is not None:
             execution_mode = str(execution_mode_raw).strip().lower()
             if execution_mode not in {'independent','merged'}:
                 raise HTTPException(status_code=400, detail='execution_mode must be independent|merged')
+        if execution_exit_policy_raw is not None:
+            execution_exit_policy = str(execution_exit_policy_raw).strip().lower()
+            if execution_exit_policy not in {'any_leg','entry_leg'}:
+                raise HTTPException(status_code=400, detail='execution_exit_policy must be any_leg|entry_leg')
         if name is not None:
             name = str(name).strip()
             if not name:
@@ -1882,7 +1901,7 @@ def create_app() -> FastAPI:
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
-            r = con.execute("SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode, COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day, COALESCE(paired_environment,'sandbox') AS paired_environment, COALESCE(paired_account_label,'') AS paired_account_label, COALESCE(signal_engine_enabled,0) AS signal_engine_enabled FROM portfolio_defs WHERE id=?", (int(portfolio_id),)).fetchone()
+            r = con.execute("SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode, COALESCE(execution_exit_policy,'any_leg') AS execution_exit_policy, COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day, COALESCE(paired_environment,'sandbox') AS paired_environment, COALESCE(paired_account_label,'') AS paired_account_label, COALESCE(signal_engine_enabled,0) AS signal_engine_enabled FROM portfolio_defs WHERE id=?", (int(portfolio_id),)).fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail='portfolio not found')
             cur_name = str(r['name'])
@@ -1892,6 +1911,8 @@ def create_app() -> FastAPI:
             new_legs_json = cur_legs_json if legs is None else _json.dumps(legs, separators=(',', ':'), sort_keys=True)
             cur_mode = str(r['execution_mode'] or 'independent')
             new_mode = cur_mode if execution_mode is None else str(execution_mode)
+            cur_exit_policy = str(r['execution_exit_policy'] or 'any_leg')
+            new_exit_policy = cur_exit_policy if execution_exit_policy is None else str(execution_exit_policy)
             cur_start = str(r['group_start_day'] or '')
             cur_end = str(r['group_end_day'] or '')
             new_start = cur_start if group_start_day_raw is None else str(group_start_day_raw or '').strip()
@@ -1914,8 +1935,8 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
 
             con.execute(
-                'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, group_start_day=?, group_end_day=?, paired_environment=?, paired_account_label=?, signal_engine_enabled=?, updated_at_utc=? WHERE id=?',
-                (new_name, new_legs_json, new_mode, (new_start or None), (new_end or None), new_env, (new_label or None), int(new_sig), now, int(portfolio_id)),
+                'UPDATE portfolio_defs SET name=?, legs_json=?, execution_mode=?, execution_exit_policy=?, group_start_day=?, group_end_day=?, paired_environment=?, paired_account_label=?, signal_engine_enabled=?, updated_at_utc=? WHERE id=?',
+                (new_name, new_legs_json, new_mode, new_exit_policy, (new_start or None), (new_end or None), new_env, (new_label or None), int(new_sig), now, int(portfolio_id)),
             )
             con.commit()
 
@@ -1923,7 +1944,7 @@ def create_app() -> FastAPI:
             out_legs = _json.loads(new_legs_json or '[]')
         except Exception:
             out_legs = []
-        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label, 'signal_engine_enabled': bool(int(new_sig))}
+        return {'id': int(portfolio_id), 'name': new_name, 'legs': out_legs, 'execution_mode': new_mode, 'execution_exit_policy': new_exit_policy, 'group_start_day': new_start, 'group_end_day': new_end, 'paired_environment': new_env, 'paired_account_label': new_label, 'signal_engine_enabled': bool(int(new_sig))}
 
     def _hhmm_to_minutes_local(x: str | None) -> int | None:
         if not x:
@@ -2298,9 +2319,12 @@ def create_app() -> FastAPI:
         merge_mode = str((body or {}).get('merge_mode') or (body or {}).get('execution_mode') or 'independent').strip().lower()
         if merge_mode not in {'independent','merged'}:
             raise HTTPException(status_code=400, detail='merge_mode must be independent|merged')
+        merge_exit_policy = str((body or {}).get('merge_exit_policy') or 'any_leg').strip().lower()
+        if merge_exit_policy not in {'any_leg','entry_leg'}:
+            raise HTTPException(status_code=400, detail='merge_exit_policy must be any_leg|entry_leg')
         if not isinstance(legs, list) or not legs:
             raise HTTPException(status_code=400, detail='legs must be a non-empty list')
-        return portfolio_service.start(legs=legs, merge_mode=merge_mode)
+        return portfolio_service.start(legs=legs, merge_mode=merge_mode, merge_exit_policy=merge_exit_policy)
 
     @app.get('/api/portfolio_backtest/status')
     def portfolio_backtest_status(session_id: int | None = Query(None)) -> dict[str, Any]:

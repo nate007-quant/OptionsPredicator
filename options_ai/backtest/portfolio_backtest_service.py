@@ -87,12 +87,14 @@ def combine_trades_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple
     return eq, summary
 
 
-def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]], *, exit_policy: str = "any_leg") -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Merged mode: treat all legs as one shared strategy lifecycle.
 
     Approximates shared management by allowing one open at a time across the union of leg trades.
     Open trigger = earliest next entry across all legs.
-    Close trigger = earliest exit at/after open across all legs.
+    Close trigger policy:
+      - any_leg: earliest exit at/after open across all legs (legacy behavior)
+      - entry_leg: earliest exit from the same leg that opened the position
     """
     recs: list[dict[str, Any]] = []
     for li, trades in enumerate(trades_by_leg):
@@ -118,6 +120,10 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -
             recs.append({"leg": int(li), "entry": dt_e, "exit": dt_x, "pnl": pnl})
 
     recs.sort(key=lambda r: (r["entry"], r["exit"]))
+
+    policy = str(exit_policy or "any_leg").strip().lower()
+    if policy not in {"any_leg", "entry_leg"}:
+        policy = "any_leg"
     if not recs:
         return [], {
             "trades": 0,
@@ -129,6 +135,7 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -
             "max_drawdown_dollars": 0.0,
             "profit_factor": 0.0,
             "mode": "merged",
+        "merge_exit_policy": policy,
         }
 
     synth_pnls: list[float] = []
@@ -145,7 +152,10 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -
         opener = min(open_candidates, key=lambda r: (r["entry"], r["exit"]))
         open_ts = opener["entry"]
 
-        close_candidates = [r for r in recs if r["entry"] >= open_ts and r["exit"] >= open_ts]
+        if policy == "entry_leg":
+            close_candidates = [r for r in recs if r["leg"] == opener["leg"] and r["entry"] >= open_ts and r["exit"] >= open_ts]
+        else:
+            close_candidates = [r for r in recs if r["entry"] >= open_ts and r["exit"] >= open_ts]
         if not close_candidates:
             break
         closer = min(close_candidates, key=lambda r: (r["exit"], r["entry"]))
@@ -200,6 +210,7 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -
         "max_drawdown_dollars": float(_max_drawdown(eq_points) if eq_points else 0.0),
         "profit_factor": float(sum_gain / abs(sum_loss)) if sum_loss < 0 else (float("inf") if sum_gain > 0 else 0.0),
         "mode": "merged",
+        "merge_exit_policy": policy,
         "merge_candidates_total": candidates_total,
         "merge_selected_trades": selected_total,
         "merge_skipped_trades": skipped_total,
@@ -273,12 +284,15 @@ class PortfolioBacktestService:
 
             raise HTTPException(status_code=409, detail=f"portfolio backtest already active: {sid}")
 
-    def start(self, *, legs: list[dict[str, Any]], merge_mode: str = "independent") -> dict[str, Any]:
+    def start(self, *, legs: list[dict[str, Any]], merge_mode: str = "independent", merge_exit_policy: str = "any_leg") -> dict[str, Any]:
         if not isinstance(legs, list) or not legs:
             raise HTTPException(status_code=400, detail="legs must be a non-empty list")
         merge_mode = str(merge_mode or "independent").strip().lower()
         if merge_mode not in {"independent", "merged"}:
             raise HTTPException(status_code=400, detail="merge_mode must be independent|merged")
+        merge_exit_policy = str(merge_exit_policy or "any_leg").strip().lower()
+        if merge_exit_policy not in {"any_leg", "entry_leg"}:
+            raise HTTPException(status_code=400, detail="merge_exit_policy must be any_leg|entry_leg")
         self._ensure_no_active()
 
         # Basic validation
@@ -312,7 +326,7 @@ class PortfolioBacktestService:
                 (
                     now,
                     now,
-                    json.dumps({"merge_mode": merge_mode, "legs": norm_legs}, separators=(",", ":"), sort_keys=True),
+                    json.dumps({"merge_mode": merge_mode, "merge_exit_policy": merge_exit_policy, "legs": norm_legs}, separators=(",", ":"), sort_keys=True),
                     int(len(norm_legs)),
                     now,
                 ),
@@ -322,7 +336,7 @@ class PortfolioBacktestService:
             con.commit()
 
         self._spawn_worker(session_id=session_id)
-        return {"session_id": session_id, "status": "running", "legs_total": len(norm_legs), "merge_mode": merge_mode}
+        return {"session_id": session_id, "status": "running", "legs_total": len(norm_legs), "merge_mode": merge_mode, "merge_exit_policy": merge_exit_policy}
 
     def stop(self, *, session_id: int) -> dict[str, Any]:
         with self._connect(self.db_path) as con:
@@ -460,9 +474,11 @@ class PortfolioBacktestService:
                 payload = json.loads(r[0] or "[]")
                 if isinstance(payload, dict):
                     merge_mode = str(payload.get("merge_mode") or "independent").strip().lower()
+                    merge_exit_policy = str(payload.get("merge_exit_policy") or "any_leg").strip().lower()
                     legs = payload.get("legs") or []
                 else:
                     merge_mode = "independent"
+                    merge_exit_policy = "any_leg"
                     legs = payload
 
             trades_by_leg: list[list[dict[str, Any]]] = []
@@ -480,15 +496,17 @@ class PortfolioBacktestService:
                     summ = (res or {}).get("summary") or {}
                     trades = (res or {}).get("trades") or []
                     trades_by_leg.append(list(trades) if isinstance(trades, list) else [])
-                    legs_summaries.append({"strategy_id": sid, "summary": summ, "params": params})
+                    entry_count = int(sum(1 for t in (trades or []) if isinstance(t, dict) and t.get("entry_ts")))
+                    exit_count = int(sum(1 for t in (trades or []) if isinstance(t, dict) and t.get("exit_ts")))
+                    legs_summaries.append({"strategy_id": sid, "summary": summ, "params": params, "entry_triggers": entry_count, "exit_triggers": exit_count})
                     self._bump(session_id, completed=1)
                 except Exception as e:
-                    legs_summaries.append({"strategy_id": sid, "error": str(e), "params": params})
+                    legs_summaries.append({"strategy_id": sid, "error": str(e), "params": params, "entry_triggers": 0, "exit_triggers": 0})
                     trades_by_leg.append([])
                     self._bump(session_id, failed=1)
 
             if str(merge_mode) == "merged":
-                combined_equity, combined_summary = combine_trades_merged_to_equity(trades_by_leg)
+                combined_equity, combined_summary = combine_trades_merged_to_equity(trades_by_leg, exit_policy=merge_exit_policy)
             else:
                 combined_equity, combined_summary = combine_trades_to_equity(trades_by_leg)
                 if isinstance(combined_summary, dict):
@@ -497,6 +515,11 @@ class PortfolioBacktestService:
                     combined_summary.setdefault("merge_selected_trades", int(sum(len(x or []) for x in trades_by_leg)))
                     combined_summary.setdefault("merge_skipped_trades", 0)
                     combined_summary.setdefault("merge_overlap_events", 0)
+                    combined_summary.setdefault("merge_exit_policy", "any_leg")
+
+            if isinstance(combined_summary, dict):
+                combined_summary.setdefault("line_entry_triggers_total", int(sum(int(x.get("entry_triggers") or 0) for x in legs_summaries if isinstance(x, dict))))
+                combined_summary.setdefault("line_exit_triggers_total", int(sum(int(x.get("exit_triggers") or 0) for x in legs_summaries if isinstance(x, dict))))
 
             # If cancelled, still mark stopped and return partial results
             status = "stopped" if self._cancel_requested(session_id) else "stopped"

@@ -1891,6 +1891,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     let pfCardPollers = {}; // portfolio_id -> timer id
     let pfCardRanges = {}; // portfolio_id -> {start,end}
     let pfCardModes = {}; // portfolio_id -> independent|merged
+    let pfCardExitPolicies = {}; // portfolio_id -> any_leg|entry_leg
     let exAccounts = []; // execution account catalog
     let exAccountsLoading = false;
     let btSelectedRunRefined = false;
@@ -3791,12 +3792,33 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         elapsedTxt = `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
       }
 
+      const exitPolicy = String((st && st.combined_summary && st.combined_summary.merge_exit_policy) || pfCardExitPolicies[String(pid)] || 'any_leg');
+      const exitTxt = (mode === 'merged') ? ` | exit policy: ${exitPolicy === 'entry_leg' ? 'entry leg only' : 'any leg'}` : '';
       if (mode === 'merged') {
         const totalDays = Math.max(0, pfCountTradingDays(rg.start, rg.end));
         const doneDays = totalDays > 0 ? Math.max(0, Math.min(totalDays, Math.round((pct / 100) * totalDays))) : 0;
-        if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | trading-day progress: ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, estimated)`;
+        if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | trading-day progress: ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, estimated)${exitTxt}`;
       } else {
         if (txt) txt.textContent = `window: ${windowTxt} | elapsed: ${elapsedTxt} | progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`;
+      }
+    }
+
+    function pfRenderCardLineMetrics(pid, legsSummaries) {
+      const arr = Array.isArray(legsSummaries) ? legsSummaries : [];
+      for (let i = 0; i < arr.length; i++) {
+        const cell = document.getElementById(`pfLineMetrics-${pid}-${i}`);
+        if (!cell) continue;
+        const row = arr[i] || {};
+        const ent = Number(row.entry_triggers || 0);
+        const ex = Number(row.exit_triggers || 0);
+        const summ = row.summary || {};
+        const trd = Number(summ.trades || 0);
+        const wr = (summ.win_rate == null) ? '—' : `${(100 * Number(summ.win_rate || 0)).toFixed(1)}%`;
+        if (row.error) {
+          cell.innerHTML = `<span class="pill" style="background:rgba(239,68,68,.16); border-color:rgba(239,68,68,.45);">error</span> <span class="hint">entries: ${ent} | exits: ${ex}</span>`;
+        } else {
+          cell.innerHTML = `<span class="pill">entries: <strong>${ent}</strong></span> <span class="pill">exits: <strong>${ex}</strong></span><div class="hint" style="margin-top:4px;">trades: ${trd} | win: ${wr}</div>`;
+        }
       }
     }
 
@@ -3871,6 +3893,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       try {
         resp = await jpost('/api/portfolio_backtest/start', {
           merge_mode: mode,
+          merge_exit_policy: String(pfCardExitPolicies[String(pid)] || 'any_leg'),
           legs: applied.legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
         });
       } catch (e) {
@@ -3918,6 +3941,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (st && st.combined_equity_curve) pfRenderCardEquity(pid, st.combined_equity_curve || []);
       if (st && st.combined_summary) {
         pfRenderCardSummaryGraphics(pid, st.combined_summary);
+      }
+      if (st && Array.isArray(st.legs_summaries)) {
+        pfRenderCardLineMetrics(pid, st.legs_summaries);
         const cur = (pfPortfolios || []).find(x => String(x.id) === String(pid));
         pfSaveCardCache(pid, cur?.updated_at_utc || '', st.combined_summary, st.combined_equity_curve || []);
       }
@@ -4051,6 +4077,14 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       toast(`group mode set: ${m}`, 'info');
     }
 
+    async function pfSetGroupExitPolicy(pid, policy) {
+      const p = String(policy || 'any_leg').toLowerCase();
+      if (!['any_leg','entry_leg'].includes(p)) throw new Error('invalid exit policy');
+      await jput(`/api/portfolios/${pid}`, { execution_exit_policy: p });
+      await pfReloadPortfolios();
+      toast(`group exit policy set: ${p === 'entry_leg' ? 'entry leg only' : 'any leg'}`, 'info');
+    }
+
     async function pfAddGroupLine(pid) {
       const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
       if (!it) throw new Error('group not found');
@@ -4107,6 +4141,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         const pid = Number(it.id);
         const legs = Array.isArray(it.legs) ? it.legs : [];
         pfCardModes[String(pid)] = String(it.execution_mode || 'independent');
+        pfCardExitPolicies[String(pid)] = String(it.execution_exit_policy || 'any_leg');
         try {
           const w = pfEffectiveGroupWindow(it, legs);
           pfCardRanges[String(pid)] = { start: w.start || '', end: w.end || '' };
@@ -4126,6 +4161,12 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
                 <select id="pfCardMode-${pid}" style="min-width:140px;">
                   <option value="independent" ${(String(it.execution_mode||'independent')==='independent')?'selected':''}>Independent</option>
                   <option value="merged" ${(String(it.execution_mode||'independent')==='merged')?'selected':''}>Merged (shared)</option>
+                </select>
+              </label>
+              <label>Merged exits
+                <select id="pfCardExitPolicy-${pid}" style="min-width:170px;">
+                  <option value="any_leg" ${(String(it.execution_exit_policy||'any_leg')==='any_leg')?'selected':''}>Any leg (earliest)</option>
+                  <option value="entry_leg" ${(String(it.execution_exit_policy||'any_leg')==='entry_leg')?'selected':''}>Entry leg only</option>
                 </select>
               </label>
               <label>Paired account
@@ -4191,7 +4232,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
             <div style="margin-top:10px; overflow:auto;">
               <table>
-                <thead><tr><th>#</th><th>source</th><th>params (summary)</th><th>actions</th></tr></thead>
+                <thead><tr><th>#</th><th>source</th><th>params (summary)</th><th>line metrics</th><th>actions</th></tr></thead>
                 <tbody id="pfCardLines-${pid}"></tbody>
               </table>
             </div>
@@ -4228,6 +4269,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
                 <textarea id="pfLineParams-${pid}-${i}" style="margin-top:6px; width:100%; min-width:360px; height:96px; font-family:var(--mono); font-size:11px;">${esc(JSON.stringify(leg.params || {}, null, 2))}</textarea>
               </details>
             </td>
+            <td id="pfLineMetrics-${pid}-${i}"><span class="hint">entries: — | exits: —</span></td>
             <td>
               <button id="pfLineSave-${pid}-${i}" class="btn-primary" style="padding:4px 8px;">Save</button>
               <button id="pfLineDel-${pid}-${i}" class="btn-danger" style="padding:4px 8px; margin-left:6px;">Delete</button>
@@ -4250,6 +4292,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         document.getElementById(`pfCardStop-${pid}`)?.addEventListener('click', () => safe(`pf_card_stop_${pid}`, () => pfStopSingleGroup(pid)));
         document.getElementById(`pfCardAdd-${pid}`)?.addEventListener('click', () => safe(`pf_card_add_${pid}`, () => pfAddGroupLine(pid)));
         document.getElementById(`pfCardMode-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_mode_${pid}`, () => pfSetGroupExecutionMode(pid, ev.target.value)));
+        document.getElementById(`pfCardExitPolicy-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_exit_policy_${pid}`, () => pfSetGroupExitPolicy(pid, ev.target.value)));
         document.getElementById(`pfCardAcctSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_acct_${pid}`, async () => {
           await pfSaveGroupAccountPair(pid);
         }));
