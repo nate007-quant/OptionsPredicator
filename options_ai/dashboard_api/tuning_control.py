@@ -124,7 +124,7 @@ def get_current_config(con: sqlite3.Connection) -> dict[str, Any]:
         except Exception:
             pass
     cfg = _env_defaults()
-    con.execute("INSERT OR REPLACE INTO tuning_config_state(id, current_version, current_config_json, updated_at, updated_by) VALUES (1, NULL, ?, ?, ?)", (_json(cfg), utc_now_iso(), "system"))
+    con.execute("INSERT INTO tuning_config_state(id, current_version, current_config_json, updated_at, updated_by) VALUES (1, NULL, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET current_version=EXCLUDED.current_version, current_config_json=EXCLUDED.current_config_json, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by", (_json(cfg), utc_now_iso(), "system"))
     con.commit()
     return cfg
 
@@ -212,7 +212,7 @@ def set_current_config(con: sqlite3.Connection, cfg: dict[str, Any], *, actor: s
     ts = utc_now_iso()
     c = con.execute("INSERT INTO tuning_config_versions(config_json, actor, action, created_at) VALUES (?, ?, ?, ?)", (_json(cfg), actor, action, ts))
     ver = int(c.lastrowid)
-    con.execute("INSERT OR REPLACE INTO tuning_config_state(id, current_version, current_config_json, updated_at, updated_by) VALUES (1, ?, ?, ?, ?)", (ver, _json(cfg), ts, actor))
+    con.execute("INSERT INTO tuning_config_state(id, current_version, current_config_json, updated_at, updated_by) VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET current_version=EXCLUDED.current_version, current_config_json=EXCLUDED.current_config_json, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by", (ver, _json(cfg), ts, actor))
     con.commit()
     audit(con, actor=actor, action=action, old_values=cur, new_values=cfg, result="success")
     return ver
@@ -271,7 +271,7 @@ def set_job_state(con: sqlite3.Connection, **kwargs: Any) -> None:
     cur = con.execute("SELECT job_id, action, status, progress, started_at, finished_at, duration_sec, error_text FROM tuning_job_state WHERE id=1").fetchone()
     old = {"job_id": cur[0] if cur else None, "action": cur[1] if cur else None, "status": cur[2] if cur else None, "progress": cur[3] if cur else None, "started_at": cur[4] if cur else None, "finished_at": cur[5] if cur else None, "duration_sec": cur[6] if cur else None, "error_text": cur[7] if cur else None}
     old.update(kwargs)
-    con.execute("INSERT OR REPLACE INTO tuning_job_state(id, job_id, action, status, progress, started_at, finished_at, duration_sec, error_text) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)", (old["job_id"], old["action"], old["status"], old["progress"], old["started_at"], old["finished_at"], old["duration_sec"], old["error_text"]))
+    con.execute("INSERT INTO tuning_job_state(id, job_id, action, status, progress, started_at, finished_at, duration_sec, error_text) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET job_id=EXCLUDED.job_id, action=EXCLUDED.action, status=EXCLUDED.status, progress=EXCLUDED.progress, started_at=EXCLUDED.started_at, finished_at=EXCLUDED.finished_at, duration_sec=EXCLUDED.duration_sec, error_text=EXCLUDED.error_text", (old["job_id"], old["action"], old["status"], old["progress"], old["started_at"], old["finished_at"], old["duration_sec"], old["error_text"]))
     con.commit()
 
 
@@ -288,7 +288,7 @@ def get_auto_retrain_enabled(con: sqlite3.Connection) -> bool:
 
 
 def set_auto_retrain_enabled(con: sqlite3.Connection, enabled: bool) -> None:
-    con.execute("INSERT OR REPLACE INTO tuning_settings(key, value, updated_at) VALUES('auto_retrain_enabled', ?, ?)", ("1" if enabled else "0", utc_now_iso()))
+    con.execute("INSERT INTO tuning_settings(key, value, updated_at) VALUES('auto_retrain_enabled', ?, ?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at", ("1" if enabled else "0", utc_now_iso()))
     con.commit()
 
 
@@ -309,6 +309,6 @@ def get_training_range(con: sqlite3.Connection) -> dict[str, str | None]:
 
 def set_training_range(con: sqlite3.Connection, *, start_ts: str | None, end_ts: str | None) -> None:
     now = utc_now_iso()
-    con.execute("INSERT OR REPLACE INTO tuning_settings(key, value, updated_at) VALUES('ml_train_start_ts', ?, ?)", (str(start_ts or ''), now))
-    con.execute("INSERT OR REPLACE INTO tuning_settings(key, value, updated_at) VALUES('ml_train_end_ts', ?, ?)", (str(end_ts or ''), now))
+    con.execute("INSERT INTO tuning_settings(key, value, updated_at) VALUES('ml_train_start_ts', ?, ?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at", (str(start_ts or ''), now))
+    con.execute("INSERT INTO tuning_settings(key, value, updated_at) VALUES('ml_train_end_ts', ?, ?) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at", (str(end_ts or ''), now))
     con.commit()

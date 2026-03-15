@@ -69,7 +69,7 @@ def insert_prediction(db_path: str, row: dict[str, Any]) -> int | None:
 
         before = conn.total_changes
         cur = conn.execute(
-            f"INSERT OR IGNORE INTO predictions ({col_sql}) VALUES ({placeholders})",
+            f"INSERT INTO predictions ({col_sql}) VALUES ({placeholders}) ON CONFLICT(source_snapshot_hash, prompt_version, model_used) DO NOTHING",
             tuple(values),
         )
         after = conn.total_changes
@@ -115,26 +115,42 @@ def estimate_tokens_from_chars(prompt_chars: int, output_chars: int, tokens_per_
 
 
 def fetch_tokens_summary(db_path: str, *, now_ts_utc: str) -> dict[str, Any]:
-    """Return last-60m + previous-60m token sums and avg per file."""
+    """Return last-60m + previous-60m token sums and avg per file (DB-agnostic)."""
 
-    # We use SQLite datetime() for simple windowing. now_ts_utc should be ISO string.
+    now_dt = datetime.fromisoformat(str(now_ts_utc).replace('Z', '+00:00'))
+    t60 = now_dt - timedelta(minutes=60)
+    t120 = now_dt - timedelta(minutes=120)
+
     with connect(db_path) as conn:
         cur = conn.execute(
             """
-            SELECT
-              SUM(CASE WHEN ts_utc >= datetime(?, '-60 minutes') THEN est_total_tokens ELSE 0 END) AS sum_last60,
-              COUNT(DISTINCT CASE WHEN ts_utc >= datetime(?, '-60 minutes') THEN snapshot_hash ELSE NULL END) AS files_last60,
-              SUM(CASE WHEN ts_utc >= datetime(?, '-120 minutes') AND ts_utc < datetime(?, '-60 minutes') THEN est_total_tokens ELSE 0 END) AS sum_prev60
+            SELECT ts_utc, snapshot_hash, est_total_tokens
             FROM model_usage
+            WHERE ts_utc >= ?
             """,
-            (now_ts_utc, now_ts_utc, now_ts_utc, now_ts_utc),
+            (t120.isoformat(),),
         )
-        r = cur.fetchone()
-        sum_last60 = int(r[0] or 0)
-        files_last60 = int(r[1] or 0)
-        sum_prev60 = int(r[2] or 0)
+        rows = [dict(r) for r in cur.fetchall()]
 
-    avg_per_file = (sum_last60 / files_last60) if files_last60 > 0 else None
+    sum_last60 = 0
+    sum_prev60 = 0
+    files_last60: set[str] = set()
+    for r in rows:
+        try:
+            ts = datetime.fromisoformat(str(r.get('ts_utc') or '').replace('Z', '+00:00'))
+        except Exception:
+            continue
+        tok = int(r.get('est_total_tokens') or 0)
+        if ts >= t60:
+            sum_last60 += tok
+            sh = r.get('snapshot_hash')
+            if sh:
+                files_last60.add(str(sh))
+        elif ts >= t120:
+            sum_prev60 += tok
+
+    files_last60_n = len(files_last60)
+    avg_per_file = (sum_last60 / files_last60_n) if files_last60_n > 0 else None
     trend_pct = None
     if sum_prev60 > 0:
         trend_pct = (sum_last60 - sum_prev60) / float(sum_prev60)
@@ -144,31 +160,37 @@ def fetch_tokens_summary(db_path: str, *, now_ts_utc: str) -> dict[str, Any]:
         "avg_est_tokens_per_file_last_60m": avg_per_file,
         "trend_vs_prev_hour_pct": trend_pct,
         "prev_hour_est_total_tokens": sum_prev60,
-        "files_last_60m": files_last60,
+        "files_last_60m": files_last60_n,
     }
 
 
 def fetch_tokens_hourly_series(db_path: str, *, now_ts_utc: str, hours: int = 24) -> list[dict[str, Any]]:
     hours = max(1, int(hours))
+    now_dt = datetime.fromisoformat(str(now_ts_utc).replace('Z', '+00:00'))
+    t0 = now_dt - timedelta(hours=hours)
     with connect(db_path) as conn:
         cur = conn.execute(
             """
-            SELECT strftime('%Y-%m-%dT%H:00:00+00:00', ts_utc) AS hour_bucket,
-                   SUM(est_total_tokens) AS tokens
+            SELECT ts_utc, est_total_tokens
             FROM model_usage
-            WHERE ts_utc >= datetime(?, '-' || ? || ' hours')
-            GROUP BY hour_bucket
-            ORDER BY hour_bucket DESC
-            LIMIT ?
+            WHERE ts_utc >= ?
             """,
-            (now_ts_utc, int(hours), int(hours)),
+            (t0.isoformat(),),
         )
-        rows = [dict(r) for r in cur.fetchall()]
+        raw = [dict(r) for r in cur.fetchall()]
 
-    # Ensure descending order by default; caller can reverse.
-    for r in rows:
-        r["tokens"] = int(r.get("tokens") or 0)
-    return rows
+    buckets: dict[str, int] = {}
+    for r in raw:
+        try:
+            ts = datetime.fromisoformat(str(r.get('ts_utc') or '').replace('Z', '+00:00'))
+        except Exception:
+            continue
+        hb = ts.replace(minute=0, second=0, microsecond=0).isoformat().replace('+00:00', '+00:00')
+        buckets[hb] = buckets.get(hb, 0) + int(r.get('est_total_tokens') or 0)
+
+    out = [{"hour_bucket": k, "tokens": int(v)} for k, v in buckets.items()]
+    out.sort(key=lambda x: x['hour_bucket'], reverse=True)
+    return out[:hours]
 
 
 def fetch_recent_predictions(db_path: str, limit: int) -> list[dict[str, Any]]:

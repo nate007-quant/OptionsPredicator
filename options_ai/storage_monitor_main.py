@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from options_ai.db_compat import connect_compat
 
 try:
     import psycopg
@@ -16,13 +17,15 @@ def _now_minute_iso() -> str:
     return datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
 
 
-def _db_path_from_database_url(database_url: str) -> Path:
+def _db_path_from_database_url(database_url: str) -> str:
     d = (database_url or '').strip()
+    if d.startswith('postgresql://') or d.startswith('postgres://'):
+        return d
     if d.startswith('sqlite:///'):
-        return Path(d.replace('sqlite:///', '/', 1))
+        return d.replace('sqlite:///', '/', 1)
     if d.startswith('sqlite:////'):
-        return Path(d.replace('sqlite://', '', 1))
-    raise RuntimeError('DATABASE_URL must be sqlite:///... for storage monitor local state db')
+        return d.replace('sqlite://', '', 1)
+    raise RuntimeError('DATABASE_URL must be sqlite:///... or postgres://...')
 
 
 def _pg_size(dsn: str) -> tuple[int | None, str | None]:
@@ -41,31 +44,27 @@ def _pg_size(dsn: str) -> tuple[int | None, str | None]:
         return None, None
 
 
-def _ensure_table(con: sqlite3.Connection) -> None:
+def _ensure_table(con) -> None:
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS storage_metrics_samples (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          id BIGSERIAL PRIMARY KEY,
           sample_minute_utc TEXT NOT NULL UNIQUE,
-          postgres_bytes INTEGER,
-          timescale_bytes INTEGER,
-          disk_used_bytes INTEGER,
-          disk_free_bytes INTEGER,
+          postgres_bytes BIGINT,
+          timescale_bytes BIGINT,
+          disk_used_bytes BIGINT,
+          disk_free_bytes BIGINT,
           postgres_db_name TEXT,
           timescale_db_name TEXT
         )
         """
     )
     con.execute("CREATE INDEX IF NOT EXISTS idx_storage_metrics_samples_minute ON storage_metrics_samples(sample_minute_utc DESC)")
-    cols = {str(r[1]) for r in con.execute('PRAGMA table_info(storage_metrics_samples)').fetchall()}
-    if 'postgres_db_name' not in cols:
-        con.execute('ALTER TABLE storage_metrics_samples ADD COLUMN postgres_db_name TEXT')
-    if 'timescale_db_name' not in cols:
-        con.execute('ALTER TABLE storage_metrics_samples ADD COLUMN timescale_db_name TEXT')
     con.commit()
 
 
 def main() -> None:
+
     database_url = os.getenv('DATABASE_URL', '').strip()
     db_path = _db_path_from_database_url(database_url)
 
@@ -85,7 +84,7 @@ def main() -> None:
 
         if pg_bytes is None and not postgres_dsn:
             try:
-                pg_bytes = int(db_path.stat().st_size)
+                pg_bytes = int(Path(str(db_path)).stat().st_size)
             except Exception:
                 pg_bytes = None
 
@@ -98,14 +97,22 @@ def main() -> None:
         except Exception:
             pass
 
-        with sqlite3.connect(str(db_path)) as con:
+        with connect_compat(str(db_path), timeout=30.0) as con:
             _ensure_table(con)
             con.execute(
                 """
-                INSERT OR REPLACE INTO storage_metrics_samples(
+                INSERT INTO storage_metrics_samples(
                   sample_minute_utc, postgres_bytes, timescale_bytes,
                   disk_used_bytes, disk_free_bytes, postgres_db_name, timescale_db_name
                 ) VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT (sample_minute_utc)
+                DO UPDATE SET
+                  postgres_bytes=EXCLUDED.postgres_bytes,
+                  timescale_bytes=EXCLUDED.timescale_bytes,
+                  disk_used_bytes=EXCLUDED.disk_used_bytes,
+                  disk_free_bytes=EXCLUDED.disk_free_bytes,
+                  postgres_db_name=EXCLUDED.postgres_db_name,
+                  timescale_db_name=EXCLUDED.timescale_db_name
                 """,
                 (sample_ts, pg_bytes, ts_bytes, used_b, free_b, pg_name, ts_name),
             )

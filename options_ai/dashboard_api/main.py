@@ -42,6 +42,7 @@ from options_ai.backtest.portfolio_group_backtest_service import PortfolioGroupB
 from options_ai.backtest.sqlite_migrations import migrate_backtest_schema, backfill_params_hash
 from options_ai.execution.schema import ensure_execution_hardening_schema
 from options_ai.dashboard_api import tuning_control as tc
+from options_ai.db_compat import connect_compat
 
 
 CENTRAL_TZ = ZoneInfo("America/Chicago")
@@ -216,10 +217,12 @@ def _to_central_iso(x: Any) -> Any:
 
 
 def _db_path_from_database_url(database_url: str) -> str:
-    # expected form: sqlite:////abs/path/to.db
-    if not database_url.startswith("sqlite:"):
-        raise ValueError("only sqlite DATABASE_URL supported")
-    p = database_url.replace("sqlite:", "", 1)
+    d = str(database_url or "").strip()
+    if d.startswith("postgresql://") or d.startswith("postgres://"):
+        return d
+    if not d.startswith("sqlite:"):
+        raise ValueError("unsupported DATABASE_URL")
+    p = d.replace("sqlite:", "", 1)
     while p.startswith("////"):
         p = p[1:]
     if not p.startswith("/"):
@@ -227,19 +230,8 @@ def _db_path_from_database_url(database_url: str) -> str:
     return p
 
 
-def _connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path, timeout=30.0)
-    con.row_factory = sqlite3.Row
-    # WAL + busy timeout to mitigate locking during sampler runs
-    try:
-        con.execute('PRAGMA journal_mode=WAL;')
-    except Exception:
-        pass
-    try:
-        con.execute('PRAGMA busy_timeout=10000;')
-    except Exception:
-        pass
-    return con
+def _connect(db_path: str):
+    return connect_compat(db_path, timeout=30.0)
 
 
 def _calc_metrics(rows: list[sqlite3.Row]) -> dict[str, Any]:
@@ -336,6 +328,7 @@ def create_app() -> FastAPI:
 
     backtest_db_url = os.getenv("BACKTEST_DATABASE_URL", "").strip()
     bt_use_pg = bool(backtest_db_url)
+    state_use_pg = str(db_path).startswith("postgres")
 
     # Backtest presets + run history (Option C)
     def _now_utc_iso() -> str:
@@ -456,6 +449,8 @@ def create_app() -> FastAPI:
             con.commit()
 
     def _ensure_execution_tables() -> None:
+        if state_use_pg:
+            return
         with _connect(db_path) as con:
             con.execute(
                 """
@@ -590,13 +585,14 @@ def create_app() -> FastAPI:
         return nm
 
     _ensure_backtest_tables()
-    with _connect(db_path) as _con:
-        tc.ensure_schema(_con)
-        try:
-            tc.seed_builtin_profiles(_con)
-        except sqlite3.OperationalError:
-            # Non-fatal under write contention; profiles can be seeded on next startup/request.
-            pass
+    if not state_use_pg:
+        with _connect(db_path) as _con:
+            tc.ensure_schema(_con)
+            try:
+                tc.seed_builtin_profiles(_con)
+            except Exception:
+                # Non-fatal under write contention; profiles can be seeded on next startup/request.
+                pass
 
     # Backtest services
     strategy_registry = StrategyRegistry()
@@ -1432,7 +1428,9 @@ def create_app() -> FastAPI:
         # DB truncate
         db_counts: dict[str, int] = {}
         with _connect(db_path) as con:
-            con.execute("PRAGMA foreign_keys=OFF")
+            
+            if not str(db_path).startswith("postgres"):
+                con.execute("PRAGMA foreign_keys=OFF")
             for tbl in ("predictions", "performance_summary", "system_events", "model_usage"):
                 try:
                     n = int(con.execute(f"SELECT COUNT(1) AS n FROM {tbl}").fetchone()["n"])
@@ -1442,13 +1440,14 @@ def create_app() -> FastAPI:
                     db_counts[tbl] = -1
             con.commit()
 
-        # VACUUM
+        # VACUUM (sqlite only)
         vacuum_ran = False
         try:
-            con2 = sqlite3.connect(db_path, timeout=30.0)
-            con2.execute("VACUUM")
-            con2.close()
-            vacuum_ran = True
+            if not str(db_path).startswith("postgres"):
+                con2 = sqlite3.connect(db_path, timeout=30.0)
+                con2.execute("VACUUM")
+                con2.close()
+                vacuum_ran = True
         except Exception as e:
             if lg:
                 lg.error(component="Admin", event="reset_vacuum_failed", message="VACUUM failed", file_key="system", error=str(e))
