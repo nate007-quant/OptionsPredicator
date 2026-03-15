@@ -311,6 +311,52 @@
       color: var(--text);
     }
 
+    /* Parameter Group status/progress layout */
+    .pf-status-note {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      line-height: 1.35;
+      color: var(--text);
+      min-height: 20px;
+    }
+    .pf-status-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .2px;
+      text-transform: uppercase;
+      background: rgba(148,163,184,.12);
+      color: #cbd5e1;
+      white-space: nowrap;
+    }
+    .pf-status-meta {
+      margin-top: 4px;
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--muted);
+      opacity: .95;
+    }
+    .pf-progress-main {
+      margin-top: 5px;
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--text);
+      letter-spacing: .1px;
+    }
+    .pf-progress-sub {
+      margin-top: 2px;
+      font-size: 11px;
+      color: var(--muted);
+      opacity: .95;
+      line-height: 1.35;
+    }
+
     .intent-status { display:inline-block; padding:3px 8px; border-radius:999px; border:1px solid var(--border); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.2px; }
     .intent-s-success { color:#86efac; border-color: rgba(34,197,94,.60); background: rgba(34,197,94,.14); }
     .intent-s-progress { color:#7dd3fc; border-color: rgba(56,189,248,.60); background: rgba(56,189,248,.14); }
@@ -3889,7 +3935,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const failN = Number((st && st.legs_failed) || 0);
       if (note) {
         const tone = pfStatusTone(stRaw);
-        note.innerHTML = `<span style="display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid ${tone}; color:${tone}; margin-right:8px;">${statusLabel}</span>` +
+        note.innerHTML = `<span class="pf-status-chip" style="border-color:${tone}; color:${tone};">${statusLabel}</span>` +
           `<span class="hint">Legs ${c}/${t || 0}${(st && st.current_leg_index) ? ` · Active leg ${st.current_leg_index}` : ''}${failN ? ` · Failed ${failN}` : ''}</span>`;
       }
       if (mode === 'merged') {
@@ -4403,17 +4449,17 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
               <label>Group end <input id="pfCardEnd-${pid}" type="date" value="${esc(String(it.group_end_day || pfLastTradingDayIso()))}" /></label>
               <button id="pfCardDateSave-${pid}">Save dates</button>
               <button id="pfCardDateAuto-${pid}">Auto dates</button>
-              <div id="pfCardNote-${pid}" class="hint" style="font-size:12px;">Status: Idle · Ready</div>
+              <div id="pfCardNote-${pid}" class="pf-status-note">Status: Idle · Ready</div>
             </div>
-            <div id="pfCardMeta-${pid}" class="hint" style="margin-top:4px;">
+            <div id="pfCardMeta-${pid}" class="pf-status-meta">
               Window override: On · Signal engine: ${it.signal_engine_enabled ? 'ON' : 'OFF'} · Last source: ${esc(fmtCentral(it.signal_last_source_ts))} · Last poll: ${esc(fmtCentral(it.signal_last_poll_utc))} · Last emit: ${esc(fmtCentral(it.signal_last_emit_utc))}${it.signal_last_error ? ' · Error: ' + esc(String(it.signal_last_error)) : ''}
             </div>
             <div style="margin-top:8px;">
               <div style="height:8px; border-radius:999px; background:rgba(148,163,184,.25); overflow:hidden;">
                 <div id="pfCardProgBar-${pid}" style="height:100%; width:0%; background:linear-gradient(90deg,#60a5fa,#3b82f6);"></div>
               </div>
-              <div class="hint" id="pfCardProgText-${pid}" style="margin-top:4px; font-weight:600;">Progress: waiting…</div>
-              <div class="hint" id="pfCardProgSub-${pid}" style="margin-top:2px; opacity:.9;">Window — · Elapsed —</div>
+              <div id="pfCardProgText-${pid}" class="pf-progress-main">Progress: waiting…</div>
+              <div id="pfCardProgSub-${pid}" class="pf-progress-sub">Window — · Elapsed —</div>
             </div>
             <div style="margin-top:10px;">
               <div class="hint">Equity Curve</div>
