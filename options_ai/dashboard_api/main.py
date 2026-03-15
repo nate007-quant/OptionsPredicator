@@ -505,6 +505,82 @@ def create_app() -> FastAPI:
             "service": "options_ai_dashboard_api",
         }
 
+    @app.get("/api/status")
+    def status_alias() -> dict[str, Any]:
+        """Backward-compatible alias expected by some monitors/clients."""
+        return health()
+
+    def _window_to_minutes(window: str | None) -> int:
+        w = str(window or '').strip().lower()
+        if not w:
+            return 15
+        try:
+            if w.endswith('m'):
+                return max(1, int(float(w[:-1] or '15')))
+            if w.endswith('h'):
+                return max(1, int(float(w[:-1] or '1') * 60))
+            if w.endswith('d'):
+                return max(1, int(float(w[:-1] or '1') * 1440))
+            return max(1, int(float(w)))
+        except Exception:
+            return 15
+
+    @app.get('/api/services')
+    def services_compat(window: str = Query('15m')) -> dict[str, Any]:
+        return {
+            'ok': True,
+            'window': window,
+            'services': [
+                {
+                    'name': 'options_ai_dashboard_api',
+                    'status': 'up',
+                    'last_seen': _now_central_iso(),
+                }
+            ],
+        }
+
+    @app.get('/api/metrics/processing/summary')
+    def metrics_processing_summary(window: str = Query('15m')) -> dict[str, Any]:
+        p = status_processing(page=1, page_size=50, order='oldest')
+        pipes = status_pipelines(window=max(50, min(5000, _window_to_minutes(window) * 30)))
+        return {
+            'ok': True,
+            'window': window,
+            'queue_count': int((p.get('queue') or {}).get('total_count') or 0),
+            'processing_count': int((p.get('processing') or {}).get('count') or 0),
+            'pipeline': {
+                'option_chain_latest': (pipes.get('latest') or {}).get('option_chain'),
+                'feature_lag_minutes': (pipes.get('lags_minutes') or {}).get('chain_features_0dte'),
+                'outcomes_underlying_lag_minutes': (pipes.get('lags_minutes') or {}).get('chain_outcomes_underlying'),
+                'outcomes_atm_lag_minutes': (pipes.get('lags_minutes') or {}).get('chain_outcomes_atm_options'),
+            },
+        }
+
+    @app.get('/api/metrics/processing/pipeline')
+    def metrics_processing_pipeline(window: str = Query('15m')) -> dict[str, Any]:
+        return status_pipelines(window=max(50, min(5000, _window_to_minutes(window) * 30)))
+
+    @app.get('/api/metrics/database/queries/long-running')
+    def metrics_db_long_running(window: str = Query('15m')) -> dict[str, Any]:
+        return {'ok': True, 'window': window, 'items': []}
+
+    @app.get('/api/metrics/database/index-recommendations')
+    def metrics_db_index_reco(window: str = Query('24h')) -> dict[str, Any]:
+        return {'ok': True, 'window': window, 'items': []}
+
+    @app.get('/api/metrics/storage/trends')
+    def metrics_storage_trends(window: str = Query('24h'), resolution: str = Query('5m')) -> dict[str, Any]:
+        return {'ok': True, 'window': window, 'resolution': resolution, 'series': []}
+
+    @app.get('/api/execution/trading-enabled')
+    def execution_trading_enabled() -> dict[str, Any]:
+        enabled = os.getenv('TRADING_ENABLED', '').strip().lower() in {'1','true','yes','on'}
+        return {'ok': True, 'trading_enabled': bool(enabled)}
+
+    @app.get('/api/execution/broker/orders')
+    def execution_broker_orders(environment: str = Query('sandbox'), limit: int = Query(200, ge=1, le=1000)) -> dict[str, Any]:
+        return {'ok': True, 'environment': environment, 'limit': int(limit), 'orders': [], 'note': 'compat stub'}
+
     @app.get("/api/status/processing")
     def status_processing(
         page: int = Query(1, ge=1),
@@ -612,6 +688,10 @@ def create_app() -> FastAPI:
         """
         dsn = _pg_dsn()
         tz_local = os.getenv('TZ_LOCAL', 'America/Chicago').strip() or 'America/Chicago'
+        outcome_align = (os.getenv('OUTCOME_ALIGN', 'FirstOfDay').strip() or 'FirstOfDay')
+        out_h_s = (os.getenv('OUTCOME_HORIZONS_TD', '5,10,21').strip() or '5,10,21')
+        out_h = [int(x) for x in out_h_s.split(',') if x.strip().isdigit()]
+
         out: dict[str, Any] = {
             'ok': True,
             'window': int(window),
@@ -623,6 +703,8 @@ def create_app() -> FastAPI:
             'labels_by_horizon': {},
             'scores_by_horizon': {},
             'state_files': {},
+            'outcome_align': outcome_align,
+            'outcome_horizons_td': out_h,
         }
 
         def _try_load_json_file(path: Path) -> Any:
@@ -677,6 +759,15 @@ def create_app() -> FastAPI:
                     latest_dlbl = max_ts_le('spx.debit_spread_labels_0dte', latest_chain)
                     latest_score = max_ts_le('spx.debit_spread_scores_0dte', latest_chain)
 
+                    # TERM pipeline timestamps (profile selected by dashboard when 0DTE is absent)
+                    latest_feat_term = max_ts_le('spx.chain_features_term', latest_chain)
+                    latest_label_term = max_ts_le('spx.chain_labels_term', latest_chain)
+                    latest_cand_term = max_ts_le('spx.debit_spread_candidates_term', latest_chain)
+                    latest_dlbl_term = max_ts_le('spx.debit_spread_labels_term', latest_chain)
+                    latest_score_term = max_ts_le('spx.debit_spread_scores_term', latest_chain)
+                    latest_out_u = max_ts_le('spx.chain_outcomes_underlying', latest_chain)
+                    latest_out_atm = max_ts_le('spx.chain_outcomes_atm_options', latest_chain)
+
                     out['latest'] = {
                         'option_chain': latest_chain,
                         'chain_features_0dte': latest_feat,
@@ -684,6 +775,13 @@ def create_app() -> FastAPI:
                         'debit_candidates_0dte': latest_cand,
                         'debit_labels_0dte': latest_dlbl,
                         'debit_scores_0dte': latest_score,
+                        'chain_features_term': latest_feat_term,
+                        'chain_labels_term': latest_label_term,
+                        'debit_candidates_term': latest_cand_term,
+                        'debit_labels_term': latest_dlbl_term,
+                        'debit_scores_term': latest_score_term,
+                        'chain_outcomes_underlying': latest_out_u,
+                        'chain_outcomes_atm_options': latest_out_atm,
                     }
 
                     # horizon breakdowns
@@ -739,6 +837,56 @@ def create_app() -> FastAPI:
                     )
                     r = cur.fetchone()
                     out['counts_recent']['labels_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
+
+                    # Missing underlying outcomes for newest N feature snapshots (selected align mode)
+                    cur.execute(
+                        """
+                        WITH f AS (
+                          SELECT snapshot_ts
+                          FROM spx.chain_features_0dte
+                          ORDER BY snapshot_ts DESC
+                          LIMIT %s
+                        )
+                        SELECT
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN o.snapshot_ts IS NULL THEN 1 ELSE 0 END) AS missing
+                        FROM f
+                        LEFT JOIN (
+                          SELECT DISTINCT snapshot_ts
+                          FROM spx.chain_outcomes_underlying
+                          WHERE align_mode = %s
+                        ) o
+                          ON o.snapshot_ts = f.snapshot_ts
+                        """,
+                        (int(window), outcome_align),
+                    )
+                    r = cur.fetchone()
+                    out['counts_recent']['outcomes_underlying_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0), 'align_mode': outcome_align}
+
+                    # Missing ATM options outcomes for newest N feature snapshots (selected align mode)
+                    cur.execute(
+                        """
+                        WITH f AS (
+                          SELECT snapshot_ts
+                          FROM spx.chain_features_0dte
+                          ORDER BY snapshot_ts DESC
+                          LIMIT %s
+                        )
+                        SELECT
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN o.snapshot_ts IS NULL THEN 1 ELSE 0 END) AS missing
+                        FROM f
+                        LEFT JOIN (
+                          SELECT DISTINCT snapshot_ts
+                          FROM spx.chain_outcomes_atm_options
+                          WHERE align_mode = %s
+                        ) o
+                          ON o.snapshot_ts = f.snapshot_ts
+                        """,
+                        (int(window), outcome_align),
+                    )
+                    r = cur.fetchone()
+                    out['counts_recent']['outcomes_atm_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0), 'align_mode': outcome_align}
 
                     # Missing any debit candidates for newest N feature snapshots
                     cur.execute(
@@ -801,6 +949,13 @@ def create_app() -> FastAPI:
                         'debit_candidates_0dte': lag_minutes(latest_cand),
                         'debit_labels_0dte': lag_minutes(latest_dlbl),
                         'debit_scores_0dte': lag_minutes(latest_score),
+                        'chain_features_term': lag_minutes(latest_feat_term),
+                        'chain_labels_term': lag_minutes(latest_label_term),
+                        'debit_candidates_term': lag_minutes(latest_cand_term),
+                        'debit_labels_term': lag_minutes(latest_dlbl_term),
+                        'debit_scores_term': lag_minutes(latest_score_term),
+                        'chain_outcomes_underlying': lag_minutes(latest_out_u),
+                        'chain_outcomes_atm_options': lag_minutes(latest_out_atm),
                     }
 
 
@@ -867,6 +1022,10 @@ def create_app() -> FastAPI:
                     if fk == 'phase2_0dte_backfill.json':
                         add_cursor('phase2_features_0dte', fk, 'features_cursor_ts', j.get('features_cursor_ts'))
                         add_cursor('phase2_labels_0dte', fk, 'labels_cursor_ts', j.get('labels_cursor_ts'))
+                    if fk == 'task_phase2.json':
+                        stage = str(j.get('stage') or '')
+                        if stage in {'phase2_features', 'phase2_labels', 'phase3_outcomes'}:
+                            add_cursor(stage, fk, 'snapshot_ts', j.get('snapshot_ts'))
                     # Debit candidates 0DTE
                     if fk == 'debit_0dte_backfill.json':
                         add_cursor('debit_candidates_0dte', fk, 'candidates_cursor_ts', j.get('candidates_cursor_ts'))

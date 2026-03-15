@@ -52,12 +52,21 @@ def insert_prediction(db_path: str, row: dict[str, Any]) -> int | None:
         "price_at_prediction",
     ]
 
-    values = [row.get(c) for c in cols]
-
-    placeholders = ",".join(["?"] * len(cols))
-    col_sql = ",".join(cols)
+    optional_cols = ["regime_label", "regime_confidence", "regime_version"]
 
     with connect(db_path) as conn:
+        try:
+            existing_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info('predictions')")}
+        except Exception:
+            existing_cols = set()
+        for oc in optional_cols:
+            if oc in existing_cols:
+                cols.append(oc)
+
+        values = [row.get(c) for c in cols]
+        placeholders = ",".join(["?"] * len(cols))
+        col_sql = ",".join(cols)
+
         before = conn.total_changes
         cur = conn.execute(
             f"INSERT OR IGNORE INTO predictions ({col_sql}) VALUES ({placeholders})",
@@ -179,7 +188,7 @@ def fetch_recent_predictions_before(db_path: str, observed_ts_utc: str, limit: i
 
     with connect(db_path) as conn:
         cur = conn.execute(
-            "SELECT id, observed_ts_utc, predicted_direction, predicted_magnitude, confidence, result, spot_price "
+            "SELECT id, observed_ts_utc, predicted_direction, predicted_magnitude, confidence, result, spot_price, signals_used "
             "FROM predictions "
             "WHERE observed_ts_utc < ? "
             "ORDER BY observed_ts_utc DESC LIMIT ?",

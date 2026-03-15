@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 
 from dotenv import load_dotenv
@@ -114,6 +115,14 @@ class Config:
     ml_min_neutral_band_pts: float = 3.0
     ml_k_em: float = 0.20
 
+    # Regime routing (v2.9)
+    regime_enabled: bool = True
+    regime_version: str = "regime_v1"
+    regime_hysteresis_snapshots: int = 2
+    regime_model_map_json: str = "{}"
+    regime_fallback_model_version: str = "ml_v1"
+    regime_min_confidence_for_routing: float = 0.55
+
     # GEX prompt compression (v2.3+)
     gex_neighbor_strikes: int = 2
     gex_topk_abs_strikes: int = 0
@@ -155,6 +164,31 @@ class Config:
     chart_local_enabled: bool = False
     chart_remote_enabled: bool = True
 
+    # Flow phase3 v1 knobs
+    flow_max_strike_dist_pct: float = 0.40
+    flow_use_moneyness_weight: bool = True
+    flow_use_gaussian: bool = True
+    flow_winsorize_bucket: bool = True
+    flow_confirm_fast_win: int = 10
+    flow_confirm_slow_win: int = 60
+    flow_history_per_strike: int = 600
+    flow_bucket_z_window: int = 60
+    flow_min_breadth: float = 0.60
+    flow_min_bucket_z: float = 1.5
+    flow_conf_min: float = 0.60
+    flow_atm_corridor_pct: float = 0.01
+
+    outcome_align: str = "FirstOfDay"
+    outcome_horizons_td: str = "5,10,21"
+    flat_pct_band: float = 0.0025
+
+    # Backtest strategy gate (flow-based; disabled by default)
+    backtest_flow_gate_enabled: bool = False
+    backtest_flow_live_ok_filter_enabled: bool = False
+    backtest_flow_gate_min_bucket_z: float = 1.5
+    backtest_flow_gate_min_breadth: float = 0.60
+    backtest_flow_gate_min_confidence: float = 0.60
+
     codex_model: str = "gpt-5.2-codex"
     prompt_version: str = "v2.3.0"
 
@@ -164,6 +198,17 @@ def _get_bool(name: str, default: bool) -> bool:
     if v is None:
         return default
     return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _get_json_object_string(name: str, default: str = "{}") -> str:
+    raw = os.getenv(name, default)
+    try:
+        obj = json.loads(raw or "{}")
+        if not isinstance(obj, dict):
+            return default
+        return json.dumps(obj, sort_keys=True)
+    except Exception:
+        return default
 
 
 def load_config() -> Config:
@@ -281,6 +326,12 @@ def load_config() -> Config:
         ml_action_threshold=float(os.getenv("ML_ACTION_THRESHOLD", "0.85")),
         ml_min_neutral_band_pts=float(os.getenv("ML_MIN_NEUTRAL_BAND_PTS", "3.0")),
         ml_k_em=float(os.getenv("ML_K_EM", "0.20")),
+        regime_enabled=_get_bool("REGIME_ENABLED", True),
+        regime_version=os.getenv("REGIME_VERSION", "regime_v1").strip() or "regime_v1",
+        regime_hysteresis_snapshots=int(os.getenv("REGIME_HYSTERESIS_SNAPSHOTS", "2")),
+        regime_model_map_json=_get_json_object_string("REGIME_MODEL_MAP_JSON", "{}"),
+        regime_fallback_model_version=os.getenv("REGIME_FALLBACK_MODEL_VERSION", "ml_v1").strip() or "ml_v1",
+        regime_min_confidence_for_routing=float(os.getenv("REGIME_MIN_CONFIDENCE_FOR_ROUTING", "0.55")),
         gex_neighbor_strikes=int(os.getenv("GEX_NEIGHBOR_STRIKES", "2")),
         gex_topk_abs_strikes=int(os.getenv("GEX_TOPK_ABS_STRIKES", "0")),
         gex_sticky_day_max=int(os.getenv("GEX_STICKY_DAY_MAX", "20")),
@@ -306,6 +357,26 @@ def load_config() -> Config:
         chart_enabled=_get_bool("CHART_ENABLED", False),
         chart_local_enabled=_get_bool("CHART_LOCAL_ENABLED", False),
         chart_remote_enabled=_get_bool("CHART_REMOTE_ENABLED", True),
+        flow_max_strike_dist_pct=float(os.getenv("FLOW_MAX_STRIKE_DIST_PCT", "0.40")),
+        flow_use_moneyness_weight=_get_bool("FLOW_USE_MONEYNESS_WEIGHT", True),
+        flow_use_gaussian=_get_bool("FLOW_USE_GAUSSIAN", True),
+        flow_winsorize_bucket=_get_bool("FLOW_WINSORIZE_BUCKET", True),
+        flow_confirm_fast_win=int(os.getenv("FLOW_CONFIRM_FAST_WIN", "10")),
+        flow_confirm_slow_win=int(os.getenv("FLOW_CONFIRM_SLOW_WIN", "60")),
+        flow_history_per_strike=int(os.getenv("FLOW_HISTORY_PER_STRIKE", "600")),
+        flow_bucket_z_window=int(os.getenv("FLOW_BUCKET_Z_WINDOW", "60")),
+        flow_min_breadth=float(os.getenv("FLOW_MIN_BREADTH", "0.60")),
+        flow_min_bucket_z=float(os.getenv("FLOW_MIN_BUCKET_Z", "1.5")),
+        flow_conf_min=float(os.getenv("FLOW_CONF_MIN", "0.60")),
+        flow_atm_corridor_pct=float(os.getenv("FLOW_ATM_CORRIDOR_PCT", "0.01")),
+        outcome_align=os.getenv("OUTCOME_ALIGN", "FirstOfDay").strip() or "FirstOfDay",
+        outcome_horizons_td=os.getenv("OUTCOME_HORIZONS_TD", "5,10,21").strip() or "5,10,21",
+        flat_pct_band=float(os.getenv("FLAT_PCT_BAND", "0.0025")),
+        backtest_flow_gate_enabled=_get_bool("BACKTEST_FLOW_GATE_ENABLED", False),
+        backtest_flow_live_ok_filter_enabled=_get_bool("BACKTEST_FLOW_LIVE_OK_FILTER_ENABLED", False),
+        backtest_flow_gate_min_bucket_z=float(os.getenv("BACKTEST_FLOW_GATE_MIN_BUCKET_Z", "1.5")),
+        backtest_flow_gate_min_breadth=float(os.getenv("BACKTEST_FLOW_GATE_MIN_BREADTH", "0.60")),
+        backtest_flow_gate_min_confidence=float(os.getenv("BACKTEST_FLOW_GATE_MIN_CONFIDENCE", "0.60")),
         codex_model=os.getenv("CODEX_MODEL", "gpt-5.2-codex").strip(),
         prompt_version=os.getenv("PROMPT_VERSION", "v2.3.0").strip(),
     )

@@ -776,6 +776,18 @@
                 <div class="badge">Newest snapshot_index: <strong id="newestSnap2">—</strong></div>
                 <div class="badge">Oldest unscored: <strong id="oldestUnscored2">—</strong></div>
               </div>
+              <div style="margin-top:10px;" class="row">
+                <div class="badge">Live option_chain: <strong id="liveChainTs2">—</strong></div>
+                <div class="badge">Feature lag: <strong id="featureLag2">—</strong></div>
+                <div class="badge">OUT_U lag: <strong id="outULag2">—</strong></div>
+                <div class="badge">OUT_ATM lag: <strong id="outAtmLag2">—</strong></div>
+                <div class="badge">Pipeline state: <strong id="pipelineFresh2">—</strong></div>
+              </div>
+              <div style="margin-top:10px;" class="row">
+                <div class="badge">OUT align: <strong id="outAlign2">—</strong></div>
+                <div class="badge">OUT_U missing(window): <strong id="outUMiss2">—</strong></div>
+                <div class="badge">OUT_ATM missing(window): <strong id="outAtmMiss2">—</strong></div>
+              </div>
 
               <div style="margin-top:12px;" class="badge">Currently processing: <strong id="processingBox2">—</strong></div>
             </div>
@@ -991,6 +1003,22 @@ Choose which spread types are allowed: CALL and/or PUT.">i</span>
 
 Filter candidates by ML predicted change (if ML score exists for the selected horizon).">i</span> <input id="btMinPred" type="number" step="0.01" value="0.00" style="width:110px;" /></label>
                   </div>
+
+                  <div class="row" style="margin-top:10px;" id="btFlowGateControls">
+                    <label><input id="btFlowGateEnabled" type="checkbox" /> Flow gate enabled <span class="tip" data-tip="Anchor-based only.
+
+Enable flow_phase3 gating (bias + bucket z + breadth + confidence).">i</span></label>
+                    <label><input id="btFlowLiveOk" type="checkbox" /> Require flow_live_ok_default <span class="tip" data-tip="Optional extra safety filter on top of flow gate.">i</span></label>
+                    <label>Flow min |bucket z| <input id="btFlowMinBucketZ" type="number" step="0.1" value="1.5" style="width:110px;" /></label>
+                    <label>Flow min breadth <input id="btFlowMinBreadth" type="number" step="0.01" min="0" max="1" value="0.60" style="width:110px;" /></label>
+                    <label>Flow min confidence <input id="btFlowMinConf" type="number" step="0.01" min="0" max="1" value="0.60" style="width:110px;" /></label>
+                  </div>
+
+                </div>
+
+                <div class="row" style="margin-top:10px;" id="btRegimeControls">
+                  <label><input id="btUseRegime" type="checkbox" /> Use regime-aware gating <span class="tip" data-tip="Applies to all backtest modes. Classifies each snapshot into regime_v1 and filters entries by regime direction + confidence.">i</span></label>
+                  <label>Regime min confidence <input id="btRegimeMinConf" type="number" step="0.01" min="0" max="1" value="0.55" style="width:110px;" /></label>
                 </div>
 
                 <div id="btStructuralControls" style="margin-top:10px; display:none;">
@@ -1068,7 +1096,8 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 </div>
               </fieldset>
 
-<label>Presets
+              <div class="row" style="margin-top:10px;">
+                <label>Presets
                   <select id="btPresetSelect" style="min-width:240px;">
                     <option value="">(no preset)</option>
                   </select>
@@ -1085,6 +1114,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <label style="margin-left:10px;">Budget <input id="btSamplerBudget" type="number" value="5000" min="1" max="200000" style="width:95px;" /></label>
                 <span class="hint" id="btSamplerCounters" style="margin-left:10px;"></span>
                 <span class="hint" id="btNote" style="margin-left:10px;"></span>
+                <span id="btRegimeBadge" style="margin-left:8px; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted);">Regime: off</span>
               </div>
             </div>
           </div>
@@ -1117,9 +1147,6 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               </div>
             </div>
           </div>
-
-        </div>
-
 
           <div class="card">
             <div class="card-h"><h2>Backtest Runs</h2><div class="hint">Server-persisted history (SQLite). Click a run row to load params.</div></div>
@@ -1199,6 +1226,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
               </div>
             </div>
           </div>
+        </div>
       </section>
 
       <!-- PORTFOLIO BACKTEST -->
@@ -1431,11 +1459,20 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       try {
         const r = await fn();
         // stamp last refresh if it succeeded
-        document.getElementById('lastRefresh').textContent = new Date().toLocaleString();
+        document.getElementById('lastRefresh').textContent = fmtCentral(Date.now());
         return r;
       } catch (e) {
         console.error(where, e);
         showError(where, e);
+        if (where === 'health') {
+          const dot = document.getElementById('healthDot');
+          const ht = document.getElementById('healthText');
+          if (dot) {
+            dot.style.background = 'var(--error)';
+            dot.style.boxShadow = '0 0 0 3px rgba(239,68,68,0.18)';
+          }
+          if (ht) ht.textContent = 'DOWN';
+        }
         return null;
       }
     }
@@ -1454,6 +1491,39 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     function fmtPct(x) {
       if (x === null || x === undefined) return '—';
       return (100.0 * x).toFixed(1) + '%';
+    }
+
+    function fmtCentral(ts, opts = {}) {
+      if (ts === null || ts === undefined || ts === '') return '—';
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return String(ts);
+      const includeSeconds = !!opts.includeSeconds;
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Chicago',
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: 'numeric',
+        minute: '2-digit',
+        ...(includeSeconds ? { second: '2-digit' } : {}),
+        hour12: true,
+        timeZoneName: 'short',
+      }).format(d);
+    }
+
+    function prettyDatesDeep(v, key = '') {
+      if (Array.isArray(v)) return v.map((x) => prettyDatesDeep(x, key));
+      if (v && typeof v === 'object') {
+        const out = {};
+        for (const [k, val] of Object.entries(v)) out[k] = prettyDatesDeep(val, k);
+        return out;
+      }
+      if (typeof v !== 'string') return v;
+      const looksDateLikeKey = /(?:^|_)(?:ts|time|date|datetime|mtime|at|source|poll|emit)(?:$|_)/i.test(key) || /^last_/i.test(key);
+      if (!looksDateLikeKey) return v;
+      const d = new Date(v);
+      if (Number.isNaN(d.getTime())) return v;
+      return fmtCentral(v);
     }
 
     function esc(x) {
@@ -1805,7 +1875,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         include_missing_exits: (btHiddenOverrides.include_missing_exits !== undefined) ? !!btHiddenOverrides.include_missing_exits : false,
         max_future_lookahead_minutes: (btHiddenOverrides.max_future_lookahead_minutes !== undefined) ? parseInt(String(btHiddenOverrides.max_future_lookahead_minutes), 10) : 120,
         price_mode: (btHiddenOverrides.price_mode !== undefined) ? String(btHiddenOverrides.price_mode) : 'mid',
-        tz_local: (btHiddenOverrides.tz_local !== undefined) ? String(btHiddenOverrides.tz_local) : 'America/Chicago'
+        tz_local: (btHiddenOverrides.tz_local !== undefined) ? String(btHiddenOverrides.tz_local) : 'America/Chicago',
+        regime_enabled: !!document.getElementById('btUseRegime')?.checked,
+        regime_min_confidence: parseFloat(document.getElementById('btRegimeMinConf')?.value || '0.55')
       };
 
       // expiration extras (only when applicable)
@@ -1836,6 +1908,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           allowed_spreads: btReadAllowedSpreads(),
           min_p_bigwin: parseFloat(document.getElementById('btMinP')?.value || '0'),
           min_pred_change: parseFloat(document.getElementById('btMinPred')?.value || '0'),
+          flow_gate_enabled: !!document.getElementById('btFlowGateEnabled')?.checked,
+          flow_live_ok_filter_enabled: !!document.getElementById('btFlowLiveOk')?.checked,
+          flow_gate_min_bucket_z: parseFloat(document.getElementById('btFlowMinBucketZ')?.value || '1.5'),
+          flow_gate_min_breadth: parseFloat(document.getElementById('btFlowMinBreadth')?.value || '0.60'),
+          flow_gate_min_confidence: parseFloat(document.getElementById('btFlowMinConf')?.value || '0.60'),
         };
       }
 
@@ -1904,6 +1981,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btMinP', p.min_p_bigwin);
       setv('btMinPred', p.min_pred_change);
       btSetAllowedSpreads(p.allowed_spreads);
+      setc('btFlowGateEnabled', p.flow_gate_enabled);
+      setc('btFlowLiveOk', p.flow_live_ok_filter_enabled);
+      setv('btFlowMinBucketZ', p.flow_gate_min_bucket_z);
+      setv('btFlowMinBreadth', p.flow_gate_min_breadth);
+      setv('btFlowMinConf', p.flow_gate_min_confidence);
+      setc('btUseRegime', p.regime_enabled);
+      setv('btRegimeMinConf', p.regime_min_confidence);
+      const badge0 = document.getElementById('btRegimeBadge'); if (badge0) { const on = !!p.regime_enabled; badge0.textContent = on ? `Regime: ON (min ${Number(p.regime_min_confidence ?? 0.55).toFixed(2)})` : 'Regime: OFF'; badge0.style.borderColor = on ? 'var(--ok,#2e7d32)' : 'var(--line)'; badge0.style.color = on ? 'var(--ok,#2e7d32)' : 'var(--muted)'; }
 
       setc('btEnablePW', p.enable_pw_trade);
       setc('btEnableCW', p.enable_cw_trade);
@@ -1981,7 +2066,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const trades = it.last_summary?.trades ?? it.last_summary?.n_trades;
       const pnl = it.last_summary?.cum_pnl_dollars ?? it.last_summary?.total_pnl_dollars ?? it.last_summary?.total_pnl;
       const extra = (trades !== undefined || pnl !== undefined) ? ` (trades=${trades ?? '—'}, pnl=${pnl ?? '—'})` : '';
-      el.textContent = `Last run: ${it.last_run_at_utc}${extra}`;
+      el.textContent = `Last run: ${fmtCentral(it.last_run_at_utc)}${extra}`;
     }
 
     function btPresetSuggestedName() {
@@ -2386,7 +2471,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         tdSel.appendChild(cb);
 
         const tdStrategy = document.createElement('td'); tdStrategy.textContent = it.strategy_key || '';
-        const tdCreated = document.createElement('td'); tdCreated.textContent = it.created_at_utc || '';
+        const tdCreated = document.createElement('td'); tdCreated.textContent = fmtCentral(it.created_at_utc);
         const tdPreset = document.createElement('td'); tdPreset.textContent = it.preset_name_at_run || '—';
         const tdStart = document.createElement('td'); tdStart.textContent = p.start_day || '—';
         const tdEnd = document.createElement('td'); tdEnd.textContent = p.end_day || '—';
@@ -3169,6 +3254,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       }
       const data = await resp.json();
 
+      const badge = document.getElementById('btRegimeBadge');
+      if (badge) {
+        const on = !!(data?.config?.regime_enabled);
+        const minc = Number(data?.config?.regime_min_confidence ?? 0.55);
+        const trades = Array.isArray(data?.trades) ? data.trades : [];
+        const byReg = {};
+        for (const t of trades) {
+          const k = (t?.regime_label || 'n/a');
+          byReg[k] = (byReg[k] || 0) + 1;
+        }
+        const tops = Object.entries(byReg).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([k,v])=>`${k}:${v}`).join(', ');
+        badge.textContent = on ? `Regime: ON (min ${minc.toFixed(2)})${tops ? ' • '+tops : ''}` : 'Regime: OFF';
+        badge.style.borderColor = on ? 'var(--ok,#2e7d32)' : 'var(--line)';
+        badge.style.color = on ? 'var(--ok,#2e7d32)' : 'var(--muted)';
+      }
+
       const sum = document.getElementById('btSummary');
       if (sum) sum.textContent = JSON.stringify(data.summary || {}, null, 2);
 
@@ -3216,7 +3317,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const minPred = parseFloat(document.getElementById('dailyPickMinPred')?.value || '0');
       const data = await jget(`/api/debit_spreads/daily_pick?window_minutes=${win}&min_p_bigwin=${minP}&min_pred_change=${minPred}`);
       const box = document.getElementById('dailyPickBox');
-      if (box) box.textContent = JSON.stringify(data, null, 2);
+      if (box) box.textContent = JSON.stringify(prettyDatesDeep(data), null, 2);
       const note = document.getElementById('dailyPickNote');
       if (note) note.textContent = data.pick ? 'PICKED' : 'no pick (filters too strict or no data)';
       return data;
@@ -3239,7 +3340,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         const pbig = (it.p_bigwin === null || it.p_bigwin === undefined) ? '—' : (100*Number(it.p_bigwin)).toFixed(1) + '%';
         const pred = (it.pred_change === null || it.pred_change === undefined) ? '—' : fmtNum(it.pred_change, 2);
         tr.innerHTML = `
-          <td>${it.snapshot_ts || ''}</td>
+          <td>${fmtCentral(it.snapshot_ts)}</td>
           <td>${it.anchor_type || ''}</td>
           <td>${it.spread_type || ''}</td>
           <td>${it.debit_t === null || it.debit_t === undefined ? '—' : fmtNum(it.debit_t, 2)}</td>
@@ -3267,7 +3368,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const lim = parseInt(document.getElementById('debitLimit')?.value || '12', 10);
       const data = await jget(`/api/debit_spreads/top?limit=${lim}`);
 
-      document.getElementById('debitSnapshot').textContent = data.snapshot_ts || '—';
+      document.getElementById('debitSnapshot').textContent = fmtCentral(data.snapshot_ts);
       const lev = data.levels || {};
       document.getElementById('debitExp').textContent = lev.expiration_date || '—';
       document.getElementById('debitSpot').textContent = (lev.spot === null || lev.spot === undefined) ? '—' : fmtNum(lev.spot, 2);
@@ -3310,6 +3411,11 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const page = parseInt(document.getElementById('queuePage')?.value || '1', 10);
       const page_size = parseInt(document.getElementById('queuePageSize')?.value || '50', 10);
       const data = await jget(`/api/status/processing?page=${page}&page_size=${page_size}&order=${order}`);
+      let pipes = null;
+      try {
+        const win = parseInt(document.getElementById('pipeWin')?.value || '500', 10);
+        pipes = await jget(`/api/status/pipelines?window=${encodeURIComponent(String(win))}`);
+      } catch (_) {}
 
       // Overview counters
       document.getElementById('queueCount').textContent = data.queue.count;
@@ -3324,12 +3430,12 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (qc2) qc2.textContent = data.queue.count;
       if (pc2) pc2.textContent = data.processing.count;
 
-      document.getElementById('newestSnap').textContent = data.snapshot_index_newest_ts || '—';
-      document.getElementById('oldestUnscored').textContent = data.oldest_unscored_ts || '—';
+      document.getElementById('newestSnap').textContent = fmtCentral(data.snapshot_index_newest_ts);
+      document.getElementById('oldestUnscored').textContent = fmtCentral(data.oldest_unscored_ts);
       const ns2 = document.getElementById('newestSnap2');
       const ou2 = document.getElementById('oldestUnscored2');
-      if (ns2) ns2.textContent = data.snapshot_index_newest_ts || '—';
-      if (ou2) ou2.textContent = data.oldest_unscored_ts || '—';
+      if (ns2) ns2.textContent = fmtCentral(data.snapshot_index_newest_ts);
+      if (ou2) ou2.textContent = fmtCentral(data.oldest_unscored_ts);
 
       // Queue table
       const tb = document.getElementById('queueTable');
@@ -3337,7 +3443,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       for (const it of (data.queue.items || [])) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${new Date(it.mtime*1000).toISOString()}</td>`;
+        tr.innerHTML = `<td>${it.file}</td><td>${it.size}</td><td>${fmtCentral((it.mtime != null) ? (it.mtime * 1000) : null)}</td>`;
         tb.appendChild(tr);
       }
 
@@ -3345,15 +3451,58 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const pbox = document.getElementById('processingBox');
       const pbox2 = document.getElementById('processingBox2');
       if ((data.processing.items || []).length === 0) {
-        const msg = 'idle / not available';
+        let msg = 'idle / not available';
+        const lag = pipes?.lags_minutes?.chain_features_0dte;
+        const chainTs = pipes?.latest?.option_chain;
+        if (chainTs && lag !== null && lag !== undefined && Number.isFinite(Number(lag))) {
+          const lagN = Number(lag);
+          const state = lagN <= 20 ? 'live' : (lagN <= 120 ? 'warming' : 'stale');
+          msg = `idle in legacy queue | option_chain live=${chainTs} | feature lag=${lagN.toFixed(1)}m (${state})`;
+        }
         if (pbox) pbox.textContent = msg;
         if (pbox2) pbox2.textContent = msg;
       } else {
         const it = data.processing.items[0];
-        const msg = `${it.file} | stage=${it.stage} | started=${it.started_at} | elapsed=${(it.elapsed_seconds ?? 0).toFixed(1)}s`;
+        const msg = `${it.file} | stage=${it.stage} | started=${fmtCentral(it.started_at)} | elapsed=${(it.elapsed_seconds ?? 0).toFixed(1)}s`;
         if (pbox) pbox.textContent = msg;
         if (pbox2) pbox2.textContent = msg;
       }
+
+      // Pipeline quick badges (processing tab)
+      const liveTs = fmtCentral(pipes?.latest?.option_chain);
+      const lagRaw = pipes?.lags_minutes?.chain_features_0dte;
+      const lagTxt = (lagRaw === null || lagRaw === undefined || !Number.isFinite(Number(lagRaw))) ? '—' : `${Number(lagRaw).toFixed(1)}m`;
+      let stateTxt = 'unknown';
+      if (lagRaw !== null && lagRaw !== undefined && Number.isFinite(Number(lagRaw))) {
+        const lagN = Number(lagRaw);
+        stateTxt = (lagN <= 20) ? 'live' : ((lagN <= 120) ? 'warming' : 'stale');
+      }
+      const outULagRaw = pipes?.lags_minutes?.chain_outcomes_underlying;
+      const outAtmLagRaw = pipes?.lags_minutes?.chain_outcomes_atm_options;
+      const outULagTxt = (outULagRaw === null || outULagRaw === undefined || !Number.isFinite(Number(outULagRaw))) ? '—' : `${Number(outULagRaw).toFixed(1)}m`;
+      const outAtmLagTxt = (outAtmLagRaw === null || outAtmLagRaw === undefined || !Number.isFinite(Number(outAtmLagRaw))) ? '—' : `${Number(outAtmLagRaw).toFixed(1)}m`;
+      const outAlign = pipes?.outcome_align || '—';
+      const outUM = pipes?.counts_recent?.outcomes_underlying_missing_any;
+      const outAM = pipes?.counts_recent?.outcomes_atm_missing_any;
+      const outUMTxt = outUM ? `${outUM.missing}/${outUM.n}` : '—';
+      const outAMTxt = outAM ? `${outAM.missing}/${outAM.n}` : '—';
+
+      const l2 = document.getElementById('liveChainTs2');
+      const f2 = document.getElementById('featureLag2');
+      const outUlagEl = document.getElementById('outULag2');
+      const oa2 = document.getElementById('outAtmLag2');
+      const al2 = document.getElementById('outAlign2');
+      const um2 = document.getElementById('outUMiss2');
+      const am2 = document.getElementById('outAtmMiss2');
+      const ps2 = document.getElementById('pipelineFresh2');
+      if (l2) l2.textContent = liveTs;
+      if (f2) f2.textContent = lagTxt;
+      if (outUlagEl) outUlagEl.textContent = outULagTxt;
+      if (oa2) oa2.textContent = outAtmLagTxt;
+      if (al2) al2.textContent = outAlign;
+      if (um2) um2.textContent = outUMTxt;
+      if (am2) am2.textContent = outAMTxt;
+      if (ps2) ps2.textContent = stateTxt;
 
       return data;
     }
@@ -3365,7 +3514,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       const data = await jget(`/api/status/pipelines?window=${encodeURIComponent(String(win))}`);
 
       const box = document.getElementById('pipeBox');
-      if (box) box.textContent = JSON.stringify(data, null, 2);
+      if (box) box.textContent = JSON.stringify(prettyDatesDeep(data), null, 2);
 
       if (note) {
         const tsok = data?.timescale?.ok;
@@ -3404,7 +3553,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
       const n = parseInt(document.getElementById('rollingN').value || '50', 10);
       const roll = await jget(`/api/metrics/rolling?n=${n}`);
-      document.getElementById('metricsAsOf').textContent = roll.as_of ? `as_of ${roll.as_of}` : '';
+      document.getElementById('metricsAsOf').textContent = roll.as_of ? `as_of ${fmtCentral(roll.as_of)}` : '';
       document.getElementById('rollOverall').textContent = fmtPct(roll.overall_accuracy);
       document.getElementById('rollExcl').textContent = fmtPct(roll.accuracy_excluding_inconclusive);
       document.getElementById('rollHi').textContent = fmtPct(roll.hi_accuracy);
@@ -3573,7 +3722,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
     async function exRefreshKpis() {
       const days = Number(document.getElementById('exKpiDays')?.value || 7);
       const d = await jget(`/api/execution/kpis?days=${encodeURIComponent(days)}`);
-      document.getElementById('exKpiAsOf').textContent = `cutoff: ${d.cutoff_utc || '—'}`;
+      document.getElementById('exKpiAsOf').textContent = `cutoff: ${fmtCentral(d.cutoff_utc)}`;
       document.getElementById('exKpiFillRate').textContent = (d.fill_rate == null) ? '—' : (100 * Number(d.fill_rate)).toFixed(1) + '%';
       document.getElementById('exKpiReprice').textContent = exFmtMoney(d.avg_reprice_concession);
       document.getElementById('exKpiProtection').textContent = (d.protection_rate_open == null) ? '—' : (100 * Number(d.protection_rate_open)).toFixed(1) + '%';
@@ -3615,7 +3764,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       document.getElementById('exRpInterval').value = String(d.interval_seconds ?? 25);
       document.getElementById('exRpCap').value = String(d.max_total_concession ?? 0.15);
       document.getElementById('exRpEnabled').checked = !!d.enabled;
-      document.getElementById('exRpNote').textContent = `updated: ${d.updated_at_utc || '—'}`;
+      document.getElementById('exRpNote').textContent = `updated: ${fmtCentral(d.updated_at_utc)}`;
       return d;
     }
 
@@ -3629,7 +3778,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         enabled: !!document.getElementById('exRpEnabled')?.checked,
       };
       const d = await jput('/api/execution/reprice-policy', body);
-      document.getElementById('exRpNote').textContent = `updated: ${d.updated_at_utc || '—'}`;
+      document.getElementById('exRpNote').textContent = `updated: ${fmtCentral(d.updated_at_utc)}`;
       toast('reprice policy saved', 'success');
       return d;
     }
@@ -3663,7 +3812,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       for (const it of (d.items || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${it.created_at_utc ?? ''}</td>
+          <td>${fmtCentral(it.created_at_utc)}</td>
           <td>${it.incident_type ?? ''}</td>
           <td>${it.severity ?? ''}</td>
           <td>${it.trade_run_id ?? ''}</td>
@@ -3693,7 +3842,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       for (const it of (d.items || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td>${it.created_at_utc ?? ''}</td>
+          <td>${fmtCentral(it.created_at_utc)}</td>
           <td>${it.action ?? ''}</td>
           <td>${it.entity_type ?? ''}:${it.entity_id ?? ''}</td>
         `;
@@ -3729,7 +3878,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
           <td>${it.strategy_key ?? ''}</td>
           <td>${it.symbol ?? ''}</td>
           <td>${it.candidate_ref ?? ''}</td>
-          <td>${it.updated_at_utc ?? ''}</td>
+          <td>${fmtCentral(it.updated_at_utc)}</td>
         `;
         tb.appendChild(tr);
       }
@@ -3784,15 +3933,14 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         }
       }
 
-      if (auditPre) auditPre.textContent = (latest.audit_tail || []).join('
-');
+      if (auditPre) auditPre.textContent = (latest.audit_tail || []).join('\n');
       return d;
     }
 
     async function sfRefreshWeeklyDigest() {
       const d = await jget('/api/strategy_factory/weekly_digest');
       const el = document.getElementById('sfWeeklyDigest');
-      if (el) el.textContent = JSON.stringify((d.weekly_digest || {}), null, 2);
+      if (el) el.textContent = JSON.stringify(prettyDatesDeep(d.weekly_digest || {}), null, 2);
       return d;
     }
 

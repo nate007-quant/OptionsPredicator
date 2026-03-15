@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import traceback
 import re
 from dataclasses import asdict, dataclass
@@ -15,6 +16,7 @@ from options_ai.utils.timeparse import extract_observed_dt_utc
 from options_ai.ml.features import build_features
 from options_ai.ml.model_store import load_bundle
 from options_ai.ml.infer import infer as ml_infer
+from options_ai.regime import classify_regime, select_ml_model_version
 from options_ai.processes.analyzer import run_chart_extraction_if_available, run_prediction
 from options_ai.queries import (
     fetch_latest_performance_summary,
@@ -109,6 +111,70 @@ def _chart_enabled_for_provider(cfg: Config, provider: str) -> bool:
         return bool(cfg.chart_remote_enabled)
     return False
 
+
+
+def _safe_json_loads_obj(x: str | None) -> dict[str, Any]:
+    try:
+        v = json.loads(x or "{}")
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _bundle_exists(models_dir: str, model_version: str) -> bool:
+    root = Path(models_dir) / str(model_version)
+    return (root / "classifier.joblib").exists() and (root / "regressor.joblib").exists() and (root / "meta.json").exists()
+
+
+def _extract_prior_regime_labels(rows: list[dict[str, Any]], limit: int) -> list[str]:
+    out: list[str] = []
+    for r in rows[: max(0, int(limit or 0))]:
+        try:
+            payload = json.loads(str(r.get("signals_used") or "{}"))
+            computed = payload.get("computed") if isinstance(payload, dict) else {}
+            regime = computed.get("regime") if isinstance(computed, dict) else {}
+            lbl = regime.get("label") if isinstance(regime, dict) else None
+            if isinstance(lbl, str) and lbl:
+                out.append(lbl)
+        except Exception:
+            continue
+    return out
+
+
+def _fetch_chain_features_same_ts(observed_ts_utc: str) -> dict[str, Any]:
+    dsn = os.getenv("SPX_CHAIN_DATABASE_URL", "").strip()
+    if not dsn:
+        return {}
+    try:
+        import psycopg  # type: ignore
+    except Exception:
+        return {}
+
+    try:
+        with psycopg.connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT skew_25d, bf_25d, atm_bidask_spread, valid_mid_count, contract_count, low_quality
+                    FROM spx.chain_features_0dte
+                    WHERE snapshot_ts = %s
+                    LIMIT 1
+                    """,
+                    (observed_ts_utc,),
+                )
+                r = cur.fetchone()
+                if not r:
+                    return {}
+                return {
+                    "skew_25d": r[0],
+                    "bf_25d": r[1],
+                    "atm_bidask_spread": r[2],
+                    "valid_mid_count": r[3],
+                    "contract_count": r[4],
+                    "low_quality": bool(r[5]),
+                }
+    except Exception:
+        return {}
 
 
 def _compact_for_prompt(x: Any, *, float_ndigits: int = 4) -> Any:
@@ -595,8 +661,30 @@ def ingest_snapshot_file(
         "regime_label": compact_gex.regime_label,
         "subset": compact_gex.subset,
     }
-    prompt_signals = _compact_signals_for_prompt(model_signals)
 
+    regime_history_rows = fetch_recent_predictions_before(
+        db_path,
+        observed_ts_utc=observed_ts_utc,
+        limit=max(int(cfg.regime_hysteresis_snapshots or 2), 6),
+    )
+    chain_features_0dte = _fetch_chain_features_same_ts(observed_ts_utc)
+    regime_payload = classify_regime(
+        snapshot_summary={
+            "observed_utc": observed_ts_utc,
+            "spot_price": float(spot),
+            "has_ohlcv": bool(snapshot.get("ohlcv")),
+        },
+        model_signals=model_signals,
+        extra_ctx={
+            "regime_version": cfg.regime_version,
+            "hysteresis_snapshots": int(cfg.regime_hysteresis_snapshots or 2),
+            "prior_labels": _extract_prior_regime_labels(regime_history_rows, int(cfg.regime_hysteresis_snapshots or 2)),
+            "chain_features_0dte": chain_features_0dte,
+        },
+    )
+    model_signals["regime"] = regime_payload
+
+    prompt_signals = _compact_signals_for_prompt(model_signals)
 
     # S4 Snapshot summary
     if derived is not None and mode in {"none", "from_model"}:
@@ -1004,8 +1092,16 @@ def ingest_snapshot_file(
     # --- ML prediction row (optional, runs alongside LLM) ---
     if bool(cfg.ml_enabled):
         try:
-            # load bundle
-            bundle = load_bundle(str(cfg.ml_models_dir), str(cfg.ml_model_version))
+            regime_model_map = _safe_json_loads_obj(getattr(cfg, "regime_model_map_json", "{}"))
+            selected_ml_model_version, ml_route_reason = select_ml_model_version(
+                regime_payload=regime_payload,
+                regime_enabled=bool(getattr(cfg, "regime_enabled", True)),
+                regime_model_map=regime_model_map,
+                fallback_model_version=str(getattr(cfg, "regime_fallback_model_version", cfg.ml_model_version) or cfg.ml_model_version),
+                min_confidence_for_routing=float(getattr(cfg, "regime_min_confidence_for_routing", 0.55)),
+                model_exists=lambda mv: _bundle_exists(str(cfg.ml_models_dir), str(mv)),
+            )
+            bundle = load_bundle(str(cfg.ml_models_dir), str(selected_ml_model_version))
             feature_keys = list(bundle.meta.get("feature_keys") or sorted(features.keys()))
 
             ml_out = ml_infer(
@@ -1022,8 +1118,6 @@ def ingest_snapshot_file(
                 "timestamp": observed_ts_utc,
                 "observed_ts_utc": observed_ts_utc,
                 "outcome_ts_utc": (observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
-        "features_version": features_version,
-        "features_json": features_json,
                 "features_version": features_version,
                 "features_json": features_json,
                 "ticker": parsed.ticker,
@@ -1032,7 +1126,7 @@ def ingest_snapshot_file(
                 "source_snapshot_hash": snapshot_hash,
                 "chart_file": None,
                 "spot_price": float(spot),
-                "signals_used": json.dumps({"computed": model_signals, "ml": ml_out.diagnostics}, sort_keys=True),
+                "signals_used": json.dumps({"computed": model_signals, "ml": ml_out.diagnostics, "ml_route_reason": ml_route_reason}, sort_keys=True),
                 "chart_description": None,
                 "predicted_direction": ml_out.predicted_direction,
                 "predicted_magnitude": float(ml_out.predicted_magnitude),
@@ -1040,21 +1134,36 @@ def ingest_snapshot_file(
                 "strategy_suggested": "",
                 "reasoning": "ML two-stage (action gate + move regressor).",
                 "prompt_version": features_version,
-                "model_used": str(cfg.ml_model_version),
+                "model_used": str(selected_ml_model_version),
                 "model_provider": "ml",
-                "routing_reason": "ml_primary",
+                "routing_reason": ml_route_reason,
                 "price_at_prediction": float(spot),
+                "regime_label": regime_payload.get("label"),
+                "regime_confidence": regime_payload.get("confidence"),
+                "regime_version": regime_payload.get("version"),
             }
             _ = insert_prediction(db_path, ml_row)
+            try:
+                log_model(
+                    paths,
+                    level="INFO",
+                    event="ml_regime_routing",
+                    message="ml regime routing decision",
+                    snapshot_hash=snapshot_hash,
+                    model_used=str(selected_ml_model_version),
+                    model_provider="ml",
+                    routing_reason=ml_route_reason,
+                    regime_label=regime_payload.get("label"),
+                    regime_confidence=regime_payload.get("confidence"),
+                )
+            except Exception:
+                pass
         except Exception as _e:
-            # Still insert a neutral ML row so dashboards remain consistent
             try:
                 ml_row = {
                     "timestamp": observed_ts_utc,
                     "observed_ts_utc": observed_ts_utc,
                     "outcome_ts_utc": (observed_dt_utc.replace(microsecond=0) + timedelta(minutes=int(cfg.outcome_delay_minutes))).isoformat(),
-        "features_version": features_version,
-        "features_json": features_json,
                     "features_version": features_version,
                     "features_json": features_json,
                     "ticker": parsed.ticker,
@@ -1075,6 +1184,9 @@ def ingest_snapshot_file(
                     "model_provider": "ml",
                     "routing_reason": "ml_error",
                     "price_at_prediction": float(spot),
+                    "regime_label": regime_payload.get("label"),
+                    "regime_confidence": regime_payload.get("confidence"),
+                    "regime_version": regime_payload.get("version"),
                 }
                 _ = insert_prediction(db_path, ml_row)
             except Exception:
@@ -1109,6 +1221,9 @@ def ingest_snapshot_file(
         "model_provider": model_provider,
         "routing_reason": routing_reason,
         "price_at_prediction": float(spot),
+        "regime_label": regime_payload.get("label"),
+        "regime_confidence": regime_payload.get("confidence"),
+        "regime_version": regime_payload.get("version"),
     }
 
     pred_id = insert_prediction(db_path, row)

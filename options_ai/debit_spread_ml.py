@@ -37,7 +37,7 @@ class DebitMLConfig:
     poll_seconds: float = 20.0
 
     models_dir: str = "/mnt/options_ai/models/debit_spread"
-    model_version: str = "debit_ridge_v1"
+    model_version: str = "debit_ridge_v2_flow"
 
 
 SCHEMA_SQL = """
@@ -124,6 +124,30 @@ _NUM_FEATURES = [
     "contract_count",
     "valid_iv_count",
     "valid_mid_count",
+    "itm_vol",
+    "atm_vol",
+    "otm_vol",
+    "tot_vol",
+    "d_tot_vol",
+    "d_call_oi",
+    "d_put_oi",
+    "sma_spot_5",
+    "sma_spot_20",
+    "bb_pctb_20",
+    "rsi_14",
+    "twap_spot_day",
+    "vwap_chainweighted_spot_day",
+    "flow_pct_bullish",
+    "flow_pct_bearish",
+    "flow_breadth",
+    "flow_bucket_net_flow",
+    "flow_bucket_robust_z",
+    "flow_skew",
+    "flow_confidence",
+    "flow_atm_corridor_net",
+    "flow_atm_corridor_frac",
+    "flow_top3_share",
+    "flow_top5_share",
 ]
 
 
@@ -162,6 +186,30 @@ def _row_to_features(r: dict[str, Any]) -> tuple[np.ndarray, list[str]]:
         "contract_count": _as_float(r.get("contract_count")),
         "valid_iv_count": _as_float(r.get("valid_iv_count")),
         "valid_mid_count": _as_float(r.get("valid_mid_count")),
+        "itm_vol": _as_float(r.get("itm_vol")),
+        "atm_vol": _as_float(r.get("atm_vol")),
+        "otm_vol": _as_float(r.get("otm_vol")),
+        "tot_vol": _as_float(r.get("tot_vol")),
+        "d_tot_vol": _as_float(r.get("d_tot_vol")),
+        "d_call_oi": _as_float(r.get("d_call_oi")),
+        "d_put_oi": _as_float(r.get("d_put_oi")),
+        "sma_spot_5": _as_float(r.get("sma_spot_5")),
+        "sma_spot_20": _as_float(r.get("sma_spot_20")),
+        "bb_pctb_20": _as_float(r.get("bb_pctb_20")),
+        "rsi_14": _as_float(r.get("rsi_14")),
+        "twap_spot_day": _as_float(r.get("twap_spot_day")),
+        "vwap_chainweighted_spot_day": _as_float(r.get("vwap_chainweighted_spot_day")),
+        "flow_pct_bullish": _as_float(r.get("flow_pct_bullish")),
+        "flow_pct_bearish": _as_float(r.get("flow_pct_bearish")),
+        "flow_breadth": _as_float(r.get("flow_breadth")),
+        "flow_bucket_net_flow": _as_float(r.get("flow_bucket_net_flow")),
+        "flow_bucket_robust_z": _as_float(r.get("flow_bucket_robust_z")),
+        "flow_skew": _as_float(r.get("flow_skew")),
+        "flow_confidence": _as_float(r.get("flow_confidence")),
+        "flow_atm_corridor_net": _as_float(r.get("flow_atm_corridor_net")),
+        "flow_atm_corridor_frac": _as_float(r.get("flow_atm_corridor_frac")),
+        "flow_top3_share": _as_float(r.get("flow_top3_share")),
+        "flow_top5_share": _as_float(r.get("flow_top5_share")),
     }
 
     nums = [feat_map[k] for k in _NUM_FEATURES]
@@ -205,7 +253,14 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
               c.anchor_type, c.spread_type,
               c.debit_points, c.anchor_strike, c.k_long, c.k_short,
               f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
-              f.contract_count, f.valid_iv_count, f.valid_mid_count
+              f.contract_count, f.valid_iv_count, f.valid_mid_count,
+              f.itm_vol, f.atm_vol, f.otm_vol, f.tot_vol,
+              f.d_tot_vol, f.d_call_oi, f.d_put_oi,
+              f.sma_spot_5, f.sma_spot_20, f.bb_pctb_20, f.rsi_14,
+              f.twap_spot_day, f.vwap_chainweighted_spot_day,
+              f.flow_pct_bullish, f.flow_pct_bearish, f.flow_breadth,
+              f.flow_bucket_net_flow, f.flow_bucket_robust_z, f.flow_skew, f.flow_confidence,
+              f.flow_atm_corridor_net, f.flow_atm_corridor_frac, f.flow_top3_share, f.flow_top5_share
             FROM spx.debit_spread_labels_0dte l
             JOIN spx.debit_spread_candidates_0dte c
               ON c.snapshot_ts = l.snapshot_ts
@@ -245,6 +300,30 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
                     "contract_count": _as_float(r[15]),
                     "valid_iv_count": _as_float(r[16]),
                     "valid_mid_count": _as_float(r[17]),
+                    "itm_vol": _as_float(r[18]),
+                    "atm_vol": _as_float(r[19]),
+                    "otm_vol": _as_float(r[20]),
+                    "tot_vol": _as_float(r[21]),
+                    "d_tot_vol": _as_float(r[22]),
+                    "d_call_oi": _as_float(r[23]),
+                    "d_put_oi": _as_float(r[24]),
+                    "sma_spot_5": _as_float(r[25]),
+                    "sma_spot_20": _as_float(r[26]),
+                    "bb_pctb_20": _as_float(r[27]),
+                    "rsi_14": _as_float(r[28]),
+                    "twap_spot_day": _as_float(r[29]),
+                    "vwap_chainweighted_spot_day": _as_float(r[30]),
+                    "flow_pct_bullish": _as_float(r[31]),
+                    "flow_pct_bearish": _as_float(r[32]),
+                    "flow_breadth": _as_float(r[33]),
+                    "flow_bucket_net_flow": _as_float(r[34]),
+                    "flow_bucket_robust_z": _as_float(r[35]),
+                    "flow_skew": _as_float(r[36]),
+                    "flow_confidence": _as_float(r[37]),
+                    "flow_atm_corridor_net": _as_float(r[38]),
+                    "flow_atm_corridor_frac": _as_float(r[39]),
+                    "flow_top3_share": _as_float(r[40]),
+                    "flow_top5_share": _as_float(r[41]),
                 }
             )
         return rows
@@ -401,7 +480,14 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
               c.anchor_type, c.spread_type,
               c.debit_points, c.anchor_strike, c.k_long, c.k_short,
               f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
-              f.contract_count, f.valid_iv_count, f.valid_mid_count
+              f.contract_count, f.valid_iv_count, f.valid_mid_count,
+              f.itm_vol, f.atm_vol, f.otm_vol, f.tot_vol,
+              f.d_tot_vol, f.d_call_oi, f.d_put_oi,
+              f.sma_spot_5, f.sma_spot_20, f.bb_pctb_20, f.rsi_14,
+              f.twap_spot_day, f.vwap_chainweighted_spot_day,
+              f.flow_pct_bullish, f.flow_pct_bearish, f.flow_breadth,
+              f.flow_bucket_net_flow, f.flow_bucket_robust_z, f.flow_skew, f.flow_confidence,
+              f.flow_atm_corridor_net, f.flow_atm_corridor_frac, f.flow_top3_share, f.flow_top5_share
             FROM spx.debit_spread_candidates_0dte c
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
@@ -437,6 +523,30 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
             "contract_count": _as_float(rr[12]),
             "valid_iv_count": _as_float(rr[13]),
             "valid_mid_count": _as_float(rr[14]),
+            "itm_vol": _as_float(rr[15]),
+            "atm_vol": _as_float(rr[16]),
+            "otm_vol": _as_float(rr[17]),
+            "tot_vol": _as_float(rr[18]),
+            "d_tot_vol": _as_float(rr[19]),
+            "d_call_oi": _as_float(rr[20]),
+            "d_put_oi": _as_float(rr[21]),
+            "sma_spot_5": _as_float(rr[22]),
+            "sma_spot_20": _as_float(rr[23]),
+            "bb_pctb_20": _as_float(rr[24]),
+            "rsi_14": _as_float(rr[25]),
+            "twap_spot_day": _as_float(rr[26]),
+            "vwap_chainweighted_spot_day": _as_float(rr[27]),
+            "flow_pct_bullish": _as_float(rr[28]),
+            "flow_pct_bearish": _as_float(rr[29]),
+            "flow_breadth": _as_float(rr[30]),
+            "flow_bucket_net_flow": _as_float(rr[31]),
+            "flow_bucket_robust_z": _as_float(rr[32]),
+            "flow_skew": _as_float(rr[33]),
+            "flow_confidence": _as_float(rr[34]),
+            "flow_atm_corridor_net": _as_float(rr[35]),
+            "flow_atm_corridor_frac": _as_float(rr[36]),
+            "flow_top3_share": _as_float(rr[37]),
+            "flow_top5_share": _as_float(rr[38]),
         }
 
         nums = [d.get(k) for k in _NUM_FEATURES]
@@ -520,7 +630,14 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
               c.anchor_type, c.spread_type,
               c.debit_points, c.anchor_strike, c.k_long, c.k_short,
               f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
-              f.contract_count, f.valid_iv_count, f.valid_mid_count
+              f.contract_count, f.valid_iv_count, f.valid_mid_count,
+              f.itm_vol, f.atm_vol, f.otm_vol, f.tot_vol,
+              f.d_tot_vol, f.d_call_oi, f.d_put_oi,
+              f.sma_spot_5, f.sma_spot_20, f.bb_pctb_20, f.rsi_14,
+              f.twap_spot_day, f.vwap_chainweighted_spot_day,
+              f.flow_pct_bullish, f.flow_pct_bearish, f.flow_breadth,
+              f.flow_bucket_net_flow, f.flow_bucket_robust_z, f.flow_skew, f.flow_confidence,
+              f.flow_atm_corridor_net, f.flow_atm_corridor_frac, f.flow_top3_share, f.flow_top5_share
             FROM spx.debit_spread_candidates_0dte c
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
@@ -555,6 +672,30 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
             "contract_count": _as_float(rr[12]),
             "valid_iv_count": _as_float(rr[13]),
             "valid_mid_count": _as_float(rr[14]),
+            "itm_vol": _as_float(rr[15]),
+            "atm_vol": _as_float(rr[16]),
+            "otm_vol": _as_float(rr[17]),
+            "tot_vol": _as_float(rr[18]),
+            "d_tot_vol": _as_float(rr[19]),
+            "d_call_oi": _as_float(rr[20]),
+            "d_put_oi": _as_float(rr[21]),
+            "sma_spot_5": _as_float(rr[22]),
+            "sma_spot_20": _as_float(rr[23]),
+            "bb_pctb_20": _as_float(rr[24]),
+            "rsi_14": _as_float(rr[25]),
+            "twap_spot_day": _as_float(rr[26]),
+            "vwap_chainweighted_spot_day": _as_float(rr[27]),
+            "flow_pct_bullish": _as_float(rr[28]),
+            "flow_pct_bearish": _as_float(rr[29]),
+            "flow_breadth": _as_float(rr[30]),
+            "flow_bucket_net_flow": _as_float(rr[31]),
+            "flow_bucket_robust_z": _as_float(rr[32]),
+            "flow_skew": _as_float(rr[33]),
+            "flow_confidence": _as_float(rr[34]),
+            "flow_atm_corridor_net": _as_float(rr[35]),
+            "flow_atm_corridor_frac": _as_float(rr[36]),
+            "flow_top3_share": _as_float(rr[37]),
+            "flow_top5_share": _as_float(rr[38]),
         }
 
         nums = [d.get(k) for k in _NUM_FEATURES]
@@ -672,5 +813,5 @@ def load_config_from_env() -> DebitMLConfig:
         retrain_seconds=int(os.getenv("DEBIT_ML_RETRAIN_SECONDS", "900")),
         poll_seconds=float(os.getenv("DEBIT_ML_POLL_SECONDS", "20")),
         models_dir=os.getenv("DEBIT_ML_MODELS_DIR", "/mnt/options_ai/models/debit_spread"),
-        model_version=os.getenv("DEBIT_ML_MODEL_VERSION", "debit_ridge_v1"),
+        model_version=os.getenv("DEBIT_ML_MODEL_VERSION", "debit_ridge_v2_flow"),
     )

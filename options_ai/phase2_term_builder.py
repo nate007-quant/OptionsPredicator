@@ -4,12 +4,12 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Iterable
-
-from zoneinfo import ZoneInfo
+from statistics import mean
+from typing import Any
 
 import psycopg
 
+from options_ai.features.flow_engine import compute_options_flow
 from options_ai.term_expiration import pick_expiration_for_target_dte, term_bucket_name
 
 
@@ -25,13 +25,27 @@ class Phase2TermConfig:
     dte_tolerance_days: int = 2
     term_bucket: str = ""
 
-    horizons_minutes: tuple[int, ...] = (5760, 10080)  # default: half/full for dte7
+    horizons_minutes: tuple[int, ...] = (5760, 10080)
     max_future_lookahead_minutes: int = 20160
 
     label_eps_atm_iv: float = 0.0025
     label_eps_skew_25d: float = 0.0025
 
     min_contracts: int = 50
+
+    # Flow phase3 knobs
+    flow_max_strike_dist_pct: float = 0.40
+    flow_use_moneyness_weight: bool = True
+    flow_use_gaussian: bool = True
+    flow_winsorize_bucket: bool = True
+    flow_confirm_fast_win: int = 10
+    flow_confirm_slow_win: int = 60
+    flow_history_per_strike: int = 600
+    flow_bucket_z_window: int = 60
+    flow_min_breadth: float = 0.60
+    flow_min_bucket_z: float = 1.5
+    flow_conf_min: float = 0.60
+    flow_atm_corridor_pct: float = 0.01
 
     poll_seconds: float = 15.0
     batch_limit: int = 200
@@ -71,6 +85,46 @@ CREATE TABLE IF NOT EXISTS spx.chain_features_term (
   call_oi BIGINT,
   pcr_oi NUMERIC,
 
+  itm_vol BIGINT,
+  atm_vol BIGINT,
+  otm_vol BIGINT,
+  tot_vol BIGINT,
+
+  d_tot_vol BIGINT,
+  d_call_oi BIGINT,
+  d_put_oi BIGINT,
+
+  sma_spot_5 NUMERIC,
+  sma_spot_20 NUMERIC,
+  bb_mid_20 NUMERIC,
+  bb_upper_20 NUMERIC,
+  bb_lower_20 NUMERIC,
+  bb_pctb_20 NUMERIC,
+  rsi_14 NUMERIC,
+  twap_spot_day NUMERIC,
+  vwap_chainweighted_spot_day NUMERIC,
+
+  rsi_osob_label TEXT,
+  bb_osob_label TEXT,
+  pcr_oi_osob_label TEXT,
+
+  flow_total_strikes INT,
+  flow_pct_bullish NUMERIC,
+  flow_pct_bearish NUMERIC,
+  flow_breadth NUMERIC,
+  flow_bucket_net_flow NUMERIC,
+  flow_bucket_robust_z NUMERIC,
+  flow_skew NUMERIC,
+  flow_confidence NUMERIC,
+  flow_atm_corridor_net NUMERIC,
+  flow_atm_corridor_frac NUMERIC,
+  flow_top3_share NUMERIC,
+  flow_top5_share NUMERIC,
+  flow_bias_summary TEXT,
+  flow_breadth_pass BOOLEAN NOT NULL DEFAULT FALSE,
+  flow_bucketz_pass BOOLEAN NOT NULL DEFAULT FALSE,
+  flow_live_ok_default BOOLEAN NOT NULL DEFAULT TRUE,
+
   contract_count INT,
   valid_iv_count INT,
   valid_mid_count INT,
@@ -80,8 +134,17 @@ CREATE TABLE IF NOT EXISTS spx.chain_features_term (
   PRIMARY KEY (snapshot_ts, expiration_date)
 );
 
+CREATE TABLE IF NOT EXISTS spx.chain_flow_strike_term (
+  snapshot_ts TIMESTAMPTZ NOT NULL,
+  term_bucket TEXT NOT NULL,
+  strike NUMERIC NOT NULL,
+  net_flow NUMERIC,
+  PRIMARY KEY (snapshot_ts, term_bucket, strike)
+);
+
 CREATE INDEX IF NOT EXISTS chain_features_term_bucket_ts_idx ON spx.chain_features_term (term_bucket, snapshot_ts DESC);
 CREATE INDEX IF NOT EXISTS chain_features_term_exp_ts_idx ON spx.chain_features_term (expiration_date, snapshot_ts DESC);
+CREATE INDEX IF NOT EXISTS chain_flow_strike_term_bucket_ts_idx ON spx.chain_flow_strike_term (term_bucket, snapshot_ts DESC);
 
 CREATE TABLE IF NOT EXISTS spx.chain_labels_term (
   snapshot_ts TIMESTAMPTZ NOT NULL,
@@ -110,6 +173,43 @@ CREATE TABLE IF NOT EXISTS spx.chain_labels_term (
 CREATE INDEX IF NOT EXISTS chain_labels_term_bucket_ts_idx ON spx.chain_labels_term (term_bucket, snapshot_ts DESC);
 """
 
+ALTER_SQL = """
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS itm_vol BIGINT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS atm_vol BIGINT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS otm_vol BIGINT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS tot_vol BIGINT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS d_tot_vol BIGINT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS d_call_oi BIGINT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS d_put_oi BIGINT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS sma_spot_5 NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS sma_spot_20 NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS bb_mid_20 NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS bb_upper_20 NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS bb_lower_20 NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS bb_pctb_20 NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS rsi_14 NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS twap_spot_day NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS vwap_chainweighted_spot_day NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS rsi_osob_label TEXT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS bb_osob_label TEXT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS pcr_oi_osob_label TEXT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_total_strikes INT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_pct_bullish NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_pct_bearish NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_breadth NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_bucket_net_flow NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_bucket_robust_z NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_skew NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_confidence NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_atm_corridor_net NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_atm_corridor_frac NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_top3_share NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_top5_share NUMERIC;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_bias_summary TEXT;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_breadth_pass BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_bucketz_pass BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE spx.chain_features_term ADD COLUMN IF NOT EXISTS flow_live_ok_default BOOLEAN NOT NULL DEFAULT TRUE;
+"""
 
 UPSERT_FEATURE_SQL = """
 INSERT INTO spx.chain_features_term (
@@ -120,8 +220,17 @@ INSERT INTO spx.chain_features_term (
   iv_put_25d, iv_call_25d, skew_25d, bf_25d,
   put_volume, call_volume, pcr_volume,
   put_oi, call_oi, pcr_oi,
-  contract_count, valid_iv_count, valid_mid_count,
-  low_quality
+  itm_vol, atm_vol, otm_vol, tot_vol,
+  d_tot_vol, d_call_oi, d_put_oi,
+  sma_spot_5, sma_spot_20,
+  bb_mid_20, bb_upper_20, bb_lower_20, bb_pctb_20,
+  rsi_14, twap_spot_day, vwap_chainweighted_spot_day,
+  rsi_osob_label, bb_osob_label, pcr_oi_osob_label,
+  flow_total_strikes, flow_pct_bullish, flow_pct_bearish, flow_breadth,
+  flow_bucket_net_flow, flow_bucket_robust_z, flow_skew, flow_confidence,
+  flow_atm_corridor_net, flow_atm_corridor_frac, flow_top3_share, flow_top5_share,
+  flow_bias_summary, flow_breadth_pass, flow_bucketz_pass, flow_live_ok_default,
+  contract_count, valid_iv_count, valid_mid_count, low_quality
 ) VALUES (
   %(snapshot_ts)s, %(expiration_date)s,
   %(term_bucket)s, %(target_dte_days)s, %(dte_tolerance_days)s, %(dte_days)s, %(dte_diff)s,
@@ -130,8 +239,17 @@ INSERT INTO spx.chain_features_term (
   %(iv_put_25d)s, %(iv_call_25d)s, %(skew_25d)s, %(bf_25d)s,
   %(put_volume)s, %(call_volume)s, %(pcr_volume)s,
   %(put_oi)s, %(call_oi)s, %(pcr_oi)s,
-  %(contract_count)s, %(valid_iv_count)s, %(valid_mid_count)s,
-  %(low_quality)s
+  %(itm_vol)s, %(atm_vol)s, %(otm_vol)s, %(tot_vol)s,
+  %(d_tot_vol)s, %(d_call_oi)s, %(d_put_oi)s,
+  %(sma_spot_5)s, %(sma_spot_20)s,
+  %(bb_mid_20)s, %(bb_upper_20)s, %(bb_lower_20)s, %(bb_pctb_20)s,
+  %(rsi_14)s, %(twap_spot_day)s, %(vwap_chainweighted_spot_day)s,
+  %(rsi_osob_label)s, %(bb_osob_label)s, %(pcr_oi_osob_label)s,
+  %(flow_total_strikes)s, %(flow_pct_bullish)s, %(flow_pct_bearish)s, %(flow_breadth)s,
+  %(flow_bucket_net_flow)s, %(flow_bucket_robust_z)s, %(flow_skew)s, %(flow_confidence)s,
+  %(flow_atm_corridor_net)s, %(flow_atm_corridor_frac)s, %(flow_top3_share)s, %(flow_top5_share)s,
+  %(flow_bias_summary)s, %(flow_breadth_pass)s, %(flow_bucketz_pass)s, %(flow_live_ok_default)s,
+  %(contract_count)s, %(valid_iv_count)s, %(valid_mid_count)s, %(low_quality)s
 )
 ON CONFLICT (snapshot_ts, expiration_date) DO UPDATE SET
   term_bucket = EXCLUDED.term_bucket,
@@ -156,6 +274,41 @@ ON CONFLICT (snapshot_ts, expiration_date) DO UPDATE SET
   put_oi = EXCLUDED.put_oi,
   call_oi = EXCLUDED.call_oi,
   pcr_oi = EXCLUDED.pcr_oi,
+  itm_vol = EXCLUDED.itm_vol,
+  atm_vol = EXCLUDED.atm_vol,
+  otm_vol = EXCLUDED.otm_vol,
+  tot_vol = EXCLUDED.tot_vol,
+  d_tot_vol = EXCLUDED.d_tot_vol,
+  d_call_oi = EXCLUDED.d_call_oi,
+  d_put_oi = EXCLUDED.d_put_oi,
+  sma_spot_5 = EXCLUDED.sma_spot_5,
+  sma_spot_20 = EXCLUDED.sma_spot_20,
+  bb_mid_20 = EXCLUDED.bb_mid_20,
+  bb_upper_20 = EXCLUDED.bb_upper_20,
+  bb_lower_20 = EXCLUDED.bb_lower_20,
+  bb_pctb_20 = EXCLUDED.bb_pctb_20,
+  rsi_14 = EXCLUDED.rsi_14,
+  twap_spot_day = EXCLUDED.twap_spot_day,
+  vwap_chainweighted_spot_day = EXCLUDED.vwap_chainweighted_spot_day,
+  rsi_osob_label = EXCLUDED.rsi_osob_label,
+  bb_osob_label = EXCLUDED.bb_osob_label,
+  pcr_oi_osob_label = EXCLUDED.pcr_oi_osob_label,
+  flow_total_strikes = EXCLUDED.flow_total_strikes,
+  flow_pct_bullish = EXCLUDED.flow_pct_bullish,
+  flow_pct_bearish = EXCLUDED.flow_pct_bearish,
+  flow_breadth = EXCLUDED.flow_breadth,
+  flow_bucket_net_flow = EXCLUDED.flow_bucket_net_flow,
+  flow_bucket_robust_z = EXCLUDED.flow_bucket_robust_z,
+  flow_skew = EXCLUDED.flow_skew,
+  flow_confidence = EXCLUDED.flow_confidence,
+  flow_atm_corridor_net = EXCLUDED.flow_atm_corridor_net,
+  flow_atm_corridor_frac = EXCLUDED.flow_atm_corridor_frac,
+  flow_top3_share = EXCLUDED.flow_top3_share,
+  flow_top5_share = EXCLUDED.flow_top5_share,
+  flow_bias_summary = EXCLUDED.flow_bias_summary,
+  flow_breadth_pass = EXCLUDED.flow_breadth_pass,
+  flow_bucketz_pass = EXCLUDED.flow_bucketz_pass,
+  flow_live_ok_default = EXCLUDED.flow_live_ok_default,
   contract_count = EXCLUDED.contract_count,
   valid_iv_count = EXCLUDED.valid_iv_count,
   valid_mid_count = EXCLUDED.valid_mid_count,
@@ -163,6 +316,11 @@ ON CONFLICT (snapshot_ts, expiration_date) DO UPDATE SET
   computed_at = now();
 """
 
+UPSERT_STRIKE_FLOW_SQL = """
+INSERT INTO spx.chain_flow_strike_term (snapshot_ts, term_bucket, strike, net_flow)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (snapshot_ts, term_bucket, strike) DO UPDATE SET net_flow = EXCLUDED.net_flow;
+"""
 
 UPSERT_LABEL_SQL = """
 INSERT INTO spx.chain_labels_term (
@@ -204,17 +362,6 @@ def _sign_eps(x: float | None, eps: float) -> int | None:
     return 0
 
 
-def _median(vals: list[float]) -> float | None:
-    if not vals:
-        return None
-    s = sorted(vals)
-    n = len(s)
-    mid = n // 2
-    if n % 2 == 1:
-        return float(s[mid])
-    return 0.5 * (float(s[mid - 1]) + float(s[mid]))
-
-
 def _as_float(x: Any) -> float | None:
     if x is None:
         return None
@@ -233,29 +380,60 @@ def _as_int(x: Any) -> int | None:
         return None
 
 
+def _median(vals: list[float]) -> float | None:
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    if n % 2 == 1:
+        return float(s[n // 2])
+    return 0.5 * (float(s[n // 2 - 1]) + float(s[n // 2]))
+
+
+def _std(vals: list[float]) -> float:
+    if len(vals) <= 1:
+        return 0.0
+    mu = mean(vals)
+    return float((sum((x - mu) ** 2 for x in vals) / len(vals)) ** 0.5)
+
+
+def _rsi(values: list[float], period: int = 14) -> float | None:
+    if len(values) < period + 1:
+        return None
+    d = [values[i] - values[i - 1] for i in range(1, len(values))]
+    w = d[-period:]
+    g = sum(max(x, 0.0) for x in w) / period
+    l = sum(max(-x, 0.0) for x in w) / period
+    if l == 0:
+        return 100.0 if g > 0 else 50.0
+    rs = g / l
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
 def ensure_schema(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
-        cur.execute(SCHEMA_SQL)
-        conn.commit()
+        # Protect concurrent term daemons (multiple buckets) from DDL races.
+        cur.execute("SELECT pg_advisory_lock(902103120173)")
+        try:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(ALTER_SQL)
+            conn.commit()
+        finally:
+            cur.execute("SELECT pg_advisory_unlock(902103120173)")
 
 
-def _fetch_chain_rows(cur: psycopg.Cursor, snapshot_ts: datetime, expiration_date) -> list[dict[str, Any]]:
+def _fetch_chain_rows(cur: psycopg.Cursor, snapshot_ts: datetime, expiration_date: Any) -> list[dict[str, Any]]:
     cur.execute(
         """
-        SELECT
-          side, strike, iv, delta,
-          mid, bid, ask,
-          underlying_price,
-          volume, open_interest
+        SELECT side, strike, iv, delta, mid, bid, ask, underlying_price, volume, open_interest
         FROM spx.option_chain
-        WHERE snapshot_ts = %s
-          AND expiration_date = %s
+        WHERE snapshot_ts = %s AND expiration_date = %s
         """,
         (snapshot_ts, expiration_date),
     )
-    rows = []
+    out = []
     for r in cur.fetchall():
-        rows.append(
+        out.append(
             {
                 "side": r[0],
                 "strike": _as_float(r[1]),
@@ -269,22 +447,104 @@ def _fetch_chain_rows(cur: psycopg.Cursor, snapshot_ts: datetime, expiration_dat
                 "open_interest": _as_int(r[9]),
             }
         )
-    return rows
+    return out
 
 
 def _pick_atm_strike(chain: list[dict[str, Any]], spot: float | None) -> float | None:
     strikes = sorted({c["strike"] for c in chain if c.get("strike") is not None})
     if spot is None or not strikes:
         return None
-    best = None
-    atm = None
-    for k in strikes:
-        d = abs(float(k) - float(spot))
-        cand = (d, float(k))
-        if best is None or cand < best:
-            best = cand
-            atm = float(k)
-    return atm
+    return min(strikes, key=lambda k: (abs(float(k) - float(spot)), float(k)))
+
+
+def _fetch_prev_feature(cur: psycopg.Cursor, snapshot_ts: datetime, term_bucket: str) -> dict[str, Any] | None:
+    cur.execute(
+        """
+        SELECT tot_vol, call_oi, put_oi
+        FROM spx.chain_features_term
+        WHERE term_bucket=%s AND snapshot_ts < %s
+        ORDER BY snapshot_ts DESC
+        LIMIT 1
+        """,
+        (term_bucket, snapshot_ts),
+    )
+    r = cur.fetchone()
+    if not r:
+        return None
+    return {"tot_vol": _as_int(r[0]), "call_oi": _as_int(r[1]), "put_oi": _as_int(r[2])}
+
+
+def _fetch_recent_spots(cur: psycopg.Cursor, snapshot_ts: datetime, term_bucket: str, limit: int) -> list[float]:
+    cur.execute(
+        """
+        SELECT spot
+        FROM spx.chain_features_term
+        WHERE term_bucket=%s AND snapshot_ts < %s AND spot IS NOT NULL
+        ORDER BY snapshot_ts DESC
+        LIMIT %s
+        """,
+        (term_bucket, snapshot_ts, int(limit)),
+    )
+    vals = [float(r[0]) for r in cur.fetchall() if r[0] is not None]
+    vals.reverse()
+    return vals
+
+
+def _fetch_day_spot_vol(cur: psycopg.Cursor, snapshot_ts: datetime, term_bucket: str, tz_local: str) -> list[tuple[float, float]]:
+    cur.execute(
+        """
+        SELECT spot, COALESCE(tot_vol,0)
+        FROM spx.chain_features_term
+        WHERE term_bucket=%s
+          AND snapshot_ts < %s
+          AND (snapshot_ts AT TIME ZONE %s)::date = (%s AT TIME ZONE %s)::date
+          AND spot IS NOT NULL
+        ORDER BY snapshot_ts ASC
+        """,
+        (term_bucket, snapshot_ts, tz_local, snapshot_ts, tz_local),
+    )
+    return [(float(s), float(v or 0.0)) for s, v in cur.fetchall() if s is not None]
+
+
+def _fetch_strike_histories(cur: psycopg.Cursor, snapshot_ts: datetime, term_bucket: str, strikes: list[float], max_per: int) -> dict[float, list[float]]:
+    if not strikes:
+        return {}
+    cur.execute(
+        """
+        SELECT strike, net_flow
+        FROM (
+          SELECT strike, net_flow,
+                 ROW_NUMBER() OVER (PARTITION BY strike ORDER BY snapshot_ts DESC) rn
+          FROM spx.chain_flow_strike_term
+          WHERE term_bucket=%s AND snapshot_ts < %s AND strike = ANY(%s)
+        ) q
+        WHERE rn <= %s
+        ORDER BY strike ASC, rn DESC
+        """,
+        (term_bucket, snapshot_ts, strikes, int(max_per)),
+    )
+    out: dict[float, list[float]] = {}
+    for k, v in cur.fetchall():
+        if k is None or v is None:
+            continue
+        out.setdefault(float(k), []).append(float(v))
+    return out
+
+
+def _fetch_bucket_series(cur: psycopg.Cursor, snapshot_ts: datetime, term_bucket: str, limit: int) -> list[float]:
+    cur.execute(
+        """
+        SELECT flow_bucket_net_flow
+        FROM spx.chain_features_term
+        WHERE term_bucket=%s AND snapshot_ts < %s AND flow_bucket_net_flow IS NOT NULL
+        ORDER BY snapshot_ts DESC
+        LIMIT %s
+        """,
+        (term_bucket, snapshot_ts, int(limit)),
+    )
+    vals = [float(r[0]) for r in cur.fetchall() if r[0] is not None]
+    vals.reverse()
+    return vals
 
 
 def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: datetime, cfg: Phase2TermConfig) -> dict[str, Any] | None:
@@ -306,7 +566,6 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
             return None
 
         contract_count = len(chain)
-
         spot_vals = [c["underlying_price"] for c in chain if c.get("underlying_price") is not None]
         spot = _median([float(x) for x in spot_vals if x is not None])
 
@@ -340,8 +599,7 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
                     b, a = c.get("bid"), c.get("ask")
                     if b is not None and a is not None and a >= b:
                         mid = 0.5 * (b + a)
-                score = 0 if mid is not None else 1
-                cands.append((score, float(iv)))
+                cands.append((0 if mid is not None else 1, float(iv)))
             if not cands:
                 return None
             cands.sort()
@@ -349,22 +607,11 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
 
         atm_call_iv = _best_iv_at_strike("call")
         atm_put_iv = _best_iv_at_strike("put")
-        atm_iv = None
-        if atm_call_iv is not None and atm_put_iv is not None:
-            atm_iv = 0.5 * (atm_call_iv + atm_put_iv)
-        else:
-            atm_iv = atm_call_iv if atm_call_iv is not None else atm_put_iv
+        atm_iv = 0.5 * (atm_call_iv + atm_put_iv) if (atm_call_iv is not None and atm_put_iv is not None) else (atm_call_iv if atm_call_iv is not None else atm_put_iv)
 
         atm_bidask_spread = None
         if atm_strike is not None:
-            spreads: list[float] = []
-            for c in chain:
-                if c.get("strike") is None or float(c["strike"]) != float(atm_strike):
-                    continue
-                b, a = c.get("bid"), c.get("ask")
-                if b is None or a is None or a < b:
-                    continue
-                spreads.append(float(a - b))
+            spreads = [float(c["ask"] - c["bid"]) for c in chain if c.get("strike") is not None and float(c["strike"]) == float(atm_strike) and c.get("bid") is not None and c.get("ask") is not None and c["ask"] >= c["bid"]]
             if spreads:
                 atm_bidask_spread = _median(spreads)
 
@@ -383,8 +630,7 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
                     b, a = c.get("bid"), c.get("ask")
                     if b is not None and a is not None and a >= b:
                         mid = 0.5 * (b + a)
-                dist = abs(float(d) - float(target))
-                score = (0 if mid is not None else 1, dist)
+                score = (0 if mid is not None else 1, abs(float(d) - float(target)))
                 if best is None or score < best:
                     best = score
                     best_iv = float(iv)
@@ -408,11 +654,67 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
         pcr_volume = float(put_volume) / float(call_volume) if call_volume else None
         pcr_oi = float(put_oi) / float(call_oi) if call_oi else None
 
-        low_quality = False
-        if contract_count < int(cfg.min_contracts):
-            low_quality = True
-        if atm_iv is None:
-            low_quality = True
+        itm_vol = atm_vol = otm_vol = 0
+        if spot is not None and spot > 0:
+            for c in chain:
+                vol = int(c.get("volume") or 0)
+                if vol <= 0 or c.get("strike") is None:
+                    continue
+                dist = abs(float(c["strike"]) - float(spot)) / float(spot)
+                if dist <= float(cfg.flow_atm_corridor_pct):
+                    atm_vol += vol
+                    continue
+                sd = str(c.get("side") or "").lower()
+                if sd == "call":
+                    itm_vol += vol if float(c["strike"]) < float(spot) else 0
+                    otm_vol += vol if float(c["strike"]) >= float(spot) else 0
+                elif sd == "put":
+                    itm_vol += vol if float(c["strike"]) > float(spot) else 0
+                    otm_vol += vol if float(c["strike"]) <= float(spot) else 0
+
+        tot_vol = int(itm_vol + atm_vol + otm_vol)
+
+        prev = _fetch_prev_feature(cur, snapshot_ts, cfg.term_bucket)
+        d_tot_vol = int(tot_vol - int(prev["tot_vol"])) if prev and prev.get("tot_vol") is not None else None
+        d_call_oi = int(call_oi - int(prev["call_oi"])) if prev and prev.get("call_oi") is not None else None
+        d_put_oi = int(put_oi - int(prev["put_oi"])) if prev and prev.get("put_oi") is not None else None
+
+        hist_spots = _fetch_recent_spots(cur, snapshot_ts, cfg.term_bucket, 30)
+        if spot is not None:
+            hist_spots.append(float(spot))
+
+        sma_spot_5 = mean(hist_spots[-5:]) if hist_spots else None
+        sma_spot_20 = mean(hist_spots[-20:]) if hist_spots else None
+
+        bb_mid_20 = bb_upper_20 = bb_lower_20 = bb_pctb_20 = None
+        if len(hist_spots) >= 20:
+            w = hist_spots[-20:]
+            bb_mid_20 = float(mean(w))
+            sd = _std(w)
+            bb_upper_20 = bb_mid_20 + 2.0 * sd
+            bb_lower_20 = bb_mid_20 - 2.0 * sd
+            if spot is not None and bb_upper_20 > bb_lower_20:
+                bb_pctb_20 = float((spot - bb_lower_20) / (bb_upper_20 - bb_lower_20))
+
+        rsi_14 = _rsi(hist_spots, 14) if hist_spots else None
+
+        day_vals = _fetch_day_spot_vol(cur, snapshot_ts, cfg.term_bucket, cfg.tz_local)
+        if spot is not None:
+            day_vals.append((float(spot), float(tot_vol)))
+        twap_spot_day = float(sum(s for s, _ in day_vals) / len(day_vals)) if day_vals else None
+        denom = sum(v for _, v in day_vals)
+        vwap_chainweighted_spot_day = float(sum(s * v for s, v in day_vals) / denom) if denom > 0 else twap_spot_day
+
+        rsi_osob_label = "Overbought" if (rsi_14 is not None and rsi_14 > 70.0) else ("Oversold" if (rsi_14 is not None and rsi_14 < 30.0) else "Neutral")
+        bb_osob_label = "Overbought" if (bb_pctb_20 is not None and bb_pctb_20 > 1.0) else ("Oversold" if (bb_pctb_20 is not None and bb_pctb_20 < 0.0) else "Neutral")
+        pcr_oi_osob_label = "Oversold" if (pcr_oi is not None and pcr_oi >= 1.30) else ("Overbought" if (pcr_oi is not None and pcr_oi <= 0.70) else "Neutral")
+
+        strikes = sorted({float(c["strike"]) for c in chain if c.get("strike") is not None})
+        strike_hist = _fetch_strike_histories(cur, snapshot_ts, cfg.term_bucket, strikes, int(cfg.flow_history_per_strike))
+        bucket_series = _fetch_bucket_series(cur, snapshot_ts, cfg.term_bucket, max(int(cfg.flow_bucket_z_window), 200))
+        flow = compute_options_flow(chain, spot, cfg, strike_hist, bucket_series)
+
+        low_quality = contract_count < int(cfg.min_contracts) or atm_iv is None
 
         feat = {
             "snapshot_ts": snapshot_ts,
@@ -439,6 +741,41 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
             "put_oi": put_oi,
             "call_oi": call_oi,
             "pcr_oi": pcr_oi,
+            "itm_vol": itm_vol,
+            "atm_vol": atm_vol,
+            "otm_vol": otm_vol,
+            "tot_vol": tot_vol,
+            "d_tot_vol": d_tot_vol,
+            "d_call_oi": d_call_oi,
+            "d_put_oi": d_put_oi,
+            "sma_spot_5": sma_spot_5,
+            "sma_spot_20": sma_spot_20,
+            "bb_mid_20": bb_mid_20,
+            "bb_upper_20": bb_upper_20,
+            "bb_lower_20": bb_lower_20,
+            "bb_pctb_20": bb_pctb_20,
+            "rsi_14": rsi_14,
+            "twap_spot_day": twap_spot_day,
+            "vwap_chainweighted_spot_day": vwap_chainweighted_spot_day,
+            "rsi_osob_label": rsi_osob_label,
+            "bb_osob_label": bb_osob_label,
+            "pcr_oi_osob_label": pcr_oi_osob_label,
+            "flow_total_strikes": flow["flow_total_strikes"],
+            "flow_pct_bullish": flow["flow_pct_bullish"],
+            "flow_pct_bearish": flow["flow_pct_bearish"],
+            "flow_breadth": flow["flow_breadth"],
+            "flow_bucket_net_flow": flow["flow_bucket_net_flow"],
+            "flow_bucket_robust_z": flow["flow_bucket_robust_z"],
+            "flow_skew": flow["flow_skew"],
+            "flow_confidence": flow["flow_confidence"],
+            "flow_atm_corridor_net": flow["flow_atm_corridor_net"],
+            "flow_atm_corridor_frac": flow["flow_atm_corridor_frac"],
+            "flow_top3_share": flow["flow_top3_share"],
+            "flow_top5_share": flow["flow_top5_share"],
+            "flow_bias_summary": flow["flow_bias_summary"],
+            "flow_breadth_pass": flow["flow_breadth_pass"],
+            "flow_bucketz_pass": flow["flow_bucketz_pass"],
+            "flow_live_ok_default": flow["flow_live_ok_default"],
             "contract_count": contract_count,
             "valid_iv_count": valid_iv_count,
             "valid_mid_count": valid_mid_count,
@@ -446,6 +783,8 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
         }
 
         cur.execute(UPSERT_FEATURE_SQL, feat)
+        for k, v in flow.get("flow_strike_net_map", {}).items():
+            cur.execute(UPSERT_STRIKE_FLOW_SQL, (snapshot_ts, cfg.term_bucket, float(k), float(v)))
         conn.commit()
         return feat
 
@@ -466,21 +805,10 @@ def _fetch_next_feature_row(cur: psycopg.Cursor, *, term_bucket: str, ts_target:
     r = cur.fetchone()
     if not r:
         return None
-    return {
-        "snapshot_ts": r[0],
-        "atm_iv": _as_float(r[1]),
-        "skew_25d": _as_float(r[2]),
-        "low_quality": bool(r[3]),
-    }
+    return {"snapshot_ts": r[0], "atm_iv": _as_float(r[1]), "skew_25d": _as_float(r[2]), "low_quality": bool(r[3])}
 
 
-def compute_labels_for_feature_row(
-    conn: psycopg.Connection,
-    *,
-    snapshot_ts: datetime,
-    expiration_date,
-    cfg: Phase2TermConfig,
-) -> int:
+def compute_labels_for_feature_row(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_date: Any, cfg: Phase2TermConfig) -> int:
     horizons = [int(h) for h in cfg.horizons_minutes]
     if not horizons:
         return 0
@@ -490,9 +818,7 @@ def compute_labels_for_feature_row(
             """
             SELECT atm_iv, skew_25d, low_quality
             FROM spx.chain_features_term
-            WHERE snapshot_ts = %s
-              AND expiration_date = %s
-              AND term_bucket = %s
+            WHERE snapshot_ts=%s AND expiration_date=%s AND term_bucket=%s
             """,
             (snapshot_ts, expiration_date, cfg.term_bucket),
         )
@@ -508,21 +834,14 @@ def compute_labels_for_feature_row(
         for h in horizons:
             target = snapshot_ts + timedelta(minutes=h)
             max_ts = target + timedelta(minutes=int(cfg.max_future_lookahead_minutes))
-
             fut = _fetch_next_feature_row(cur, term_bucket=cfg.term_bucket, ts_target=target, ts_max=max_ts)
-            is_missing_future = fut is None
 
             atm_iv_tH = fut["atm_iv"] if fut else None
             skew_tH = fut["skew_25d"] if fut else None
             lowq_tH = bool(fut["low_quality"]) if fut else False
 
-            atm_iv_change = None
-            if atm_iv_t is not None and atm_iv_tH is not None:
-                atm_iv_change = float(atm_iv_tH - atm_iv_t)
-
-            skew_change = None
-            if skew_25d_t is not None and skew_tH is not None:
-                skew_change = float(skew_tH - skew_25d_t)
+            atm_iv_change = float(atm_iv_tH - atm_iv_t) if (atm_iv_t is not None and atm_iv_tH is not None) else None
+            skew_change = float(skew_tH - skew_25d_t) if (skew_25d_t is not None and skew_tH is not None) else None
 
             cur.execute(
                 UPSERT_LABEL_SQL,
@@ -539,7 +858,7 @@ def compute_labels_for_feature_row(
                     "skew_25d_tH": skew_tH,
                     "skew_25d_change": skew_change,
                     "label_skew_25d_dir": _sign_eps(skew_change, float(cfg.label_eps_skew_25d)),
-                    "is_missing_future": bool(is_missing_future),
+                    "is_missing_future": bool(fut is None),
                     "is_low_quality": bool(lowq_t or lowq_tH),
                 },
             )
@@ -550,17 +869,6 @@ def compute_labels_for_feature_row(
 
 
 def _candidate_snapshot_ts(conn: psycopg.Connection, *, cfg: Phase2TermConfig, limit: int) -> list[datetime]:
-    """Pick snapshot_ts values to process.
-
-    For term horizons measured in days, the most recent snapshots won't have enough
-    future data to form labels yet. To bootstrap training, we mix:
-
-    - recent snapshots (for near-live features)
-    - snapshots old enough that (ts + max_horizon) is likely within the available data
-
-    We still compute missing-future labels when they occur; ML training filters those out.
-    """
-
     n = max(1, int(limit))
     n_recent = max(1, n // 2)
     n_hist = max(1, n - n_recent)
@@ -571,7 +879,6 @@ def _candidate_snapshot_ts(conn: psycopg.Connection, *, cfg: Phase2TermConfig, l
         r = cur.fetchone()
         max_ts = r[0] if r else None
 
-        # 1) very recent
         cur.execute(
             """
             SELECT DISTINCT snapshot_ts
@@ -608,7 +915,6 @@ def _candidate_snapshot_ts(conn: psycopg.Connection, *, cfg: Phase2TermConfig, l
     return out
 
 
-
 def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, limit: int) -> list[tuple[datetime, Any]]:
     with conn.cursor() as cur:
         cur.execute(
@@ -638,22 +944,25 @@ def run_daemon(cfg: Phase2TermConfig) -> None:
         did = False
         try:
             with psycopg.connect(cfg.db_dsn) as conn:
-                # Features backfill: sample recent snapshot_ts, pick term expiration per snapshot
                 for ts in _candidate_snapshot_ts(conn, cfg=cfg, limit=cfg.batch_limit):
-                    r = compute_features_for_snapshot(conn, snapshot_ts=ts, cfg=cfg)
-                    if r:
+                    if compute_features_for_snapshot(conn, snapshot_ts=ts, cfg=cfg):
                         did = True
 
-                # Labels backfill: for feature rows in this bucket missing any labels
                 for ts, exp in _feature_rows_missing_labels(conn, term_bucket=cfg.term_bucket, limit=cfg.batch_limit):
                     n = compute_labels_for_feature_row(conn, snapshot_ts=ts, expiration_date=exp, cfg=cfg)
                     if n:
                         did = True
-
         except Exception:
             pass
 
         time.sleep(cfg.poll_seconds if not did else 0.1)
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def load_config_from_env() -> Phase2TermConfig:
@@ -665,8 +974,6 @@ def load_config_from_env() -> Phase2TermConfig:
     if not db:
         raise RuntimeError("PHASE2_DB_DSN (or SPX_CHAIN_DATABASE_URL) is required")
 
-    tz_local = os.getenv("TZ_LOCAL", TZ_LOCAL_DEFAULT).strip() or TZ_LOCAL_DEFAULT
-
     target = int(os.getenv("TARGET_DTE_DAYS", "7"))
     tol = int(os.getenv("DTE_TOLERANCE_DAYS", "2"))
     bucket = os.getenv("TERM_BUCKET", "").strip() or term_bucket_name(target_dte_days=target, dte_tolerance_days=tol)
@@ -676,7 +983,7 @@ def load_config_from_env() -> Phase2TermConfig:
 
     return Phase2TermConfig(
         db_dsn=db,
-        tz_local=tz_local,
+        tz_local=os.getenv("TZ_LOCAL", TZ_LOCAL_DEFAULT).strip() or TZ_LOCAL_DEFAULT,
         target_dte_days=target,
         dte_tolerance_days=tol,
         term_bucket=bucket,
@@ -685,6 +992,18 @@ def load_config_from_env() -> Phase2TermConfig:
         label_eps_atm_iv=float(os.getenv("LABEL_EPS_ATM_IV", "0.0025")),
         label_eps_skew_25d=float(os.getenv("LABEL_EPS_SKEW_25D", "0.0025")),
         min_contracts=int(os.getenv("MIN_CONTRACTS", "50")),
+        flow_max_strike_dist_pct=float(os.getenv("FLOW_MAX_STRIKE_DIST_PCT", "0.40")),
+        flow_use_moneyness_weight=_get_bool("FLOW_USE_MONEYNESS_WEIGHT", True),
+        flow_use_gaussian=_get_bool("FLOW_USE_GAUSSIAN", True),
+        flow_winsorize_bucket=_get_bool("FLOW_WINSORIZE_BUCKET", True),
+        flow_confirm_fast_win=int(os.getenv("FLOW_CONFIRM_FAST_WIN", "10")),
+        flow_confirm_slow_win=int(os.getenv("FLOW_CONFIRM_SLOW_WIN", "60")),
+        flow_history_per_strike=int(os.getenv("FLOW_HISTORY_PER_STRIKE", "600")),
+        flow_bucket_z_window=int(os.getenv("FLOW_BUCKET_Z_WINDOW", "60")),
+        flow_min_breadth=float(os.getenv("FLOW_MIN_BREADTH", "0.60")),
+        flow_min_bucket_z=float(os.getenv("FLOW_MIN_BUCKET_Z", "1.5")),
+        flow_conf_min=float(os.getenv("FLOW_CONF_MIN", "0.60")),
+        flow_atm_corridor_pct=float(os.getenv("FLOW_ATM_CORRIDOR_PCT", "0.01")),
         poll_seconds=float(os.getenv("PHASE2_POLL_SECONDS", "15")),
         batch_limit=int(os.getenv("PHASE2_BATCH_LIMIT", "200")),
     )
