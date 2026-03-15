@@ -3887,6 +3887,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const arr = Array.isArray(legsSummaries) ? legsSummaries : [];
       for (let i = 0; i < arr.length; i++) {
         const cell = document.getElementById(`pfLineMetrics-${pid}-${i}`);
+        const mcell = document.getElementById(`pfLineMargin-${pid}-${i}`);
         if (!cell) continue;
         const row = arr[i] || {};
         const ent = Number(row.entry_triggers || 0);
@@ -3894,10 +3895,17 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         const summ = row.summary || {};
         const trd = Number(summ.trades || 0);
         const wr = (summ.win_rate == null) ? '—' : `${(100 * Number(summ.win_rate || 0)).toFixed(1)}%`;
+        const maxM = row.max_margin_required_dollars;
+        const minM = row.min_margin_required_dollars;
         if (row.error) {
           cell.innerHTML = `<span class="pill" style="background:rgba(239,68,68,.16); border-color:rgba(239,68,68,.45);">error</span> <span class="hint">entries: ${ent} | exits: ${ex}</span>`;
         } else {
           cell.innerHTML = `<span class="pill">entries: <strong>${ent}</strong></span> <span class="pill">exits: <strong>${ex}</strong></span><div class="hint" style="margin-top:4px;">trades: ${trd} | win: ${wr}</div>`;
+        }
+        if (mcell) {
+          const maxTxt = (maxM == null) ? '—' : `$${fmtNum(Number(maxM), 2)}`;
+          const minTxt = (minM == null) ? '—' : `$${fmtNum(Number(minM), 2)}`;
+          mcell.innerHTML = `<div><strong>${maxTxt}</strong></div><div class="hint" style="margin-top:3px;">min: ${minTxt}</div>`;
         }
       }
     }
@@ -4316,7 +4324,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
             <div style="margin-top:10px; overflow:auto;">
               <table>
-                <thead><tr><th>#</th><th>source</th><th>params (summary)</th><th>line metrics</th><th>actions</th></tr></thead>
+                <thead><tr><th>#</th><th>source</th><th>params (summary)</th><th>line metrics</th><th>Max Margin Required</th><th>actions</th></tr></thead>
                 <tbody id="pfCardLines-${pid}"></tbody>
               </table>
             </div>
@@ -4364,6 +4372,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
               </details>
             </td>
             <td id="pfLineMetrics-${pid}-${i}"><span class="hint">entries: — | exits: — (populate after run)</span></td>
+            <td id="pfLineMargin-${pid}-${i}"><span class="hint">max: — · min: —</span></td>
             <td>
               <button id="pfLineSave-${pid}-${i}" class="btn-primary" style="padding:4px 8px;">Save</button>
               <button id="pfLineDel-${pid}-${i}" class="btn-danger" style="padding:4px 8px; margin-left:6px;">Delete</button>

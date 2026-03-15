@@ -32,6 +32,26 @@ def _max_drawdown(points: list[float]) -> float:
     return float(mdd)
 
 
+def _trade_margin_required_dollars(tr: dict[str, Any]) -> float | None:
+    try:
+        style = str((tr or {}).get('spread_style') or 'debit').strip().lower()
+        entry = (tr or {}).get('entry_debit')
+        width = (tr or {}).get('width_points')
+        if entry is None:
+            return None
+        entry_f = float(entry)
+        if style == 'credit':
+            if width is None:
+                return None
+            width_f = float(width)
+            risk_pts = max(0.0, width_f - entry_f)
+            return float(risk_pts * 100.0)
+        # debit default: capital outlay
+        return float(max(0.0, entry_f) * 100.0)
+    except Exception:
+        return None
+
+
 def combine_trades_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     events: list[tuple[datetime, float]] = []
     pnl_vals: list[float] = []
@@ -498,10 +518,21 @@ class PortfolioBacktestService:
                     trades_by_leg.append(list(trades) if isinstance(trades, list) else [])
                     entry_count = int(sum(1 for t in (trades or []) if isinstance(t, dict) and t.get("entry_ts")))
                     exit_count = int(sum(1 for t in (trades or []) if isinstance(t, dict) and t.get("exit_ts")))
-                    legs_summaries.append({"strategy_id": sid, "summary": summ, "params": params, "entry_triggers": entry_count, "exit_triggers": exit_count})
+                    margins = [m for m in (_trade_margin_required_dollars(t) for t in (trades or [])) if m is not None]
+                    max_margin = float(max(margins)) if margins else None
+                    min_margin = float(min(margins)) if margins else None
+                    legs_summaries.append({
+                        "strategy_id": sid,
+                        "summary": summ,
+                        "params": params,
+                        "entry_triggers": entry_count,
+                        "exit_triggers": exit_count,
+                        "max_margin_required_dollars": max_margin,
+                        "min_margin_required_dollars": min_margin,
+                    })
                     self._bump(session_id, completed=1)
                 except Exception as e:
-                    legs_summaries.append({"strategy_id": sid, "error": str(e), "params": params, "entry_triggers": 0, "exit_triggers": 0})
+                    legs_summaries.append({"strategy_id": sid, "error": str(e), "params": params, "entry_triggers": 0, "exit_triggers": 0, "max_margin_required_dollars": None, "min_margin_required_dollars": None})
                     trades_by_leg.append([])
                     self._bump(session_id, failed=1)
 
@@ -520,6 +551,10 @@ class PortfolioBacktestService:
             if isinstance(combined_summary, dict):
                 combined_summary.setdefault("line_entry_triggers_total", int(sum(int(x.get("entry_triggers") or 0) for x in legs_summaries if isinstance(x, dict))))
                 combined_summary.setdefault("line_exit_triggers_total", int(sum(int(x.get("exit_triggers") or 0) for x in legs_summaries if isinstance(x, dict))))
+                _mvals = [float(x.get("max_margin_required_dollars")) for x in legs_summaries if isinstance(x, dict) and x.get("max_margin_required_dollars") is not None]
+                _nvals = [float(x.get("min_margin_required_dollars")) for x in legs_summaries if isinstance(x, dict) and x.get("min_margin_required_dollars") is not None]
+                combined_summary.setdefault("line_max_margin_required_dollars", (max(_mvals) if _mvals else None))
+                combined_summary.setdefault("line_min_margin_required_dollars", (min(_nvals) if _nvals else None))
 
             # If cancelled, still mark stopped and return partial results
             status = "stopped" if self._cancel_requested(session_id) else "stopped"
