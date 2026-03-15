@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+import threading
+import time
 
 try:
     import psycopg
@@ -8,6 +10,9 @@ try:
 except Exception:  # pragma: no cover
     psycopg = None  # type: ignore
     dict_row = None  # type: ignore
+
+_PG_CONN_MAX = 16
+_PG_CONN_SEM = threading.BoundedSemaphore(_PG_CONN_MAX)
 
 
 class FlexRow(dict):
@@ -84,7 +89,25 @@ class PgConnCompat:
     def __init__(self, dsn: str):
         if psycopg is None:
             raise RuntimeError("psycopg not installed")
-        self._con = psycopg.connect(dsn, row_factory=dict_row)
+        self._sem_acquired = False
+        got = _PG_CONN_SEM.acquire(timeout=8.0)
+        if not got:
+            raise RuntimeError('postgres connection gate busy (too many concurrent requests)')
+        self._sem_acquired = True
+        last_err = None
+        for delay in (0.0, 0.15, 0.35, 0.7):
+            if delay > 0:
+                time.sleep(delay)
+            try:
+                self._con = psycopg.connect(dsn, row_factory=dict_row)
+                break
+            except Exception as e:
+                last_err = e
+        else:
+            if self._sem_acquired:
+                _PG_CONN_SEM.release()
+                self._sem_acquired = False
+            raise last_err if last_err else RuntimeError('failed to connect postgres')
         self.row_factory = FlexRow
         self.total_changes = 0
 
@@ -98,7 +121,12 @@ class PgConnCompat:
             else:
                 self._con.rollback()
         finally:
-            self._con.close()
+            try:
+                self._con.close()
+            finally:
+                if self._sem_acquired:
+                    _PG_CONN_SEM.release()
+                    self._sem_acquired = False
 
     def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None):
         cur = self._con.cursor()
@@ -116,7 +144,12 @@ class PgConnCompat:
         self._con.commit()
 
     def close(self):
-        self._con.close()
+        try:
+            self._con.close()
+        finally:
+            if getattr(self, '_sem_acquired', False):
+                _PG_CONN_SEM.release()
+                self._sem_acquired = False
 
 
 def connect_compat(db_dsn_or_path: str, *, timeout: float = 5.0):
