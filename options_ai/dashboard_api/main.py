@@ -2107,6 +2107,32 @@ def create_app() -> FastAPI:
         }
         return out
 
+    def _risk_from_lines_for_policy(lines: list[dict[str, Any]], *, policy: str) -> dict[str, Any]:
+        if not lines:
+            return {'take_profit_pct': None, 'stop_loss': None, 'stop_loss_kind': None}
+        pol = str(policy or 'any_leg').strip().lower()
+        # entry_leg: bind exits to selected entry line risk only.
+        if pol == 'entry_leg':
+            return _risk_from_params((lines[0] or {}).get('params') or {})
+
+        # any_leg: approximate earliest protective exits across qualifying lines.
+        risks = [_risk_from_params((ln or {}).get('params') or {}) for ln in lines]
+        tp_vals = [float(r['take_profit_pct']) for r in risks if r.get('take_profit_pct') is not None]
+        sl_vals = [float(r['stop_loss']) for r in risks if r.get('stop_loss') is not None]
+        kinds = [str(r.get('stop_loss_kind') or '') for r in risks if r.get('stop_loss_kind')]
+        kind = kinds[0] if kinds and all(k == kinds[0] for k in kinds) else None
+        out = {
+            'take_profit_pct': (min(tp_vals) if tp_vals else None),
+            'stop_loss': (min(sl_vals) if sl_vals else None),
+            'stop_loss_kind': kind,
+        }
+        # if kind mixed/unknown, fall back to primary line kind and stop value for safety.
+        if out['stop_loss_kind'] is None:
+            p0 = _risk_from_params((lines[0] or {}).get('params') or {})
+            out['stop_loss_kind'] = p0.get('stop_loss_kind')
+            out['stop_loss'] = p0.get('stop_loss')
+        return out
+
     @app.post('/api/portfolios/{portfolio_id}/emit_signals')
     def portfolios_emit_signals(portfolio_id: int, body: dict[str, Any] | None = None) -> dict[str, Any]:
         import json as _json
@@ -2122,6 +2148,7 @@ def create_app() -> FastAPI:
             r = con.execute(
                 """
                 SELECT id,name,legs_json,COALESCE(execution_mode,'independent') AS execution_mode,
+                       COALESCE(execution_exit_policy,'any_leg') AS execution_exit_policy,
                        COALESCE(paired_environment,'sandbox') AS paired_environment,
                        COALESCE(paired_account_label,'') AS paired_account_label
                 FROM portfolio_defs WHERE id=?
@@ -2225,20 +2252,41 @@ def create_app() -> FastAPI:
                 if emit_source == 'engine' and source_snapshot_ts and (not lines):
                     return {'ok': True, 'portfolio_id': int(portfolio_id), 'mode': mode, 'environment': env, 'account_label': account_label, 'inserted': 0, 'existing': 0}
 
-                strategy_key = strategy_keys[0] if strategy_keys else 'debit_spreads'
+                merge_exit_policy = str(r.get('execution_exit_policy') or 'any_leg').strip().lower()
+                if merge_exit_policy not in {'any_leg','entry_leg'}:
+                    merge_exit_policy = 'any_leg'
+
+                # Representative line for entry params (deterministic):
+                # - entry_leg: first qualifying line (explicitly binds to triggering entry line)
+                # - any_leg: earliest-exit heuristic by smallest TP, then smallest stop.
+                rep_idx = 0
+                if merge_exit_policy == 'any_leg' and lines:
+                    best = None
+                    for j, ln in enumerate(lines):
+                        rr = _risk_from_params((ln or {}).get('params') or {})
+                        tp = float(rr['take_profit_pct']) if rr.get('take_profit_pct') is not None else 1e9
+                        sl = float(rr['stop_loss']) if rr.get('stop_loss') is not None else 1e9
+                        key = (tp, sl, j)
+                        if best is None or key < best[0]:
+                            best = (key, j)
+                    if best is not None:
+                        rep_idx = int(best[1])
+
+                strategy_key = strategy_keys[rep_idx] if strategy_keys and rep_idx < len(strategy_keys) else (strategy_keys[0] if strategy_keys else 'debit_spreads')
                 primary_params = {}
-                if lines and isinstance(lines[0], dict):
-                    primary_params = dict(lines[0].get('params') or {})
+                if lines and isinstance(lines[rep_idx], dict):
+                    primary_params = dict(lines[rep_idx].get('params') or {})
                 payload = {
                     'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name'])},
                     'strategy_key': strategy_key,
                     'merge_mode': 'merged',
+                    'merge_exit_policy': merge_exit_policy,
+                    'entry_line_index': int((lines[rep_idx] or {}).get('line_index') or 0) if lines else 0,
                     'group_lines': lines,
-                    # Executor currently requires top-level params with tradable leg symbols.
-                    # Use first qualifying line as executable representative for merged signal.
+                    # Executor requires top-level params with tradable leg symbols.
                     'params': primary_params,
-                    # Carry TP/SL from the specific triggering line params used for executable representative.
-                    'risk': _risk_from_params(primary_params),
+                    # Carry policy-aware risk payload for execution module exits.
+                    'risk': _risk_from_lines_for_policy(lines, policy=merge_exit_policy),
                     'summary': {},
                     'paired_account': {'environment': env, 'account_label': account_label},
                 }
