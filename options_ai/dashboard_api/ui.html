@@ -1892,6 +1892,39 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     let pfCardRanges = {}; // portfolio_id -> {start,end}
     let pfCardModes = {}; // portfolio_id -> independent|merged
     let pfCardExitPolicies = {}; // portfolio_id -> any_leg|entry_leg
+
+    const PF_CARD_SESSIONS_KEY = 'pf_card_sessions_v1';
+    function pfLoadCardSessions() {
+      try {
+        const raw = localStorage.getItem(PF_CARD_SESSIONS_KEY);
+        if (!raw) return {};
+        const obj = JSON.parse(raw);
+        if (!obj || typeof obj !== 'object') return {};
+        const out = {};
+        for (const [k,v] of Object.entries(obj)) {
+          const sid = Number(v);
+          if (!Number.isFinite(sid) || sid <= 0) continue;
+          out[String(k)] = sid;
+        }
+        return out;
+      } catch { return {}; }
+    }
+    function pfSaveCardSessions() {
+      try { localStorage.setItem(PF_CARD_SESSIONS_KEY, JSON.stringify(pfCardSessions || {})); } catch {}
+    }
+    function pfSetCardSession(pid, sid) {
+      if (!Number.isFinite(Number(sid)) || Number(sid) <= 0) return;
+      pfCardSessions[String(pid)] = Number(sid);
+      pfSaveCardSessions();
+    }
+    function pfClearCardSession(pid) {
+      delete pfCardSessions[String(pid)];
+      pfSaveCardSessions();
+    }
+
+    // restore active card sessions across refreshes/re-renders
+    pfCardSessions = pfLoadCardSessions();
+
     let exAccounts = []; // execution account catalog
     let exAccountsLoading = false;
     let btSelectedRunRefined = false;
@@ -3786,7 +3819,17 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const pct = (t > 0) ? Math.max(0, Math.min(100, (100 * c / t))) : 0;
       const bar = document.getElementById(`pfCardProgBar-${pid}`);
       const txt = document.getElementById(`pfCardProgText-${pid}`);
-      if (bar) bar.style.width = `${pct.toFixed(1)}%`;
+      const stRaw = String((st && st.status) || '').toLowerCase();
+      const hasSession = !!pfCardSessions[String(pid)];
+      const active = ['running','stopping'].includes(stRaw) || (hasSession && !['stopped','failed'].includes(stRaw));
+      if (bar) {
+        const shownPct = active ? Math.max(pct, 2) : pct;
+        bar.style.width = `${shownPct.toFixed(1)}%`;
+        bar.style.opacity = '1';
+        bar.style.background = active
+          ? 'repeating-linear-gradient(135deg,#60a5fa 0,#60a5fa 8px,#3b82f6 8px,#3b82f6 16px)'
+          : 'linear-gradient(90deg,#60a5fa,#3b82f6)';
+      }
 
       const rg = pfCardRanges[String(pid)] || {};
       const windowTxt = (rg.start || rg.end) ? `${rg.start || '—'} → ${rg.end || '—'}` : '—';
@@ -3811,7 +3854,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         const doneDays = totalDays > 0 ? Math.max(0, Math.min(totalDays, Math.round((pct / 100) * totalDays))) : 0;
         if (txt) txt.textContent = `Window ${windowTxt} · Elapsed ${elapsedTxt} · Trading days ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, est.)${exitTxt}`;
       } else {
-        if (txt) txt.textContent = `Window ${windowTxt} · Elapsed ${elapsedTxt} · Progress ${c}/${t || 0} (${pct.toFixed(0)}%)`;
+        if (txt) txt.textContent = (t > 0)
+          ? `Window ${windowTxt} · Elapsed ${elapsedTxt} · Progress ${c}/${t || 0} (${pct.toFixed(0)}%)`
+          : `Window ${windowTxt} · Elapsed ${elapsedTxt} · Waiting for first progress update…`;
       }
     }
 
@@ -3927,7 +3972,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         throw e;
       }
 
-      pfCardSessions[String(pid)] = resp.session_id;
+      pfSetCardSession(pid, resp.session_id);
       if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
       pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
       await pfPollSingleGroup(pid);
@@ -3962,6 +4007,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       }
       if (st && (st.status === 'stopped' || st.status === 'failed')) {
         if (pfCardPollers[String(pid)]) { clearInterval(pfCardPollers[String(pid)]); delete pfCardPollers[String(pid)]; }
+        pfClearCardSession(pid);
       }
     }
 
@@ -4265,8 +4311,17 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           if (note) {
             const dt = new Date(Number(cached.saved_at_ms || 0));
             const iso = isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0,10);
-            note.textContent = iso ? `cached: ${iso}` : 'cached';
+            note.textContent = iso ? `Cached snapshot: ${iso}` : 'Cached snapshot';
           }
+        }
+
+        const persistedSid = Number(pfCardSessions[String(pid)] || 0);
+        if (Number.isFinite(persistedSid) && persistedSid > 0) {
+          const note = document.getElementById(`pfCardNote-${pid}`);
+          if (note) note.textContent = `Status: Reconnecting… (session ${persistedSid})`;
+          if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
+          pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
+          safe(`pf_card_boot_${pid}`, () => pfPollSingleGroup(pid));
         }
 
         const tb = card.querySelector(`#pfCardLines-${pid}`);
