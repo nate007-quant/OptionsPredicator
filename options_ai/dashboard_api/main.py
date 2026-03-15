@@ -3885,19 +3885,24 @@ def create_app() -> FastAPI:
         if preset_id_final is not None:
             run_id = int(result.get('run_id')) if isinstance(result, dict) and result.get('run_id') else None
             if run_id is not None:
-                with _connect(db_path) as con:
-                    row = con.execute('SELECT summary_json FROM backtest_runs WHERE id=?', (run_id,)).fetchone()
-                    summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
-                    now = _now_utc_iso()
-                    con.execute(
-                        """
-                        UPDATE backtest_presets
-                        SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
-                        WHERE id=?
-                        """,
-                        (run_id, now, summary_json, now, preset_id_final),
-                    )
-                    con.commit()
+                try:
+                    with _connect(db_path) as con:
+                        row = con.execute('SELECT summary_json FROM backtest_runs WHERE id=?', (run_id,)).fetchone()
+                        summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
+                        now = _now_utc_iso()
+                        con.execute(
+                            """
+                            UPDATE backtest_presets
+                            SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
+                            WHERE id=?
+                            """,
+                            (run_id, now, summary_json, now, preset_id_final),
+                        )
+                        con.commit()
+                except sqlite3.OperationalError as e:
+                    if isinstance(result, dict):
+                        result.setdefault('persistence_warning', 'sqlite_locked_persist_skipped')
+                        result.setdefault('persistence_error', str(e))
 
         return result
 

@@ -173,7 +173,17 @@ class BacktestExecutor:
                 con.commit()
                 return run_id
 
-        run_id = int(self._with_sqlite_retry(lambda: self._serialized(_write_run)))
+        run_id: int | None = None
+        persist_error: str | None = None
+        try:
+            run_id = int(self._with_sqlite_retry(lambda: self._serialized(_write_run)))
+        except sqlite3.OperationalError as e:
+            # Fail-open for UI reliability: return computed backtest result even if persistence is contended.
+            if "locked" in str(e).lower() or "busy" in str(e).lower():
+                persist_error = str(e)
+                run_id = int(existing_run_id) if existing_run_id is not None else None
+            else:
+                raise
 
         if isinstance(result, dict):
             forced = bool(force_run and existing_run_id is not None)
@@ -184,6 +194,9 @@ class BacktestExecutor:
             result["strategy_key"] = strategy_key
             result["schema_version"] = schema_version
             result["params_hash"] = ph
+            if persist_error:
+                result["persistence_warning"] = "sqlite_locked_persist_skipped"
+                result["persistence_error"] = persist_error
         return result
 
 

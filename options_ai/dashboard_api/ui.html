@@ -4540,6 +4540,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       if (data && data.run_duplicate && !data.forced_rerun) {
         toast('Duplicate backtest params (deduped). Enable Force rerun to re-execute.', 'info');
       }
+      if (data && data.persistence_warning) {
+        toast('Backtest finished, but run history save was delayed (DB busy).', 'warn');
+      }
       await btRefreshRuns();
       return data;
     }
