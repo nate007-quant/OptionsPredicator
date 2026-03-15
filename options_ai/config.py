@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 class Config:
     openai_api_key: str
     database_url: str
-    execution_database_url: str = ""
     ticker: str
     data_root: str
+    execution_database_url: str = ""
 
     # Execution (v1)
     trading_enabled: bool = False
