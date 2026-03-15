@@ -4381,39 +4381,50 @@ def create_app() -> FastAPI:
             'active_enter_ts': None,
             'exec_main_start_ts': None,
         }
-        try:
-            p = subprocess.run(
-                ['systemctl', 'show', service, '--property=ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec,NRestarts,ActiveEnterTimestamp,ExecMainStartTimestamp'],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            if p.returncode != 0:
-                return out
-            for line in p.stdout.splitlines():
-                if '=' not in line:
+
+        names = [str(service)]
+        s0 = str(service)
+        if '.' not in s0:
+            names.append(f"{s0}.service")
+            names.append(f"{s0}.timer")
+
+        for nm in names:
+            try:
+                p = subprocess.run(
+                    ['systemctl', 'show', nm, '--property=ActiveState,SubState,MainPID,MemoryCurrent,CPUUsageNSec,NRestarts,ActiveEnterTimestamp,ExecMainStartTimestamp'],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if p.returncode != 0:
                     continue
-                k, v = line.split('=', 1)
-                v = v.strip()
-                if k == 'ActiveState':
-                    out['active_state'] = v or 'unknown'
-                elif k == 'SubState':
-                    out['sub_state'] = v or 'unknown'
-                elif k == 'MainPID':
-                    out['main_pid'] = int(v) if v.isdigit() else None
-                elif k == 'MemoryCurrent':
-                    out['memory_current'] = int(v) if v.isdigit() else None
-                elif k == 'CPUUsageNSec':
-                    out['cpu_usage_nsec'] = int(v) if v.isdigit() else None
-                elif k == 'NRestarts':
-                    out['n_restarts'] = int(v) if v.isdigit() else 0
-                elif k == 'ActiveEnterTimestamp':
-                    out['active_enter_ts'] = v or None
-                elif k == 'ExecMainStartTimestamp':
-                    out['exec_main_start_ts'] = v or None
-        except Exception:
-            pass
+                for line in p.stdout.splitlines():
+                    if '=' not in line:
+                        continue
+                    k, v = line.split('=', 1)
+                    v = v.strip()
+                    if k == 'ActiveState':
+                        out['active_state'] = v or 'unknown'
+                    elif k == 'SubState':
+                        out['sub_state'] = v or 'unknown'
+                    elif k == 'MainPID':
+                        out['main_pid'] = int(v) if v.isdigit() else None
+                    elif k == 'MemoryCurrent':
+                        out['memory_current'] = int(v) if v.isdigit() else None
+                    elif k == 'CPUUsageNSec':
+                        out['cpu_usage_nsec'] = int(v) if v.isdigit() else None
+                    elif k == 'NRestarts':
+                        out['n_restarts'] = int(v) if v.isdigit() else 0
+                    elif k == 'ActiveEnterTimestamp':
+                        out['active_enter_ts'] = v or None
+                    elif k == 'ExecMainStartTimestamp':
+                        out['exec_main_start_ts'] = v or None
+                # got a resolved unit state
+                if out.get('active_state') != 'unknown' or out.get('sub_state') != 'unknown':
+                    break
+            except Exception:
+                continue
         return out
 
     def _pid_usage(pid: int | None) -> dict[str, Any]:
