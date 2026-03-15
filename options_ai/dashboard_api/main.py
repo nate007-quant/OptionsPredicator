@@ -334,12 +334,61 @@ def create_app() -> FastAPI:
     if not db_path:
         db_path = _db_path_from_database_url(cfg.database_url)
 
+    backtest_db_url = os.getenv("BACKTEST_DATABASE_URL", "").strip()
+    bt_use_pg = bool(backtest_db_url)
 
     # Backtest presets + run history (Option C)
     def _now_utc_iso() -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
     def _ensure_backtest_tables() -> None:
+        if bt_use_pg:
+            if psycopg is None:
+                raise RuntimeError("BACKTEST_DATABASE_URL is set but psycopg is not installed")
+            with psycopg.connect(backtest_db_url) as con:
+                with con.cursor() as cur:
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS backtest_presets (
+                          id BIGSERIAL PRIMARY KEY,
+                          strategy_key TEXT NOT NULL,
+                          name TEXT NOT NULL,
+                          params_json TEXT NOT NULL,
+                          schema_version INTEGER NOT NULL DEFAULT 1,
+                          created_at_utc TEXT NOT NULL,
+                          updated_at_utc TEXT NOT NULL,
+                          last_run_id BIGINT NULL,
+                          last_run_at_utc TEXT NULL,
+                          last_summary_json TEXT NULL,
+                          UNIQUE(strategy_key, name)
+                        );
+                        """
+                    )
+                    cur.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS backtest_runs (
+                          id BIGSERIAL PRIMARY KEY,
+                          strategy_key TEXT NOT NULL,
+                          created_at_utc TEXT NOT NULL,
+                          preset_id BIGINT NULL,
+                          preset_name_at_run TEXT NULL,
+                          params_json TEXT NOT NULL,
+                          summary_json TEXT NOT NULL,
+                          result_json TEXT NULL,
+                          schema_version INTEGER NOT NULL DEFAULT 1,
+                          params_hash TEXT NOT NULL,
+                          refinement_launched INTEGER NOT NULL DEFAULT 0,
+                          refinement_sampler_id BIGINT NULL,
+                          refinement_launched_at_utc TEXT NULL,
+                          UNIQUE(strategy_key, schema_version, params_hash)
+                        );
+                        """
+                    )
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy_created ON backtest_runs(strategy_key, created_at_utc DESC);")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_backtest_runs_preset_created ON backtest_runs(preset_id, created_at_utc DESC);")
+                con.commit()
+            return
+
         with _connect(db_path) as con:
             con.execute(
                 """
@@ -551,7 +600,7 @@ def create_app() -> FastAPI:
 
     # Backtest services
     strategy_registry = StrategyRegistry()
-    backtest_executor = BacktestExecutor(db_path=db_path, connect_fn=_connect)
+    backtest_executor = BacktestExecutor(db_path=(backtest_db_url or db_path), connect_fn=(None if bt_use_pg else _connect), pg_dsn=(backtest_db_url if bt_use_pg else None))
     sampler_service = BacktestSamplerService(db_path=db_path, connect_fn=_connect)
     portfolio_service = PortfolioBacktestService(db_path=db_path, connect_fn=_connect)
     portfolio_group_service = PortfolioGroupBacktestService(db_path=db_path, connect_fn=_connect)
@@ -1490,18 +1539,34 @@ def create_app() -> FastAPI:
 
     @app.get('/api/backtest/presets')
     def backtest_presets_list(strategy_key: str = Query(...)) -> dict[str, Any]:
-        with _connect(db_path) as con:
-            rows = con.execute(
-                """
-                SELECT id, strategy_key, name, params_json, schema_version,
-                       created_at_utc, updated_at_utc,
-                       last_run_id, last_run_at_utc, last_summary_json
-                FROM backtest_presets
-                WHERE strategy_key = ?
-                ORDER BY updated_at_utc DESC
-                """,
-                (strategy_key,),
-            ).fetchall()
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, strategy_key, name, params_json, schema_version,
+                               created_at_utc, updated_at_utc,
+                               last_run_id, last_run_at_utc, last_summary_json
+                        FROM backtest_presets
+                        WHERE strategy_key = %s
+                        ORDER BY updated_at_utc DESC
+                        """,
+                        (strategy_key,),
+                    )
+                    rows = cur.fetchall()
+        else:
+            with _connect(db_path) as con:
+                rows = con.execute(
+                    """
+                    SELECT id, strategy_key, name, params_json, schema_version,
+                           created_at_utc, updated_at_utc,
+                           last_run_id, last_run_at_utc, last_summary_json
+                    FROM backtest_presets
+                    WHERE strategy_key = ?
+                    ORDER BY updated_at_utc DESC
+                    """,
+                    (strategy_key,),
+                ).fetchall()
 
         items = []
         import json as _json
@@ -1546,18 +1611,35 @@ def create_app() -> FastAPI:
         now = _now_utc_iso()
         params_json = _json.dumps(params, separators=(',', ':'), sort_keys=True)
 
-        with _connect(db_path) as con:
+        if bt_use_pg:
             try:
-                con.execute(
-                    """
-                    INSERT INTO backtest_presets(strategy_key, name, params_json, schema_version, created_at_utc, updated_at_utc)
-                    VALUES(?, ?, ?, 1, ?, ?)
-                    """,
-                    (strategy_key, name, params_json, now, now),
-                )
-                con.commit()
-            except sqlite3.IntegrityError:
-                raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+                with psycopg.connect(backtest_db_url) as con:
+                    with con.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO backtest_presets(strategy_key, name, params_json, schema_version, created_at_utc, updated_at_utc)
+                            VALUES(%s, %s, %s, 1, %s, %s)
+                            """,
+                            (strategy_key, name, params_json, now, now),
+                        )
+                    con.commit()
+            except Exception as e:
+                if 'duplicate key' in str(e).lower() or 'unique' in str(e).lower():
+                    raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+                raise
+        else:
+            with _connect(db_path) as con:
+                try:
+                    con.execute(
+                        """
+                        INSERT INTO backtest_presets(strategy_key, name, params_json, schema_version, created_at_utc, updated_at_utc)
+                        VALUES(?, ?, ?, 1, ?, ?)
+                        """,
+                        (strategy_key, name, params_json, now, now),
+                    )
+                    con.commit()
+                except sqlite3.IntegrityError:
+                    raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
 
         return backtest_presets_list(strategy_key=strategy_key)
 
@@ -1587,29 +1669,57 @@ def create_app() -> FastAPI:
         params.append(now)
         params.append(int(preset_id))
 
-        with _connect(db_path) as con:
-            r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
-            if not r:
-                raise HTTPException(status_code=404, detail='preset not found')
-            strategy_key = r['strategy_key']
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute('SELECT strategy_key FROM backtest_presets WHERE id=%s', (int(preset_id),))
+                    r = cur.fetchone()
+                    if not r:
+                        raise HTTPException(status_code=404, detail='preset not found')
+                    strategy_key = r['strategy_key']
+                    set_sql = ', '.join([x.replace('?', '%s') for x in sets])
+                    try:
+                        cur.execute(f"UPDATE backtest_presets SET {set_sql} WHERE id = %s", tuple(params))
+                        con.commit()
+                    except Exception as e:
+                        if 'duplicate key' in str(e).lower() or 'unique' in str(e).lower():
+                            raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+                        raise
+        else:
+            with _connect(db_path) as con:
+                r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
+                if not r:
+                    raise HTTPException(status_code=404, detail='preset not found')
+                strategy_key = r['strategy_key']
 
-            try:
-                con.execute(f"UPDATE backtest_presets SET {', '.join(sets)} WHERE id = ?", tuple(params))
-                con.commit()
-            except sqlite3.IntegrityError:
-                raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
+                try:
+                    con.execute(f"UPDATE backtest_presets SET {', '.join(sets)} WHERE id = ?", tuple(params))
+                    con.commit()
+                except sqlite3.IntegrityError:
+                    raise HTTPException(status_code=409, detail='preset name already exists for this strategy')
 
         return backtest_presets_list(strategy_key=strategy_key)
 
     @app.delete('/api/backtest/presets/{preset_id}')
     def backtest_presets_delete(preset_id: int) -> dict[str, Any]:
-        with _connect(db_path) as con:
-            r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
-            if not r:
-                raise HTTPException(status_code=404, detail='preset not found')
-            strategy_key = r['strategy_key']
-            con.execute('DELETE FROM backtest_presets WHERE id=?', (int(preset_id),))
-            con.commit()
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute('SELECT strategy_key FROM backtest_presets WHERE id=%s', (int(preset_id),))
+                    r = cur.fetchone()
+                    if not r:
+                        raise HTTPException(status_code=404, detail='preset not found')
+                    strategy_key = r['strategy_key']
+                    cur.execute('DELETE FROM backtest_presets WHERE id=%s', (int(preset_id),))
+                con.commit()
+        else:
+            with _connect(db_path) as con:
+                r = con.execute('SELECT strategy_key FROM backtest_presets WHERE id=?', (int(preset_id),)).fetchone()
+                if not r:
+                    raise HTTPException(status_code=404, detail='preset not found')
+                strategy_key = r['strategy_key']
+                con.execute('DELETE FROM backtest_presets WHERE id=?', (int(preset_id),))
+                con.commit()
         return backtest_presets_list(strategy_key=strategy_key)
 
 
@@ -2447,8 +2557,15 @@ def create_app() -> FastAPI:
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(int(limit))
 
-        with _connect(db_path) as con:
-            rows = con.execute(sql, tuple(params)).fetchall()
+        if bt_use_pg:
+            sql_pg = sql.replace('?', '%s')
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute(sql_pg, tuple(params))
+                    rows = cur.fetchall()
+        else:
+            with _connect(db_path) as con:
+                rows = con.execute(sql, tuple(params)).fetchall()
 
         items = []
         for r in rows:
@@ -3709,8 +3826,15 @@ def create_app() -> FastAPI:
         sql += " ORDER BY created_at_utc DESC LIMIT ?"
         params.append(int(limit))
 
-        with _connect(db_path) as con:
-            rows = con.execute(sql, tuple(params)).fetchall()
+        if bt_use_pg:
+            sql_pg = sql.replace('?', '%s')
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute(sql_pg, tuple(params))
+                    rows = cur.fetchall()
+        else:
+            with _connect(db_path) as con:
+                rows = con.execute(sql, tuple(params)).fetchall()
 
         items = []
         for r in rows:
@@ -3805,13 +3929,24 @@ def create_app() -> FastAPI:
         linked = [g['id'] for g in groups if int(run_id) in (g.get('run_ids') or [])]
         if linked:
             raise HTTPException(status_code=409, detail=f'run in use by groups: {linked}')
-        with _connect(db_path) as con:
-            r = con.execute('SELECT strategy_key FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
-            if not r:
-                raise HTTPException(status_code=404, detail='run not found')
-            strategy_key = r['strategy_key']
-            con.execute('DELETE FROM backtest_runs WHERE id=?', (int(run_id),))
-            con.commit()
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                with con.cursor() as cur:
+                    cur.execute('SELECT strategy_key FROM backtest_runs WHERE id=%s', (int(run_id),))
+                    r = cur.fetchone()
+                    if not r:
+                        raise HTTPException(status_code=404, detail='run not found')
+                    strategy_key = r['strategy_key']
+                    cur.execute('DELETE FROM backtest_runs WHERE id=%s', (int(run_id),))
+                con.commit()
+        else:
+            with _connect(db_path) as con:
+                r = con.execute('SELECT strategy_key FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
+                if not r:
+                    raise HTTPException(status_code=404, detail='run not found')
+                strategy_key = r['strategy_key']
+                con.execute('DELETE FROM backtest_runs WHERE id=?', (int(run_id),))
+                con.commit()
         return {'ok': True, 'deleted': int(run_id), 'strategy_key': strategy_key}
 
     
@@ -3834,12 +3969,18 @@ def create_app() -> FastAPI:
         if not norm:
             raise HTTPException(status_code=400, detail={'message': 'no valid ids', 'invalid_count': len(invalid)})
 
-        q = ','.join(['?'] * len(norm))
-        with _connect(db_path) as con:
-            cur = con.execute(f'DELETE FROM backtest_runs WHERE id IN ({q})', tuple(norm))
-            con.commit()
-
-        deleted = int(cur.rowcount if cur.rowcount is not None else 0)
+        if bt_use_pg:
+            with psycopg.connect(backtest_db_url) as con:
+                with con.cursor() as cur:
+                    cur.execute('DELETE FROM backtest_runs WHERE id = ANY(%s)', (norm,))
+                    deleted = int(cur.rowcount if cur.rowcount is not None else 0)
+                con.commit()
+        else:
+            q = ','.join(['?'] * len(norm))
+            with _connect(db_path) as con:
+                cur = con.execute(f'DELETE FROM backtest_runs WHERE id IN ({q})', tuple(norm))
+                con.commit()
+            deleted = int(cur.rowcount if cur.rowcount is not None else 0)
         return {'ok': True, 'deleted_count': deleted, 'requested': len(norm)}
 
     @app.post("/api/backtest/debit_spreads/run")
@@ -3854,17 +3995,23 @@ def create_app() -> FastAPI:
         preset_id_final: int | None = None
         preset_name_at_run: str | None = None
 
-        with _connect(db_path) as con:
-            if pid_in is not None:
-                try:
-                    pid = int(pid_in)
-                    row = con.execute('SELECT id, name FROM backtest_presets WHERE id=?', (pid,)).fetchone()
-                    if row:
-                        preset_id_final = int(row['id'])
-                        preset_name_at_run = str(row['name'])
-                except Exception:
-                    preset_id_final = None
-                    preset_name_at_run = None
+        if pid_in is not None:
+            try:
+                pid = int(pid_in)
+                if bt_use_pg:
+                    with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                        with con.cursor() as cur:
+                            cur.execute('SELECT id, name FROM backtest_presets WHERE id=%s', (pid,))
+                            row = cur.fetchone()
+                else:
+                    with _connect(db_path) as con:
+                        row = con.execute('SELECT id, name FROM backtest_presets WHERE id=?', (pid,)).fetchone()
+                if row:
+                    preset_id_final = int(row['id'])
+                    preset_name_at_run = str(row['name'])
+            except Exception:
+                preset_id_final = None
+                preset_name_at_run = None
 
         force_run = bool((payload or {}).get('force_run') or False)
 
@@ -3886,22 +4033,39 @@ def create_app() -> FastAPI:
             run_id = int(result.get('run_id')) if isinstance(result, dict) and result.get('run_id') else None
             if run_id is not None:
                 try:
-                    with _connect(db_path) as con:
-                        row = con.execute('SELECT summary_json FROM backtest_runs WHERE id=?', (run_id,)).fetchone()
-                        summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
-                        now = _now_utc_iso()
-                        con.execute(
-                            """
-                            UPDATE backtest_presets
-                            SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
-                            WHERE id=?
-                            """,
-                            (run_id, now, summary_json, now, preset_id_final),
-                        )
-                        con.commit()
-                except sqlite3.OperationalError as e:
+                    if bt_use_pg:
+                        with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
+                            with con.cursor() as cur:
+                                cur.execute('SELECT summary_json FROM backtest_runs WHERE id=%s', (run_id,))
+                                row = cur.fetchone()
+                                summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
+                                now = _now_utc_iso()
+                                cur.execute(
+                                    """
+                                    UPDATE backtest_presets
+                                    SET last_run_id=%s, last_run_at_utc=%s, last_summary_json=%s, updated_at_utc=%s
+                                    WHERE id=%s
+                                    """,
+                                    (run_id, now, summary_json, now, preset_id_final),
+                                )
+                            con.commit()
+                    else:
+                        with _connect(db_path) as con:
+                            row = con.execute('SELECT summary_json FROM backtest_runs WHERE id=?', (run_id,)).fetchone()
+                            summary_json = row['summary_json'] if row else _json.dumps((result or {}).get('summary') or {}, separators=(',', ':'), sort_keys=True)
+                            now = _now_utc_iso()
+                            con.execute(
+                                """
+                                UPDATE backtest_presets
+                                SET last_run_id=?, last_run_at_utc=?, last_summary_json=?, updated_at_utc=?
+                                WHERE id=?
+                                """,
+                                (run_id, now, summary_json, now, preset_id_final),
+                            )
+                            con.commit()
+                except Exception as e:
                     if isinstance(result, dict):
-                        result.setdefault('persistence_warning', 'sqlite_locked_persist_skipped')
+                        result.setdefault('persistence_warning', 'persist_update_failed')
                         result.setdefault('persistence_error', str(e))
 
         return result
