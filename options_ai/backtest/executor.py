@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -35,6 +36,21 @@ class BacktestExecutor:
         except Exception:
             pass
         return con
+
+    def _with_sqlite_retry(self, fn, *, retries: int = 6, base_sleep: float = 0.15):
+        last = None
+        for i in range(max(1, int(retries))):
+            try:
+                return fn()
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "locked" not in msg:
+                    raise
+                last = e
+                time.sleep(float(base_sleep) * (i + 1))
+        if last:
+            raise last
+        raise RuntimeError("sqlite retry exhausted")
 
     def execute_and_persist(
         self,
