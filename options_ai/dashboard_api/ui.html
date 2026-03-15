@@ -6527,42 +6527,44 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       await safe('health', () => refreshHealth());
       await safe('config', () => refreshConfig());
       exApplyTooltips();
-      await safe('ex_risk', () => exRefreshRiskSession());
-      await safe('ex_workers', () => exRefreshWorkerBanner());
-      await safe('ex_kpis', () => exRefreshKpis());
-      await safe('ex_accounts', () => exRefreshAccounts());
-      await safe('ex_trading_enabled', () => exRefreshTradingEnabled());
-      await safe('ex_reprice', () => exLoadRepricePolicy());
-      await safe('ex_trades', () => exRefreshOpenTrades());
-      await safe('ex_trade_history', () => exRefreshTradeHistory());
-      await safe('ex_intents', () => exRefreshIntents());
-      await safe('ex_incidents', () => exRefreshIncidents());
-      await safe('ex_recon', () => exRefreshReconciliation());
-      await safe('ex_actions', () => exRefreshOperatorActions());
-      await safe('sf_latest', () => sfRefreshLatest());
-      await safe('sf_weekly', () => sfRefreshWeeklyDigest());
-      await safe('sf_runs', () => sfRefreshRuns());
-      await safe('tokens', () => refreshTokens());
-      await safe('processing', () => refreshProcessing());
-      setupProcessingAreaRefresh();
-      await safe('pipes', () => refreshPipelines());
-      await safe('llmMetrics', () => refreshMetrics());
-      await safe('ml', () => refreshML());
-      await safe('logs', () => refreshLogs());
 
-            // Backtest Runs: init filters from localStorage
+      // Prioritize Parameter Group cards for fast first paint.
+      pfHydratePortfoliosFromCache();
+      await safe('pf_portfolios', () => pfReloadPortfolios());
+
+      // Backtest filter state (lightweight)
       const f0 = btRunsLoadFilters();
       btRunsWriteFiltersToUI(f0);
       btRunsSaveFilters(f0);
 
-// Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
-      // Backtest UI: load server presets + recent runs (even if Backtest tab isn't active yet)
-      await safe('sampler', () => samplerPollOnce());
-      await safe('bt_presets', () => btReloadPresets());
-      // fast first paint from local cache, then refresh from server
-      pfHydratePortfoliosFromCache();
-      await safe('pf_portfolios', () => pfReloadPortfolios());
-      await safe('bt_runs', () => btRefreshRuns());
+      // Start the rest in parallel so groups don't wait on heavy panels.
+      Promise.allSettled([
+        safe('ex_risk', () => exRefreshRiskSession()),
+        safe('ex_workers', () => exRefreshWorkerBanner()),
+        safe('ex_kpis', () => exRefreshKpis()),
+        safe('ex_accounts', () => exRefreshAccounts()),
+        safe('ex_trading_enabled', () => exRefreshTradingEnabled()),
+        safe('ex_reprice', () => exLoadRepricePolicy()),
+        safe('ex_trades', () => exRefreshOpenTrades()),
+        safe('ex_trade_history', () => exRefreshTradeHistory()),
+        safe('ex_intents', () => exRefreshIntents()),
+        safe('ex_incidents', () => exRefreshIncidents()),
+        safe('ex_recon', () => exRefreshReconciliation()),
+        safe('ex_actions', () => exRefreshOperatorActions()),
+        safe('sf_latest', () => sfRefreshLatest()),
+        safe('sf_weekly', () => sfRefreshWeeklyDigest()),
+        safe('sf_runs', () => sfRefreshRuns()),
+        safe('tokens', () => refreshTokens()),
+        safe('processing', () => refreshProcessing()),
+        safe('pipes', () => refreshPipelines()),
+        safe('llmMetrics', () => refreshMetrics()),
+        safe('ml', () => refreshML()),
+        safe('logs', () => refreshLogs()),
+        safe('sampler', () => samplerPollOnce()),
+        safe('bt_presets', () => btReloadPresets()),
+        safe('bt_runs', () => btRefreshRuns()),
+      ]);
+      setupProcessingAreaRefresh();
 
       // intervals
       setInterval(() => safe('health', () => refreshHealth()), 5000);
