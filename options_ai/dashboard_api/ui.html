@@ -3827,7 +3827,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     function pfRenderCardProgress(pid, completed, total, st=null) {
       const c = Number(completed || 0);
       const t = Number(total || 0);
-      const pct = (t > 0) ? Math.max(0, Math.min(100, (100 * c / t))) : 0;
+      const pctBase = (t > 0) ? Math.max(0, Math.min(100, (100 * c / t))) : 0;
+      const pctEstRaw = Number((st && st.progress_percent_estimate) || NaN);
+      const pct = (Number.isFinite(pctEstRaw) && pctEstRaw >= pctBase) ? Math.min(99.0, pctEstRaw) : pctBase;
       const bar = document.getElementById(`pfCardProgBar-${pid}`);
       const txt = document.getElementById(`pfCardProgText-${pid}`);
       const sub = document.getElementById(`pfCardProgSub-${pid}`);
@@ -3867,21 +3869,23 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (note) {
         const tone = pfStatusTone(stRaw);
         note.innerHTML = `<span style="display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid ${tone}; color:${tone}; margin-right:8px;">${statusLabel}</span>` +
-          `<span class="hint">Legs ${c}/${t || 0}${failN ? ` · Failed ${failN}` : ''}</span>`;
+          `<span class="hint">Legs ${c}/${t || 0}${(st && st.current_leg_index) ? ` · Active leg ${st.current_leg_index}` : ''}${failN ? ` · Failed ${failN}` : ''}</span>`;
       }
       if (mode === 'merged') {
         const totalDays = Math.max(0, pfCountTradingDays(rg.start, rg.end));
         const doneDays = totalDays > 0 ? Math.max(0, Math.min(totalDays, Math.round((pct / 100) * totalDays))) : 0;
-        if (txt) txt.textContent = `Progress: Trading days ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, est.)`;
+        if (txt) txt.textContent = `Progress: Trading days ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%${(pct>pctBase)?', live est.':''}, est.)`;
       } else {
         if (txt) txt.textContent = (t > 0)
-          ? `Progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`
+          ? `Progress: ${c}/${t || 0} (${pct.toFixed(0)}%${(pct>pctBase)?', live est.':''})`
           : `Progress: Waiting for first update…`;
       }
       if (sub) {
         const last = String((st && (st.last_activity_at_utc || st.stopped_at_utc)) || '').trim();
         const lastTxt = last ? ` · Last update ${fmtCentral(last)}` : '';
-        sub.textContent = `Window ${windowTxt} · Elapsed ${elapsedTxt}${exitTxt}${lastTxt}`;
+        const avgLeg = Number((st && st.avg_leg_seconds_estimate) || NaN);
+        const avgTxt = Number.isFinite(avgLeg) ? ` · Avg leg ~${Math.round(avgLeg)}s` : '';
+        sub.textContent = `Window ${windowTxt} · Elapsed ${elapsedTxt}${exitTxt}${avgTxt}${lastTxt}`;
       }
     }
 

@@ -258,6 +258,7 @@ class PortfolioBacktestService:
         self._registry = StrategyRegistry()
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._live_leg: dict[int, dict[str, Any]] = {}
 
     def _ensure_no_active(self) -> None:
         with self._connect(self.db_path) as con:
@@ -412,6 +413,34 @@ class PortfolioBacktestService:
                 "last_activity_at_utc": (str(r[8]) if r[8] is not None else None),
             }
 
+            st_raw = str(r[1] or '').lower()
+            if st_raw in {'running','stopping'}:
+                with self._lock:
+                    live = dict(self._live_leg.get(int(r[0])) or {})
+                if live:
+                    out['current_leg_index'] = int(live.get('current_leg_index') or 0)
+                    out['current_leg_started_at_utc'] = str(live.get('current_leg_started_at_utc') or '') or None
+                    # estimated progress between leg completions
+                    total = max(1, int(out.get('legs_total') or 1))
+                    done = max(0, int(out.get('legs_completed') or 0))
+                    started = _parse_iso(str(out.get('started_at_utc') or ''))
+                    if started is not None and started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    now_dt = datetime.now(timezone.utc)
+                    avg_leg_sec = 90.0
+                    if started is not None and done > 0:
+                        avg_leg_sec = max(20.0, (now_dt - started.astimezone(timezone.utc)).total_seconds() / float(done))
+                    cur_started = _parse_iso(str(out.get('current_leg_started_at_utc') or ''))
+                    if cur_started is not None and cur_started.tzinfo is None:
+                        cur_started = cur_started.replace(tzinfo=timezone.utc)
+                    frac = 0.0
+                    if cur_started is not None:
+                        frac = max(0.0, min(0.98, (now_dt - cur_started.astimezone(timezone.utc)).total_seconds() / max(20.0, avg_leg_sec)))
+                    est = (100.0 * (float(done) + frac) / float(total))
+                    base = (100.0 * float(done) / float(total))
+                    out['avg_leg_seconds_estimate'] = float(avg_leg_sec)
+                    out['progress_percent_estimate'] = float(max(base, min(99.0, est)))
+
             # Attach results if finished
             if str(r[1]) in {"stopped", "failed"}:
                 try:
@@ -436,6 +465,28 @@ class PortfolioBacktestService:
             t = threading.Thread(target=self._worker_main, args=(int(session_id),), daemon=True)
             self._worker = t
             t.start()
+
+    def _set_live_leg(self, session_id: int, *, leg_index_1: int, legs_total: int) -> None:
+        now = now_utc_iso()
+        with self._lock:
+            self._live_leg[int(session_id)] = {
+                'current_leg_index': int(leg_index_1),
+                'legs_total': int(legs_total),
+                'current_leg_started_at_utc': now,
+            }
+        # also touch DB activity timestamp at leg-start
+        with self._connect(self.db_path) as con:
+            con.execute("UPDATE portfolio_backtest_sessions SET last_activity_at_utc=? WHERE id=?", (now, int(session_id)))
+            con.commit()
+
+    def _clear_live_leg(self, session_id: int) -> None:
+        with self._lock:
+            self._live_leg.pop(int(session_id), None)
+
+    def _touch(self, session_id: int) -> None:
+        with self._connect(self.db_path) as con:
+            con.execute("UPDATE portfolio_backtest_sessions SET last_activity_at_utc=? WHERE id=?", (now_utc_iso(), int(session_id)))
+            con.commit()
 
     def _bump(self, session_id: int, *, completed: int = 0, failed: int = 0) -> None:
         sets: list[str] = []
@@ -504,9 +555,20 @@ class PortfolioBacktestService:
             trades_by_leg: list[list[dict[str, Any]]] = []
             legs_summaries: list[dict[str, Any]] = []
 
-            for leg in legs:
+            for i, leg in enumerate(legs):
                 if self._cancel_requested(session_id):
                     break
+
+                self._set_live_leg(session_id, leg_index_1=int(i+1), legs_total=int(len(legs)))
+                hb_stop = threading.Event()
+                def _hb():
+                    while not hb_stop.wait(2.0):
+                        try:
+                            self._touch(session_id)
+                        except Exception:
+                            pass
+                hb = threading.Thread(target=_hb, daemon=True)
+                hb.start()
 
                 sid = str(leg.get("strategy_id") or "debit_spreads")
                 params = leg.get("params") or {}
@@ -535,6 +597,12 @@ class PortfolioBacktestService:
                     legs_summaries.append({"strategy_id": sid, "error": str(e), "params": params, "entry_triggers": 0, "exit_triggers": 0, "max_margin_required_dollars": None, "min_margin_required_dollars": None})
                     trades_by_leg.append([])
                     self._bump(session_id, failed=1)
+                finally:
+                    hb_stop.set()
+                    try:
+                        hb.join(timeout=0.2)
+                    except Exception:
+                        pass
 
             if str(merge_mode) == "merged":
                 combined_equity, combined_summary = combine_trades_merged_to_equity(trades_by_leg, exit_policy=merge_exit_policy)
@@ -557,6 +625,7 @@ class PortfolioBacktestService:
                 combined_summary.setdefault("line_min_margin_required_dollars", (min(_nvals) if _nvals else None))
 
             # If cancelled, still mark stopped and return partial results
+            self._clear_live_leg(session_id)
             status = "stopped" if self._cancel_requested(session_id) else "stopped"
             self._set_done(
                 session_id,
@@ -566,4 +635,5 @@ class PortfolioBacktestService:
                 legs_summaries=legs_summaries,
             )
         except Exception:
+            self._clear_live_leg(session_id)
             self._set_done(session_id, status="failed", combined_summary=None, combined_equity=None, legs_summaries=None)
