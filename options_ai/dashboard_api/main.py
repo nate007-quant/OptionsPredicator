@@ -1807,10 +1807,11 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=409, detail=f"account already paired to group {int(ex['id'])}: {str(ex['name'])}")
             cur = con.execute(
                 """INSERT INTO portfolio_defs(name, legs_json, execution_mode, group_start_day, group_end_day, paired_environment, paired_account_label, signal_engine_enabled, created_at_utc, updated_at_utc)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id""",
                 (name, _json.dumps(legs, separators=(',', ':'), sort_keys=True), execution_mode, (group_start_day or None), (group_end_day or None), paired_environment, (paired_account_label or None), (1 if signal_engine_enabled else 0), now, now),
             )
-            pid = int(cur.lastrowid)
+            rr_new = cur.fetchone()
+            pid = int(rr_new[0] if not isinstance(rr_new, dict) else rr_new.get('id'))
             con.commit()
         return {'id': pid, 'name': name, 'legs': legs, 'execution_mode': execution_mode, 'group_start_day': group_start_day, 'group_end_day': group_end_day, 'paired_environment': paired_environment, 'paired_account_label': paired_account_label, 'signal_engine_enabled': bool(signal_engine_enabled)}
 
@@ -3603,9 +3604,10 @@ def create_app() -> FastAPI:
             if gid is None and not create_name:
                 raise HTTPException(status_code=400, detail='group_id or create_group_name required')
             if gid is None:
-                cur = con.execute("INSERT INTO parameter_groups(name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived) VALUES(?,?,?,?,?,?,?,?,0)",
+                cur = con.execute("INSERT INTO parameter_groups(name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived) VALUES(?,?,?,?,?,?,?,?,0) RETURNING id",
                                   (create_name, 'Draft', _json.dumps([tag] if tag else []), comment or None, _json.dumps([int(run_id)]), _json.dumps([]), now, now))
-                gid = int(cur.lastrowid)
+                rr_new = cur.fetchone()
+                gid = int(rr_new[0] if not isinstance(rr_new, dict) else rr_new.get('id'))
             r = con.execute('SELECT run_ids_json,tags_json,comment FROM parameter_groups WHERE id=? AND archived=0', (int(gid),)).fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail='group not found')
@@ -3645,9 +3647,10 @@ def create_app() -> FastAPI:
                         params = {}
                     legs.append({'strategy_id': 'debit_spreads', 'params': params, 'source': f'group:{group_id}:run:{rid}'})
                 now = _now_utc_iso()
-                cur = con.execute('INSERT INTO portfolio_defs(name, legs_json, created_at_utc, updated_at_utc) VALUES(?,?,?,?)',
+                cur = con.execute('INSERT INTO portfolio_defs(name, legs_json, created_at_utc, updated_at_utc) VALUES(?,?,?,?) RETURNING id',
                                   (create_name, _json.dumps(legs, separators=(",", ":"), sort_keys=True), now, now))
-                pid = int(cur.lastrowid)
+                rr_new = cur.fetchone()
+                pid = int(rr_new[0] if not isinstance(rr_new, dict) else rr_new.get('id'))
             pids = [int(x) for x in (_json.loads(gr['portfolio_ids_json'] or '[]') or []) if str(x).isdigit()]
             if int(pid) not in pids:
                 pids.append(int(pid))
@@ -3686,9 +3689,10 @@ def create_app() -> FastAPI:
         run_ids = [int(x) for x in ((body or {}).get('run_ids') or []) if str(x).isdigit()]
         now = _now_utc_iso()
         with _connect(db_path) as con:
-            cur = con.execute("INSERT INTO parameter_groups(name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived) VALUES(?,?,?,?,?,?,?,?,0)",
+            cur = con.execute("INSERT INTO parameter_groups(name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived) VALUES(?,?,?,?,?,?,?,?,0) RETURNING id",
                               (name, status, _json.dumps([]), None, _json.dumps(run_ids), _json.dumps([]), now, now))
-            gid = int(cur.lastrowid)
+            rr_new = cur.fetchone()
+            gid = int(rr_new[0] if not isinstance(rr_new, dict) else rr_new.get('id'))
             con.commit()
         return {'id': gid, 'name': name, 'status': status, 'run_ids': run_ids}
 

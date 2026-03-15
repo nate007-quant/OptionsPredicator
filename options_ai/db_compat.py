@@ -21,8 +21,9 @@ class FlexRow(dict):
 
 
 class PgCursorCompat:
-    def __init__(self, cur: Any):
+    def __init__(self, cur: Any, owner: "PgConnCompat"):
         self._cur = cur
+        self._owner = owner
 
     @staticmethod
     def _q(sql: str) -> str:
@@ -30,18 +31,32 @@ class PgCursorCompat:
 
     def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None):
         self._cur.execute(self._q(sql), tuple(params or ()))
+        try:
+            rc = int(getattr(self._cur, 'rowcount', 0) or 0)
+            if rc > 0:
+                self._owner.total_changes += rc
+        except Exception:
+            pass
         return self
 
     def executemany(self, sql: str, seq: list[tuple[Any, ...]]):
         self._cur.executemany(self._q(sql), seq)
+        try:
+            rc = int(getattr(self._cur, 'rowcount', 0) or 0)
+            if rc > 0:
+                self._owner.total_changes += rc
+        except Exception:
+            pass
         return self
 
     @property
     def lastrowid(self):
         try:
-            r = self._cur.fetchone()
+            c2 = self._owner._con.cursor()
+            c2.execute('SELECT LASTVAL()')
+            r = c2.fetchone()
             if isinstance(r, dict):
-                return r.get("id")
+                return r.get('lastval') or next(iter(r.values()))
             return r[0]
         except Exception:
             return None
@@ -71,6 +86,7 @@ class PgConnCompat:
             raise RuntimeError("psycopg not installed")
         self._con = psycopg.connect(dsn, row_factory=dict_row)
         self.row_factory = FlexRow
+        self.total_changes = 0
 
     def __enter__(self):
         return self
@@ -86,7 +102,7 @@ class PgConnCompat:
 
     def execute(self, sql: str, params: tuple[Any, ...] | list[Any] | None = None):
         cur = self._con.cursor()
-        cc = PgCursorCompat(cur)
+        cc = PgCursorCompat(cur, self)
         return cc.execute(sql, params)
 
     def executescript(self, script: str):

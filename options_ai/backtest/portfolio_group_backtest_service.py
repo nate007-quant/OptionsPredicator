@@ -84,6 +84,7 @@ class PortfolioGroupBacktestService:
                   group_summary_json, group_equity_json
                 )
                 VALUES(?, ?, NULL, 'running', ?, ?, 0, 0, 0, ?, NULL, NULL)
+                RETURNING id
                 """,
                 (
                     now,
@@ -93,7 +94,8 @@ class PortfolioGroupBacktestService:
                     now,
                 ),
             )
-            run_id = int(cur.lastrowid)
+            rr = cur.fetchone()
+            run_id = int(rr[0] if not isinstance(rr, dict) else rr.get("id"))
             # seed child rows
             for d in defs:
                 con.execute(

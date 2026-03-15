@@ -307,6 +307,7 @@ class PortfolioBacktestService:
                   combined_summary_json, combined_equity_json, legs_summaries_json
                 )
                 VALUES(?, ?, NULL, 'running', ?, ?, 0, 0, 0, ?, NULL, NULL, NULL)
+                RETURNING id
                 """,
                 (
                     now,
@@ -316,7 +317,8 @@ class PortfolioBacktestService:
                     now,
                 ),
             )
-            session_id = int(cur.lastrowid)
+            rr = cur.fetchone()
+            session_id = int(rr[0] if not isinstance(rr, dict) else rr.get("id"))
             con.commit()
 
         self._spawn_worker(session_id=session_id)

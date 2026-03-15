@@ -163,6 +163,7 @@ class BacktestExecutor:
                             refinement_launched, refinement_sampler_id, refinement_launched_at_utc
                         )
                         VALUES(?,?,?,?,?,?,?,?,?,0,NULL,NULL)
+                        RETURNING id
                         """,
                         (
                             strategy_key,
@@ -176,7 +177,8 @@ class BacktestExecutor:
                             ph,
                         ),
                     )
-                    rid = int(cur.lastrowid)
+                    rr = cur.fetchone()
+                    rid = int(rr[0] if not isinstance(rr, dict) else rr.get("id"))
                 con.commit()
                 return rid
 

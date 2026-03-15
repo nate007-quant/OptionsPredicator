@@ -149,6 +149,7 @@ class BacktestSamplerService:
                   runs_completed, duplicates_skipped, runs_failed, precheck_rejected, cancel_requested, last_activity_at_utc, last_run_id
                 )
                 VALUES(?,?,?,?,NULL,'running',?,?,?,0,0,0,0,0,?,NULL)
+                RETURNING id
                 """,
                 (
                     strategy_key,
@@ -161,7 +162,8 @@ class BacktestSamplerService:
                     now,
                 ),
             )
-            sampler_id = int(cur.lastrowid)
+            rr = cur.fetchone()
+            sampler_id = int(rr[0] if not isinstance(rr, dict) else rr.get("id"))
             con.commit()
 
         self._spawn_worker(sampler_id=sampler_id, strategy_id=strategy_id)
