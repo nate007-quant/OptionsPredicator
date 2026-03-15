@@ -1176,6 +1176,11 @@ Enable flow_phase3 gating (bias + bucket z + breadth + confidence).">i</span></l
                   </div>
                 </div>
 
+                <div class="row" style="margin-top:10px;" id="btRegimeControls">
+                  <label><input id="btUseRegime" type="checkbox" /> Use regime-aware gating <span class="tip" data-tip="Applies to all backtest modes. Classifies each snapshot into regime_v1 and filters entries by regime direction + confidence.">i</span></label>
+                  <label>Regime min confidence <input id="btRegimeMinConf" type="number" step="0.01" min="0" max="1" value="0.55" style="width:110px;" /></label>
+                </div>
+
                 <div id="btStructuralControls" style="margin-top:10px; display:none;">
                   <div class="row">
                     <label><input id="btEnablePW" type="checkbox" checked /> Enable PW trade <span class="tip" data-tip="Structural walls mode only.
@@ -1269,6 +1274,7 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <label style="margin-left:10px;">Budget <input id="btSamplerBudget" type="number" value="5000" min="1" max="200000" style="width:95px;" /></label>
                 <span class="hint" id="btSamplerCounters" style="margin-left:10px;"></span>
                 <span class="hint" id="btNote" style="margin-left:10px;"></span>
+                <span id="btRegimeBadge" style="margin-left:8px; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted);">Regime: OFF</span>
               </div>
             </div>
           </div>
@@ -2107,7 +2113,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         include_missing_exits: (btHiddenOverrides.include_missing_exits !== undefined) ? !!btHiddenOverrides.include_missing_exits : false,
         max_future_lookahead_minutes: (btHiddenOverrides.max_future_lookahead_minutes !== undefined) ? parseInt(String(btHiddenOverrides.max_future_lookahead_minutes), 10) : 120,
         price_mode: (btHiddenOverrides.price_mode !== undefined) ? String(btHiddenOverrides.price_mode) : 'mid',
-        tz_local: (btHiddenOverrides.tz_local !== undefined) ? String(btHiddenOverrides.tz_local) : 'America/Chicago'
+        tz_local: (btHiddenOverrides.tz_local !== undefined) ? String(btHiddenOverrides.tz_local) : 'America/Chicago',
+        regime_enabled: !!document.getElementById('btUseRegime')?.checked,
+        regime_min_confidence: parseFloat(document.getElementById('btRegimeMinConf')?.value || '0.55')
       };
 
       // expiration extras (only when applicable)
@@ -2229,6 +2237,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
       setv('btFlowMinBucketZ', p.flow_gate_min_bucket_z);
       setv('btFlowMinBreadth', p.flow_gate_min_breadth);
       setv('btFlowMinConf', p.flow_gate_min_confidence);
+      setc('btUseRegime', p.regime_enabled);
+      setv('btRegimeMinConf', p.regime_min_confidence);
+      const badge0 = document.getElementById('btRegimeBadge'); if (badge0) { const on = !!p.regime_enabled; badge0.textContent = on ? `Regime: ON (min ${Number(p.regime_min_confidence ?? 0.55).toFixed(2)})` : 'Regime: OFF'; badge0.style.borderColor = on ? 'var(--ok,#2e7d32)' : 'var(--line)'; badge0.style.color = on ? 'var(--ok,#2e7d32)' : 'var(--muted)'; }
       const strategyMode = String(p.strategy_mode || 'anchor_based').toLowerCase();
       if (strategyMode === 'flow_regime') setv('btFlowProfile', 'custom');
 
@@ -4471,6 +4482,22 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
         throw new Error(`backtest http ${resp.status}: ${t}`);
       }
       const data = await resp.json();
+
+      const badge = document.getElementById('btRegimeBadge');
+      if (badge) {
+        const on = (data?.config?.regime_enabled !== undefined) ? !!data.config.regime_enabled : !!payload.regime_enabled;
+        const minc = Number((data?.config?.regime_min_confidence ?? payload.regime_min_confidence) ?? 0.55);
+        const trades = Array.isArray(data?.trades) ? data.trades : [];
+        const byReg = {};
+        for (const t of trades) {
+          const k = (t?.regime_label || 'n/a');
+          byReg[k] = (byReg[k] || 0) + 1;
+        }
+        const tops = Object.entries(byReg).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([k,v])=>`${k}:${v}`).join(', ');
+        badge.textContent = on ? `Regime: ON (min ${minc.toFixed(2)})${tops ? ' • '+tops : ''}` : 'Regime: OFF';
+        badge.style.borderColor = on ? 'var(--ok,#2e7d32)' : 'var(--line)';
+        badge.style.color = on ? 'var(--ok,#2e7d32)' : 'var(--muted)';
+      }
 
       renderBtSummaryGraphics(data.summary || {});
 
