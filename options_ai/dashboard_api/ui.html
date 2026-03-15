@@ -1177,8 +1177,29 @@ Enable flow_phase3 gating (bias + bucket z + breadth + confidence).">i</span></l
                 </div>
 
                 <div class="row" style="margin-top:10px;" id="btRegimeControls">
-                  <label><input id="btUseRegime" type="checkbox" /> Use regime-aware gating <span class="tip" data-tip="Applies to all backtest modes. Classifies each snapshot into regime_v1 and filters entries by regime direction + confidence.">i</span></label>
-                  <label>Regime min confidence <input id="btRegimeMinConf" type="number" step="0.01" min="0" max="1" value="0.55" style="width:110px;" /></label>
+                  <label><input id="btUseRegime" type="checkbox" /> Use regime-aware gating <span class="tip" data-tip="Regime v1 tags each snapshot into one of 5 market states using only snapshot-time inputs (trend, flow/volume, expected move, IV, PCR, GEX levels, session time, and quote quality).
+
+Labels:
+• trend_up: directional upside bias
+• trend_down: directional downside bias
+• pin_mean_revert: positive-gamma/pin behavior
+• vol_expansion_breakout: expansion/breakout conditions
+• event_unstable: unstable/event-like tape
+
+How gating works in backtests:
+• trend_up allows CALL entries
+• trend_down allows PUT entries
+• event_unstable blocks entries
+• pin_mean_revert and vol_expansion_breakout allow either side
+• entries are also filtered by Regime min confidence
+
+Tip: start with 0.55. Raise to trade less (higher precision), lower to trade more (higher recall).">i</span></label>
+                  <label>Regime min confidence <span class="tip" data-tip="Confidence threshold (0..1) required for a regime decision to be used.
+
+Higher = stricter filter (fewer trades, usually cleaner).
+Lower = looser filter (more trades, more noise).
+
+Common range: 0.50-0.70. Default: 0.55.">i</span> <input id="btRegimeMinConf" type="number" step="0.01" min="0" max="1" value="0.55" style="width:110px;" /></label>
                 </div>
 
                 <div id="btStructuralControls" style="margin-top:10px; display:none;">
@@ -1274,7 +1295,9 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
                 <label style="margin-left:10px;">Budget <input id="btSamplerBudget" type="number" value="5000" min="1" max="200000" style="width:95px;" /></label>
                 <span class="hint" id="btSamplerCounters" style="margin-left:10px;"></span>
                 <span class="hint" id="btNote" style="margin-left:10px;"></span>
-                <span id="btRegimeBadge" style="margin-left:8px; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted);">Regime: OFF</span>
+                <span id="btRegimeBadge" class="tip" data-tip="Run-time regime summary.
+
+Shows whether regime gating was enabled, confidence threshold used, and top regime labels observed in executed trades for this run." style="margin-left:8px; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted);">Regime: OFF</span>
               </div>
             </div>
           </div>
