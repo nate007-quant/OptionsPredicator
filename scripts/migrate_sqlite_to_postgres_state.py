@@ -18,6 +18,145 @@ class TableSpec:
 
 
 TABLE_SPECS: list[TableSpec] = [
+    # core prediction/local-state tables (legacy sqlite)
+    TableSpec(
+        name="predictions",
+        create_sql="""
+        CREATE TABLE IF NOT EXISTS {schema}.predictions (
+          id BIGINT PRIMARY KEY,
+          timestamp TEXT NOT NULL,
+          ticker TEXT NOT NULL,
+          expiration_date TEXT NOT NULL,
+          source_snapshot_file TEXT NOT NULL,
+          source_snapshot_hash TEXT NOT NULL,
+          chart_file TEXT,
+          spot_price REAL NOT NULL,
+          signals_used TEXT NOT NULL,
+          chart_description TEXT,
+          predicted_direction TEXT NOT NULL,
+          predicted_magnitude REAL NOT NULL,
+          confidence REAL NOT NULL,
+          strategy_suggested TEXT NOT NULL,
+          reasoning TEXT NOT NULL,
+          prompt_version TEXT NOT NULL,
+          model_used TEXT NOT NULL,
+          model_provider TEXT NOT NULL,
+          routing_reason TEXT NOT NULL,
+          price_at_prediction REAL,
+          price_at_outcome REAL,
+          actual_move REAL,
+          result TEXT,
+          pnl_simulated REAL,
+          outcome_notes TEXT,
+          scored_at TEXT,
+          observed_ts_utc TEXT,
+          outcome_ts_utc TEXT,
+          features_version TEXT,
+          features_json TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uniq_predictions_hash_prompt_model ON {schema}.predictions(source_snapshot_hash, prompt_version, model_used);
+        CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON {schema}.predictions(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_predictions_result_null ON {schema}.predictions(result);
+        """,
+        pk_cols=["id"],
+    ),
+    TableSpec(
+        name="performance_summary",
+        create_sql="""
+        CREATE TABLE IF NOT EXISTS {schema}.performance_summary (
+          id BIGINT PRIMARY KEY,
+          generated_at TEXT NOT NULL,
+          total_predictions INTEGER NOT NULL,
+          total_scored INTEGER NOT NULL,
+          overall_accuracy REAL,
+          summary_json TEXT NOT NULL
+        );
+        """,
+        pk_cols=["id"],
+    ),
+    TableSpec(
+        name="system_events",
+        create_sql="""
+        CREATE TABLE IF NOT EXISTS {schema}.system_events (
+          id BIGINT PRIMARY KEY,
+          timestamp TEXT NOT NULL,
+          level TEXT NOT NULL,
+          component TEXT NOT NULL,
+          event TEXT NOT NULL,
+          message TEXT NOT NULL,
+          snapshot_hash TEXT,
+          model_used TEXT,
+          details_json TEXT NOT NULL
+        );
+        """,
+        pk_cols=["id"],
+    ),
+    TableSpec(
+        name="model_usage",
+        create_sql="""
+        CREATE TABLE IF NOT EXISTS {schema}.model_usage (
+          id BIGINT PRIMARY KEY,
+          ts_utc TEXT NOT NULL,
+          observed_ts_utc TEXT,
+          snapshot_hash TEXT,
+          kind TEXT NOT NULL,
+          model_used TEXT,
+          model_provider TEXT,
+          prompt_chars INTEGER,
+          output_chars INTEGER,
+          latency_ms INTEGER,
+          input_tokens INTEGER,
+          output_tokens INTEGER,
+          total_tokens INTEGER,
+          est_input_tokens INTEGER NOT NULL,
+          est_output_tokens INTEGER NOT NULL,
+          est_total_tokens INTEGER NOT NULL
+        );
+        """,
+        pk_cols=["id"],
+    ),
+    TableSpec(
+        name="eod_predictions",
+        create_sql="""
+        CREATE TABLE IF NOT EXISTS {schema}.eod_predictions (
+          trade_day TEXT NOT NULL,
+          asof_minutes INTEGER NOT NULL,
+          levels_asof_snapshot_index INTEGER NOT NULL,
+          model_version TEXT NOT NULL,
+          created_at_utc TEXT NOT NULL,
+          open_price REAL,
+          early_end_price REAL,
+          close_price REAL,
+          levels_json TEXT,
+          features_version TEXT,
+          features_json TEXT,
+          pred_dir TEXT,
+          pred_conf REAL,
+          pred_move_pts REAL,
+          p_action REAL,
+          event_probs_json TEXT,
+          label_dir TEXT,
+          label_move_pts REAL,
+          label_band_pts REAL,
+          label_events_json TEXT,
+          scored_at TEXT,
+          PRIMARY KEY (trade_day, asof_minutes, levels_asof_snapshot_index, model_version)
+        );
+        """,
+        pk_cols=["trade_day", "asof_minutes", "levels_asof_snapshot_index", "model_version"],
+    ),
+    TableSpec(
+        name="schema_migrations",
+        create_sql="""
+        CREATE TABLE IF NOT EXISTS {schema}.schema_migrations (
+          id BIGINT PRIMARY KEY,
+          filename TEXT NOT NULL UNIQUE,
+          checksum_sha256 TEXT NOT NULL,
+          applied_at_utc TEXT NOT NULL
+        );
+        """,
+        pk_cols=["id"],
+    ),
     TableSpec(
         name="backtest_sampler_sessions",
         create_sql="""
