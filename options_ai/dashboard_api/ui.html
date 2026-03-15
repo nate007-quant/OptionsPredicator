@@ -3813,12 +3813,23 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       return s ? (s.charAt(0).toUpperCase() + s.slice(1)) : 'Unknown';
     }
 
+    function pfStatusTone(status) {
+      const s = String(status || '').toLowerCase();
+      if (s === 'running') return '#86efac';
+      if (s === 'stopping') return '#fcd34d';
+      if (s === 'failed') return '#fca5a5';
+      if (s === 'stopped') return '#93c5fd';
+      return '#cbd5e1';
+    }
+
     function pfRenderCardProgress(pid, completed, total, st=null) {
       const c = Number(completed || 0);
       const t = Number(total || 0);
       const pct = (t > 0) ? Math.max(0, Math.min(100, (100 * c / t))) : 0;
       const bar = document.getElementById(`pfCardProgBar-${pid}`);
       const txt = document.getElementById(`pfCardProgText-${pid}`);
+      const sub = document.getElementById(`pfCardProgSub-${pid}`);
+      const note = document.getElementById(`pfCardNote-${pid}`);
       const stRaw = String((st && st.status) || '').toLowerCase();
       const hasSession = !!pfCardSessions[String(pid)];
       const active = ['running','stopping'].includes(stRaw) || (hasSession && !['stopped','failed'].includes(stRaw));
@@ -3849,14 +3860,26 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       const exitPolicy = String((st && st.combined_summary && st.combined_summary.merge_exit_policy) || pfCardExitPolicies[String(pid)] || 'any_leg');
       const exitTxt = (mode === 'merged') ? ` · Exit ${exitPolicy === 'entry_leg' ? 'Entry leg only' : 'Any leg'}` : '';
+      const statusLabel = pfPrettyStatus(stRaw || (hasSession ? 'running' : 'idle'));
+      const failN = Number((st && st.legs_failed) || 0);
+      if (note) {
+        const tone = pfStatusTone(stRaw);
+        note.innerHTML = `<span style="display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid ${tone}; color:${tone}; margin-right:8px;">${statusLabel}</span>` +
+          `<span class="hint">Legs ${c}/${t || 0}${failN ? ` · Failed ${failN}` : ''}</span>`;
+      }
       if (mode === 'merged') {
         const totalDays = Math.max(0, pfCountTradingDays(rg.start, rg.end));
         const doneDays = totalDays > 0 ? Math.max(0, Math.min(totalDays, Math.round((pct / 100) * totalDays))) : 0;
-        if (txt) txt.textContent = `Window ${windowTxt} · Elapsed ${elapsedTxt} · Trading days ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, est.)${exitTxt}`;
+        if (txt) txt.textContent = `Progress: Trading days ${doneDays}/${totalDays || '—'} (${pct.toFixed(0)}%, est.)`;
       } else {
         if (txt) txt.textContent = (t > 0)
-          ? `Window ${windowTxt} · Elapsed ${elapsedTxt} · Progress ${c}/${t || 0} (${pct.toFixed(0)}%)`
-          : `Window ${windowTxt} · Elapsed ${elapsedTxt} · Waiting for first progress update…`;
+          ? `Progress: ${c}/${t || 0} (${pct.toFixed(0)}%)`
+          : `Progress: Waiting for first update…`;
+      }
+      if (sub) {
+        const last = String((st && (st.last_activity_at_utc || st.stopped_at_utc)) || '').trim();
+        const lastTxt = last ? ` · Last update ${fmtCentral(last)}` : '';
+        sub.textContent = `Window ${windowTxt} · Elapsed ${elapsedTxt}${exitTxt}${lastTxt}`;
       }
     }
 
@@ -3939,7 +3962,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const legs = Array.isArray(it.legs) ? it.legs : [];
       if (!legs.length) throw new Error('group has no parameter lines');
       const note = document.getElementById(`pfCardNote-${pid}`);
-      if (note) note.textContent = 'Status: Starting…';
+      if (note) note.textContent = 'Status: Starting run…';
       renderBtSummaryGraphics({});
       pfRenderCardProgress(pid, 0, (legs || []).length);
 
@@ -3983,7 +4006,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (!sid) return;
       await jpost('/api/portfolio_backtest/stop', { session_id: sid });
       const note = document.getElementById(`pfCardNote-${pid}`);
-      if (note) note.textContent = 'Status: Stop requested…';
+      if (note) note.textContent = 'Status: Stop requested… Waiting for worker to finish.';
     }
 
     async function pfPollSingleGroup(pid) {
@@ -4268,15 +4291,17 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
               <label>Group end <input id="pfCardEnd-${pid}" type="date" value="${esc(String(it.group_end_day || pfLastTradingDayIso()))}" /></label>
               <button id="pfCardDateSave-${pid}">Save dates</button>
               <button id="pfCardDateAuto-${pid}">Auto dates</button>
-              <span class="hint" id="pfCardNote-${pid}"></span>
+              <div id="pfCardNote-${pid}" class="hint" style="font-size:12px;">Status: Idle · Ready</div>
             </div>
-            <div class="hint" style="margin-top:4px;">Run-time window overrides line-level start/end for consistency across this group.</div>
-            <div class="hint" style="margin-top:2px;">Signal engine: ${it.signal_engine_enabled ? 'ON' : 'OFF'} | last source: ${esc(fmtCentral(it.signal_last_source_ts))} | last poll: ${esc(fmtCentral(it.signal_last_poll_utc))} | last emit: ${esc(fmtCentral(it.signal_last_emit_utc))}${it.signal_last_error ? ' | error: ' + esc(String(it.signal_last_error)) : ''}</div>
+            <div id="pfCardMeta-${pid}" class="hint" style="margin-top:4px;">
+              Window override: On · Signal engine: ${it.signal_engine_enabled ? 'ON' : 'OFF'} · Last source: ${esc(fmtCentral(it.signal_last_source_ts))} · Last poll: ${esc(fmtCentral(it.signal_last_poll_utc))} · Last emit: ${esc(fmtCentral(it.signal_last_emit_utc))}${it.signal_last_error ? ' · Error: ' + esc(String(it.signal_last_error)) : ''}
+            </div>
             <div style="margin-top:8px;">
               <div style="height:8px; border-radius:999px; background:rgba(148,163,184,.25); overflow:hidden;">
                 <div id="pfCardProgBar-${pid}" style="height:100%; width:0%; background:linear-gradient(90deg,#60a5fa,#3b82f6);"></div>
               </div>
-              <div class="hint" id="pfCardProgText-${pid}" style="margin-top:4px;">progress: 0/0</div>
+              <div class="hint" id="pfCardProgText-${pid}" style="margin-top:4px; font-weight:600;">Progress: waiting…</div>
+              <div class="hint" id="pfCardProgSub-${pid}" style="margin-top:2px; opacity:.9;">Window — · Elapsed —</div>
             </div>
             <div style="margin-top:10px;">
               <div class="hint">Equity Curve</div>
@@ -4311,7 +4336,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           if (note) {
             const dt = new Date(Number(cached.saved_at_ms || 0));
             const iso = isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0,10);
-            note.textContent = iso ? `Cached snapshot: ${iso}` : 'Cached snapshot';
+            note.textContent = iso ? `Status: Cached snapshot · ${iso}` : 'Status: Cached snapshot';
           }
         }
 
@@ -4578,7 +4603,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const ids = Array.from(pfGroupSelected || []);
       if (!ids.length) throw new Error('select one or more portfolios');
       const note = document.getElementById('pfGroupNote');
-      if (note) note.textContent = 'Status: Starting…';
+      if (note) note.textContent = 'Status: Starting run…';
       const resp = await jpost('/api/portfolio_groups/run', { portfolio_ids: ids });
       pfGroupRunId = resp.run_id;
       toast('portfolio group run started', 'success');
@@ -4656,7 +4681,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     async function pfRun() {
       if (!pfLegs || pfLegs.length === 0) throw new Error('add legs first');
       const note = document.getElementById('pfNote');
-      if (note) note.textContent = 'Status: Starting…';
+      if (note) note.textContent = 'Status: Starting run…';
       const resp = await jpost('/api/portfolio_backtest/start', {
         legs: (pfLegs || []).map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
       });
@@ -4695,7 +4720,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (fr && fr.checked) payload.force_run = true;
 
       const note = document.getElementById('btNote');
-      if (note) note.textContent = 'Status: Starting…';
+      if (note) note.textContent = 'Status: Starting run…';
 
       let data;
       try {
