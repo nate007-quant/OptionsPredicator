@@ -2557,15 +2557,8 @@ def create_app() -> FastAPI:
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(int(limit))
 
-        if bt_use_pg:
-            sql_pg = sql.replace('?', '%s')
-            with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
-                with con.cursor() as cur:
-                    cur.execute(sql_pg, tuple(params))
-                    rows = cur.fetchall()
-        else:
-            with _connect(db_path) as con:
-                rows = con.execute(sql, tuple(params)).fetchall()
+        with _connect(db_path) as con:
+            rows = con.execute(sql, tuple(params)).fetchall()
 
         items = []
         for r in rows:
