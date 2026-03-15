@@ -53,7 +53,7 @@ def _trade_margin_required_dollars(tr: dict[str, Any]) -> float | None:
 
 
 def combine_trades_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    events: list[tuple[datetime, float]] = []
+    events: list[tuple[datetime, float, float | None]] = []
     pnl_vals: list[float] = []
 
     for trades in trades_by_leg:
@@ -75,7 +75,8 @@ def combine_trades_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             dt_utc = dt.astimezone(timezone.utc)
-            events.append((dt_utc, pnl_f))
+            risk_f = _trade_margin_required_dollars(t)
+            events.append((dt_utc, pnl_f, risk_f))
             pnl_vals.append(pnl_f)
 
     events.sort(key=lambda x: x[0])
@@ -83,10 +84,10 @@ def combine_trades_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple
     eq: list[dict[str, Any]] = []
     cum = 0.0
     eq_points: list[float] = []
-    for dt, pnl in events:
+    for dt, pnl, risk in events:
         cum += float(pnl)
         eq_points.append(cum)
-        eq.append({"ts": dt.isoformat(), "cum_pnl_dollars": float(cum)})
+        eq.append({"ts": dt.isoformat(), "cum_pnl_dollars": float(cum), "risk_dollars": (float(risk) if risk is not None else None)})
 
     wins = sum(1 for v in pnl_vals if v > 0)
     losses = sum(1 for v in pnl_vals if v < 0)
@@ -102,6 +103,8 @@ def combine_trades_to_equity(trades_by_leg: list[list[dict[str, Any]]]) -> tuple
         "avg_pnl_dollars": float(sum(pnl_vals) / len(pnl_vals)) if pnl_vals else 0.0,
         "max_drawdown_dollars": float(_max_drawdown(eq_points) if eq_points else 0.0),
         "profit_factor": float(sum_gain / abs(sum_loss)) if sum_loss < 0 else (float("inf") if sum_gain > 0 else 0.0),
+        "max_risk_dollars": (max([float(x[2]) for x in events if x[2] is not None]) if any(x[2] is not None for x in events) else None),
+        "min_risk_dollars": (min([float(x[2]) for x in events if x[2] is not None]) if any(x[2] is not None for x in events) else None),
     }
 
     return eq, summary
@@ -137,7 +140,7 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]], *
                 pnl = float(t.get("pnl_dollars") or 0.0)
             except Exception:
                 pnl = 0.0
-            recs.append({"leg": int(li), "entry": dt_e, "exit": dt_x, "pnl": pnl})
+            recs.append({"leg": int(li), "entry": dt_e, "exit": dt_x, "pnl": pnl, "risk": _trade_margin_required_dollars(t)})
 
     recs.sort(key=lambda r: (r["entry"], r["exit"]))
 
@@ -192,6 +195,7 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]], *
         eq.append({
             "ts": close_ts.isoformat(),
             "cum_pnl_dollars": float(cum),
+            "risk_dollars": (float(opener["risk"]) if opener.get("risk") is not None else None),
             "entry_ts": open_ts.isoformat(),
             "close_leg": int(closer["leg"]),
             "open_leg": int(opener["leg"]),
@@ -235,6 +239,8 @@ def combine_trades_merged_to_equity(trades_by_leg: list[list[dict[str, Any]]], *
         "merge_selected_trades": selected_total,
         "merge_skipped_trades": skipped_total,
         "merge_overlap_events": int(overlap_events),
+        "max_risk_dollars": (max([float(x.get("risk_dollars")) for x in eq if isinstance(x, dict) and x.get("risk_dollars") is not None]) if any(isinstance(x, dict) and x.get("risk_dollars") is not None for x in eq) else None),
+        "min_risk_dollars": (min([float(x.get("risk_dollars")) for x in eq if isinstance(x, dict) and x.get("risk_dollars") is not None]) if any(isinstance(x, dict) and x.get("risk_dollars") is not None for x in eq) else None),
     }
     return eq, summary
 

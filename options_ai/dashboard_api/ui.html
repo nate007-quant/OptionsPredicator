@@ -3716,7 +3716,11 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         const m = raw.match(/(\d{4}-\d{2}-\d{2})/);
         return m ? m[1] : raw.slice(0, 10);
       });
-      const data = pts.map(p => Number(p.cum_pnl_dollars || 0));
+      const pnlData = pts.map(p => Number(p.cum_pnl_dollars || 0));
+      const riskData = pts.map(p => {
+        const v = p && p.risk_dollars;
+        return (v === null || v === undefined || Number.isNaN(Number(v))) ? null : Number(v);
+      });
       const key = String(pid);
 
       const existing = pfCardCharts[key];
@@ -3728,15 +3732,31 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       if (pfCardCharts[key]) {
         pfCardCharts[key].data.labels = labels;
-        pfCardCharts[key].data.datasets[0].data = data;
+        // dataset[0] = pnl line, dataset[1] = risk bars
+        pfCardCharts[key].data.datasets[0].data = pnlData;
+        if (pfCardCharts[key].data.datasets[1]) pfCardCharts[key].data.datasets[1].data = riskData;
         pfCardCharts[key].update();
         return;
       }
 
       pfCardCharts[key] = new Chart(canvas.getContext('2d'), {
-        type: 'line',
-        data: { labels, datasets: [{ label: 'cum_pnl_dollars', data, borderWidth: 2, pointRadius: 0, tension: 0.2 }] },
-        options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 8 } } } }
+        data: {
+          labels,
+          datasets: [
+            { type: 'line', yAxisID: 'yPnl', label: 'Cum PnL ($)', data: pnlData, borderWidth: 2, pointRadius: 0, tension: 0.2, borderColor: '#60a5fa' },
+            { type: 'bar', yAxisID: 'yRisk', label: 'Risk per trade ($)', data: riskData, backgroundColor: 'rgba(245, 158, 11, 0.35)', borderColor: 'rgba(245, 158, 11, 0.75)', borderWidth: 1, barPercentage: 0.7, categoryPercentage: 0.9 },
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            x: { ticks: { maxTicksLimit: 8 } },
+            yPnl: { type: 'linear', position: 'left', title: { display: true, text: 'Cum PnL ($)' } },
+            yRisk: { type: 'linear', position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'Risk ($)' } },
+          }
+        }
       });
     }
 
