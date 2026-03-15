@@ -3625,7 +3625,9 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             rows = con.execute(
                 """SELECT id,name,status,tags_json,comment,run_ids_json,portfolio_ids_json,created_at_utc,updated_at_utc,archived
-                   FROM parameter_groups WHERE archived=0 ORDER BY updated_at_utc DESC, id DESC"""
+                   FROM parameter_groups
+                   WHERE archived=0
+                   ORDER BY LOWER(COALESCE(name,'')) ASC, id ASC"""
             ).fetchall()
         out = []
         for r in rows:
