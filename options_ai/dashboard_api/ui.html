@@ -3619,13 +3619,14 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       return days * 24 * 60 * 60 * 1000;
     }
 
-    function pfSaveCardCache(pid, portfolioUpdatedAt, summary, equity) {
+    function pfSaveCardCache(pid, portfolioUpdatedAt, summary, equity, legsSummaries=[]) {
       try {
         const payload = {
           saved_at_ms: Date.now(),
           portfolio_updated_at_utc: String(portfolioUpdatedAt || ''),
           combined_summary: summary || {},
           combined_equity_curve: Array.isArray(equity) ? equity : [],
+          legs_summaries: Array.isArray(legsSummaries) ? legsSummaries : [],
         };
         localStorage.setItem(pfCacheKey(pid), JSON.stringify(payload));
       } catch {}
@@ -3957,7 +3958,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (st && Array.isArray(st.legs_summaries)) {
         pfRenderCardLineMetrics(pid, st.legs_summaries);
         const cur = (pfPortfolios || []).find(x => String(x.id) === String(pid));
-        pfSaveCardCache(pid, cur?.updated_at_utc || '', st.combined_summary, st.combined_equity_curve || []);
+        pfSaveCardCache(pid, cur?.updated_at_utc || '', st.combined_summary, st.combined_equity_curve || [], st.legs_summaries || []);
       }
       if (st && (st.status === 'stopped' || st.status === 'failed')) {
         if (pfCardPollers[String(pid)]) { clearInterval(pfCardPollers[String(pid)]); delete pfCardPollers[String(pid)]; }
@@ -4257,6 +4258,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         if (cached) {
           if (Array.isArray(cached.combined_equity_curve)) pfRenderCardEquity(pid, cached.combined_equity_curve);
           pfRenderCardSummaryGraphics(pid, cached.combined_summary || {});
+          pfRenderCardLineMetrics(pid, cached.legs_summaries || []);
           const doneN = Array.isArray(legs) ? legs.length : 0;
           pfRenderCardProgress(pid, doneN, doneN);
           const note = document.getElementById(`pfCardNote-${pid}`);
@@ -4281,7 +4283,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
                 <textarea id="pfLineParams-${pid}-${i}" style="margin-top:6px; width:100%; min-width:360px; height:96px; font-family:var(--mono); font-size:11px;">${esc(JSON.stringify(leg.params || {}, null, 2))}</textarea>
               </details>
             </td>
-            <td id="pfLineMetrics-${pid}-${i}"><span class="hint">entries: — | exits: —</span></td>
+            <td id="pfLineMetrics-${pid}-${i}"><span class="hint">entries: — | exits: — (populate after run)</span></td>
             <td>
               <button id="pfLineSave-${pid}-${i}" class="btn-primary" style="padding:4px 8px;">Save</button>
               <button id="pfLineDel-${pid}-${i}" class="btn-danger" style="padding:4px 8px; margin-left:6px;">Delete</button>
