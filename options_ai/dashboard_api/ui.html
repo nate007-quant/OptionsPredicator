@@ -480,7 +480,7 @@
       </div>
 
       <div class="status">
-        <div class="badge"><span class="dot" id="healthDot"></span> <strong id="healthText">Unknown</strong></div>
+        <div class="badge"><span class="dot" id="healthDot"></span> <strong id="healthText">Loading…</strong></div>
         <div class="badge">Paused: <strong id="pausedText">—</strong></div>
         <div class="badge">Last refresh: <strong id="lastRefresh">—</strong></div>
         <button id="themeToggle">Theme</button>
@@ -4747,7 +4747,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const cb = document.getElementById('opsSchedEnabled');
       const st = document.getElementById('opsSchedStatus');
       if (cb) cb.checked = !!d.enabled;
-      if (st) st.textContent = `scheduler: ${d.enabled ? 'ON' : 'OFF'} (${d.status || 'unknown'})`;
+      if (st) st.textContent = `scheduler: ${d.enabled ? 'ON' : 'OFF'} (${d.status || 'inactive'})`;
       applySchedulerConfigUI(d.config || {});
       return d;
     }
@@ -4757,7 +4757,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const cb = document.getElementById('opsSchedEnabled');
       if (cb) cb.checked = !!d.enabled;
       const st = document.getElementById('opsSchedStatus');
-      if (st) st.textContent = `scheduler: ${d.enabled ? 'ON' : 'OFF'} (${d.status || 'unknown'})`;
+      if (st) st.textContent = `scheduler: ${d.enabled ? 'ON' : 'OFF'} (${d.status || 'inactive'})`;
       applySchedulerConfigUI(d.config || {});
       toast(`scheduler ${d.enabled ? 'enabled' : 'disabled'}`, d.enabled ? 'success' : 'warn');
       return d;
@@ -4911,7 +4911,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         }
 
         const pb = document.getElementById('opsBottleneck');
-        if (pb) pb.textContent = `Profile: ${(pipeline.profile || 'unknown')} | Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
+        if (pb) pb.textContent = `Profile: ${(pipeline.profile || 'n/a')} | Bottleneck: ${pipeline.bottleneck_stage || 'none'} (${pipeline.bottleneck_status || 'green'})`;
 
         const pf = document.getElementById('pipelineFlow');
         if (pf) {
@@ -4985,7 +4985,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
             tr.innerHTML = `
               <td>${svc.name}</td>
               <td>${svc.stage || '—'}</td>
-              <td><span class="svc-badge ${svc.status_color || 'yellow'}">${svc.status || 'unknown'}</span></td>
+              <td><span class="svc-badge ${((svc.status_color || 'yellow') === 'yellow' && (!svc.status || svc.status==='unknown') ? 'gray' : (svc.status_color || 'yellow'))}">${((svc.status && svc.status!=='unknown') ? svc.status : ((svc.sub_status && svc.sub_status!=='unknown') ? svc.sub_status : 'inactive'))}</span></td>
               <td>${fmtSec(svc.uptime_sec)}</td>
               <td>${fmtSec(svc.heartbeat_age_sec)}</td>
               <td>${svc.cpu_util_pct == null ? '—' : fmtNum(svc.cpu_util_pct,1)+'%'}</td>

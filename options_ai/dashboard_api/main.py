@@ -4270,7 +4270,7 @@ def create_app() -> FastAPI:
             return ('Strategy Factory', 'scheduler', False)
         if n.startswith('optionspredicator-stack'):
             return ('Dependencies', 'orchestrator', False)
-        return ('Unknown', 'misc', False)
+        return ('Misc', 'misc', False)
 
     def _default_services() -> list[dict[str, Any]]:
         names = [
