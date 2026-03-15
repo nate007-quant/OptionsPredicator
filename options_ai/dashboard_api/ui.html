@@ -3977,13 +3977,15 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const mode = String(it.execution_mode || 'independent');
       const applied = pfApplyGroupWindowToLegs(it, legs);
       pfCardRanges[String(pid)] = { start: applied.window.start || '', end: applied.window.end || '' };
+      const reqBody = {
+        merge_mode: mode,
+        merge_exit_policy: String(pfCardExitPolicies[String(pid)] || 'any_leg'),
+        legs: applied.legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
+      };
+
       let resp;
       try {
-        resp = await jpost('/api/portfolio_backtest/start', {
-          merge_mode: mode,
-          merge_exit_policy: String(pfCardExitPolicies[String(pid)] || 'any_leg'),
-          legs: applied.legs.map(l => ({ strategy_id: l.strategy_id || 'debit_spreads', params: l.params || {} }))
-        });
+        resp = await jpost('/api/portfolio_backtest/start', reqBody);
       } catch (e) {
         const raw = String(e?.message || e || '');
         let detail = raw;
@@ -3992,15 +3994,38 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           if (obj && typeof obj === 'object' && obj.detail) detail = String(obj.detail);
         } catch {}
 
-        // Friendly handling for "already active" conflict.
+        // Friendly handling for "already active" conflict:
+        // - if active: auto-attach to active session and begin polling
+        // - if already stopped/failed (race): retry start once automatically
         const m = detail.match(/already active:\s*(\d+)/i);
         if (m) {
-          if (note) note.textContent = `another group run is active (session ${m[1]}) — stop it first`;
-          toast(`Another group backtest is already running (session ${m[1]}). Stop it first to avoid cross-group overlap.`, 'warn');
-          return;
-        }
+          const sid = Number(m[1]);
+          try {
+            const st = await jget(`/api/portfolio_backtest/status?session_id=${sid}`);
+            const stRaw = String(st?.status || '').toLowerCase();
+            if (['running','stopping'].includes(stRaw)) {
+              pfSetCardSession(pid, sid);
+              if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
+              pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
+              if (note) note.textContent = `Status: Attached to active session ${sid}`;
+              await pfPollSingleGroup(pid);
+              toast(`Attached to active run (session ${sid})`, 'info');
+              return;
+            }
+          } catch {}
 
-        throw e;
+          // Small race/backoff retry for stale conflict records
+          await new Promise(r => setTimeout(r, 350));
+          try {
+            resp = await jpost('/api/portfolio_backtest/start', reqBody);
+          } catch {
+            if (note) note.textContent = `Status: Busy (session ${sid}) — try again in a moment`;
+            toast(`A group backtest is still active (session ${sid}).`, 'warn');
+            return;
+          }
+        } else {
+          throw e;
+        }
       }
 
       pfSetCardSession(pid, resp.session_id);
