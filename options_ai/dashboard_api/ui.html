@@ -2998,7 +2998,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
             if (!groupRef) groupRef = `${portfolioName} Group`;
             const grpRes = await btAddRunToGroup(it, groupRef);
 
-            await safe('pf_portfolios', () => pfReloadPortfolios());
+            await safe('pf_portfolios', () => pfReloadPortfolios({ allowLocalFallback: false }));
             await safe('bt_runs', () => btRefreshRuns());
 
             const pfMsg = (pfRes && pfRes.added === false && pfRes.reason === 'already_present')
@@ -3202,7 +3202,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       // Ensure portfolio list is loaded so per-row portfolio dropdowns are populated.
       if (!Array.isArray(pfPortfolios) || pfPortfolios.length === 0) {
-        try { await pfReloadPortfolios(); } catch {}
+        try { await pfReloadPortfolios({ allowLocalFallback: false }); } catch {}
       }
 
       const data = await btRunsRefreshRunsData();
@@ -3326,13 +3326,14 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       return true;
     }
 
-    async function pfReloadPortfolios() {
+    async function pfReloadPortfolios(opts={ allowLocalFallback: false }) {
       let loadedFrom = 'server';
       try {
         const data = await jget('/api/portfolios');
         pfPortfolios = (data && data.items) ? data.items : [];
         pfSavePortfoliosCache(pfPortfolios);
       } catch (e) {
+        if (!(opts && opts.allowLocalFallback)) throw e;
         const cached = pfLoadPortfoliosCache();
         if (Array.isArray(cached) && cached.length) {
           pfPortfolios = cached;
@@ -4336,7 +4337,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const label = String(acct.account_number || acct.label || '').trim();
       await jput(`/api/portfolios/${pid}`, { paired_environment: env, paired_account_label: label });
       // Force cross-group sync so all dropdowns immediately reflect 1:1 pairing changes.
-      await pfReloadPortfolios();
+      await pfReloadPortfolios({ allowLocalFallback: false });
       await exRefreshAccounts();
       pfRenderWorkbench();
       toast(`account pair saved (${env}${label ? ' ' + label : ''})`, 'success');
@@ -4521,7 +4522,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
                   })()}
                 </select>
               </label>
-              <button type="button" id="pfCardAcctToggle-${pid}" class="${String(it.paired_account_label || '').trim() ? 'btn-danger' : ''}">${String(it.paired_account_label || '').trim() ? 'Unpair' : 'Pair'}</button>
+              <button type="button" id="pfCardAcctToggle-${pid}" title="${String(it.paired_account_label || '').trim() ? `paired: ${esc(String(it.paired_account_label||''))}` : 'not paired'}" class="${String(it.paired_account_label || '').trim() ? 'btn-danger' : ''}">${String(it.paired_account_label || '').trim() ? 'Unpair' : 'Pair'}</button>
               <label style="display:inline-flex; align-items:center; gap:8px;">
                 <span>Emit signals</span>
                 <label class="switch"><input id="pfCardEmit-${pid}" type="checkbox" role="switch" ${it.signal_engine_enabled ? "checked" : ""} /><span class="slider"></span></label>
