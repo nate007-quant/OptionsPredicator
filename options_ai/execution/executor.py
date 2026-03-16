@@ -32,6 +32,12 @@ def _hhmm_now(tz_name: str) -> str:
     return now.strftime("%H:%M")
 
 
+def _weekday_token_now(tz_name: str) -> str:
+    tz = ZoneInfo(str(tz_name or "America/Chicago"))
+    now = datetime.now(timezone.utc).astimezone(tz)
+    return ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][int(now.weekday())]
+
+
 def _hhmm_to_minutes(x: str | None) -> int | None:
     if not x:
         return None
@@ -42,7 +48,15 @@ def _hhmm_to_minutes(x: str | None) -> int | None:
         return None
 
 
-def is_entry_window_open(*, now_hhmm: str, first_trade_time_ct: str | None, last_new_entry_time_ct: str | None) -> bool:
+def is_entry_window_open(*, now_hhmm: str, first_trade_time_ct: str | None, last_new_entry_time_ct: str | None, current_weekday_ct: str | None = None, allowed_weekdays_ct: list[str] | None = None) -> bool:
+    if isinstance(allowed_weekdays_ct, list) and allowed_weekdays_ct:
+        cur_day = str(current_weekday_ct or '').strip().upper()
+        if not cur_day:
+            return False
+        allowed = {str(x or '').strip().upper() for x in allowed_weekdays_ct if x is not None}
+        if cur_day not in allowed:
+            return False
+
     cur = _hhmm_to_minutes(now_hhmm)
     if cur is None:
         return False
@@ -685,11 +699,22 @@ class ExecutionExecutor:
 
                     # entry window gate
                     now_hhmm = _hhmm_now(self.session_tz)
+                    now_wd = _weekday_token_now(self.session_tz)
+                    allowed_days = ew.get("allowed_weekdays_ct") if isinstance(ew, dict) else None
                     if not is_entry_window_open(
                         now_hhmm=now_hhmm,
                         first_trade_time_ct=ew.get("first_trade_time_ct"),
                         last_new_entry_time_ct=ew.get("last_new_entry_time_ct"),
+                        current_weekday_ct=now_wd,
+                        allowed_weekdays_ct=(allowed_days if isinstance(allowed_days, list) else None),
                     ):
+                        if isinstance(allowed_days, list) and allowed_days:
+                            allowed_norm = {str(x or '').strip().upper() for x in allowed_days}
+                            if str(now_wd).upper() not in allowed_norm:
+                                self._mark_intent(con, intent_id=iid, status="expired", error="outside allowed entry weekdays")
+                                out["expired"] += 1
+                                out["processed"] += 1
+                                continue
                         # If before start, keep pending. If after end, expire.
                         lo = _hhmm_to_minutes(ew.get("first_trade_time_ct"))
                         cur = _hhmm_to_minutes(now_hhmm)

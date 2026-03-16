@@ -79,6 +79,28 @@ class ExecutionIntentBuilder:
         return (start, end)
 
     @staticmethod
+    def _entry_days_of_week(params: dict[str, Any]) -> list[str]:
+        vals = (params or {}).get('entry_days_of_week')
+        if not isinstance(vals, list):
+            return ['MON', 'TUE', 'WED', 'THU', 'FRI']
+        _map = {
+            'MONDAY': 'MON', 'MON': 'MON',
+            'TUESDAY': 'TUE', 'TUE': 'TUE',
+            'WEDNESDAY': 'WED', 'WED': 'WED',
+            'THURSDAY': 'THU', 'THU': 'THU',
+            'FRIDAY': 'FRI', 'FRI': 'FRI',
+        }
+        seen: set[str] = set()
+        out: list[str] = []
+        for x in vals:
+            k = _map.get(str(x or '').strip().upper())
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append(k)
+        return out or ['MON', 'TUE', 'WED', 'THU', 'FRI']
+
+    @staticmethod
     def _tp_sl_from_params(params: dict[str, Any]) -> dict[str, Any]:
         p = params or {}
         tp = p.get("take_profit_pct")
@@ -120,6 +142,7 @@ class ExecutionIntentBuilder:
 
     def _intent_payload_from_run(self, *, run_row: Any, params: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
         first_ct, last_ct = self._entry_window_ct(params)
+        days = self._entry_days_of_week(params)
         payload = {
             "source": {
                 "type": "backtest_run",
@@ -132,6 +155,7 @@ class ExecutionIntentBuilder:
             "entry_window_ct": {
                 "first_trade_time_ct": first_ct,
                 "last_new_entry_time_ct": last_ct,
+                "allowed_weekdays_ct": days,
             },
             "risk": self._tp_sl_from_params(params),
         }

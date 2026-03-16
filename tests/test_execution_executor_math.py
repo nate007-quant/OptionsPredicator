@@ -30,3 +30,20 @@ def test_is_entry_window_open() -> None:
     assert is_entry_window_open(now_hhmm="08:45", first_trade_time_ct="08:30", last_new_entry_time_ct="09:30") is True
     assert is_entry_window_open(now_hhmm="08:10", first_trade_time_ct="08:30", last_new_entry_time_ct="09:30") is False
     assert is_entry_window_open(now_hhmm="09:45", first_trade_time_ct="08:30", last_new_entry_time_ct="09:30") is False
+
+
+def test_is_entry_window_open_weekday_gate() -> None:
+    assert is_entry_window_open(
+        now_hhmm="08:45",
+        first_trade_time_ct="08:30",
+        last_new_entry_time_ct="09:30",
+        current_weekday_ct="MON",
+        allowed_weekdays_ct=["MON", "WED", "FRI"],
+    ) is True
+    assert is_entry_window_open(
+        now_hhmm="08:45",
+        first_trade_time_ct="08:30",
+        last_new_entry_time_ct="09:30",
+        current_weekday_ct="TUE",
+        allowed_weekdays_ct=["MON", "WED", "FRI"],
+    ) is False

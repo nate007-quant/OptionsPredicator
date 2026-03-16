@@ -88,6 +88,7 @@ def test_intent_builder_idempotent(tmp_path: Path) -> None:
         ew = payload.get("entry_window_ct") or {}
         assert ew.get("first_trade_time_ct") == "08:40"
         assert ew.get("last_new_entry_time_ct") == "09:20"
+        assert ew.get("allowed_weekdays_ct") == ["MON", "TUE", "WED", "THU", "FRI"]
         risk = payload.get("risk") or {}
         assert float(risk.get("take_profit_pct")) == 1.5
         assert float(risk.get("stop_loss")) == 0.5

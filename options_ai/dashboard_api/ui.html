@@ -1182,6 +1182,14 @@ How many minutes after Session start to consider for entries.">i</span> <input i
                   <label>Entry start (CT) <span class="tip" data-tip="Used only when Entry mode = time_range.">i</span> <input id="btEntryStart" type="text" value="08:40" style="width:110px;" /></label>
                   <label>Entry end (CT) <span class="tip" data-tip="Used only when Entry mode = time_range.">i</span> <input id="btEntryEnd" type="text" value="09:30" style="width:110px;" /></label>
                 </div>
+                <div class="row" style="margin-top:6px;">
+                  <label style="display:block;">Allowed weekdays (CT) <span class="tip" data-tip="Only evaluate/emit entries on checked weekdays.">i</span></label>
+                  <label><input id="btEntryDayMon" type="checkbox" checked /> Mon</label>
+                  <label><input id="btEntryDayTue" type="checkbox" checked /> Tue</label>
+                  <label><input id="btEntryDayWed" type="checkbox" checked /> Wed</label>
+                  <label><input id="btEntryDayThu" type="checkbox" checked /> Thu</label>
+                  <label><input id="btEntryDayFri" type="checkbox" checked /> Fri</label>
+                </div>
               </fieldset>
 
               <fieldset class="fs" style="margin-top:10px;">
@@ -2198,6 +2206,47 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       return out.length ? out : ['CALL','PUT'];
     }
 
+    const BT_ENTRY_WEEKDAYS = ['MON','TUE','WED','THU','FRI'];
+
+    function btReadEntryDaysOfWeek() {
+      const map = [
+        ['MON', 'btEntryDayMon'],
+        ['TUE', 'btEntryDayTue'],
+        ['WED', 'btEntryDayWed'],
+        ['THU', 'btEntryDayThu'],
+        ['FRI', 'btEntryDayFri'],
+      ];
+      const out = [];
+      for (const [tok, id] of map) {
+        if (!!document.getElementById(id)?.checked) out.push(tok);
+      }
+      return out.length ? out : BT_ENTRY_WEEKDAYS.slice();
+    }
+
+    function btSetEntryDaysOfWeek(vals) {
+      const want = new Set((Array.isArray(vals) ? vals : BT_ENTRY_WEEKDAYS).map(x => String(x || '').trim().toUpperCase()));
+      const map = [
+        ['MON', 'btEntryDayMon'],
+        ['TUE', 'btEntryDayTue'],
+        ['WED', 'btEntryDayWed'],
+        ['THU', 'btEntryDayThu'],
+        ['FRI', 'btEntryDayFri'],
+      ];
+      let any = false;
+      for (const [tok, id] of map) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.checked = want.has(tok);
+        any = any || el.checked;
+      }
+      if (!any) {
+        for (const [, id] of map) {
+          const el = document.getElementById(id);
+          if (el) el.checked = true;
+        }
+      }
+    }
+
     function btApplyFlowProfile(profile) {
       const p = String(profile || 'balanced').toLowerCase();
       const setv = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = String(v); };
@@ -2267,6 +2316,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
         entry_mode,
         session_start_ct: document.getElementById('btSessionStart')?.value || '08:30',
+        entry_days_of_week: btReadEntryDaysOfWeek(),
 
         max_trades_per_day: parseInt(document.getElementById('btMaxPerDay')?.value || '1', 10),
         one_trade_at_a_time: !!document.getElementById('btOneAtATime')?.checked,
@@ -2391,6 +2441,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       setv('btFirstN', p.entry_first_n_minutes);
       setv('btEntryStart', p.entry_start_ct);
       setv('btEntryEnd', p.entry_end_ct);
+      btSetEntryDaysOfWeek(p.entry_days_of_week);
       setv('btMaxPerDay', p.max_trades_per_day);
       setc('btOneAtATime', p.one_trade_at_a_time);
       setv('btAnchorMode', p.anchor_mode);
@@ -4412,13 +4463,16 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         ['strategy_mode', 'mode'],
         ['expiration_mode', 'exp'],
         ['spread_style', 'style'],
+        ['entry_days_of_week', 'days'],
         ['min_p_bigwin', 'min_p'],
         ['min_pred_change', 'min_pred'],
       ];
       const parts = [];
       for (const [k, label] of pick) {
         if (p[k] === undefined || p[k] === null || p[k] === '') continue;
-        parts.push(`<span class="pill" style="margin-right:6px; margin-bottom:6px; display:inline-block;">${esc(label)}: <strong>${esc(String(p[k]))}</strong></span>`);
+        const raw = p[k];
+        const shown = (k === 'entry_days_of_week' && Array.isArray(raw)) ? raw.join(',') : String(raw);
+        parts.push(`<span class="pill" style="margin-right:6px; margin-bottom:6px; display:inline-block;">${esc(label)}: <strong>${esc(shown)}</strong></span>`);
       }
       if (!parts.length) return '<span class="hint">(no common fields; open JSON)</span>';
       return parts.join('');

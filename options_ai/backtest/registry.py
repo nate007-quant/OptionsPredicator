@@ -79,6 +79,7 @@ class StrategyDefinition:
             entry_first_n_minutes=int(g("entry_first_n_minutes", 60)),
             entry_start_ct=str(g("entry_start_ct", "08:40")),
             entry_end_ct=str(g("entry_end_ct", "09:30")),
+            entry_days_of_week=tuple(g("entry_days_of_week", ["MON", "TUE", "WED", "THU", "FRI"])),
             max_trades_per_day=int(g("max_trades_per_day", 1)),
             one_trade_at_a_time=bool(g("one_trade_at_a_time", True)),
             spread_style=str(g("spread_style", "debit")),
@@ -189,6 +190,25 @@ class DebitSpreadsStrategy(StrategyDefinition):
             vv = str(v).strip().lower()
             norm = {str(c).strip().lower(): c for c in choices}
             return norm.get(vv, default)
+        def _normalize_weekdays(v: Any) -> list[str]:
+            order = ["MON", "TUE", "WED", "THU", "FRI"]
+            full = {
+                "MONDAY": "MON", "TUESDAY": "TUE", "WEDNESDAY": "WED", "THURSDAY": "THU", "FRIDAY": "FRI",
+                "MON": "MON", "TUE": "TUE", "WED": "WED", "THU": "THU", "FRI": "FRI",
+            }
+            if not isinstance(v, list):
+                return order
+            seen: set[str] = set()
+            out: list[str] = []
+            for x in v:
+                k = full.get(str(x or "").strip().upper())
+                if not k or k in seen:
+                    continue
+                seen.add(k)
+                out.append(k)
+            if not out:
+                return order
+            return [d for d in order if d in seen]
 
         start_day = s("start_day", "")
         end_day = s("end_day", "")
@@ -224,6 +244,7 @@ class DebitSpreadsStrategy(StrategyDefinition):
             "entry_first_n_minutes": i("entry_first_n_minutes", 60),
             "entry_start_ct": s("entry_start_ct", "08:40"),
             "entry_end_ct": s("entry_end_ct", "09:30"),
+            "entry_days_of_week": _normalize_weekdays(payload.get("entry_days_of_week")),
             "max_trades_per_day": i("max_trades_per_day", 1),
             "one_trade_at_a_time": b("one_trade_at_a_time", True),
             "strategy_mode": s("strategy_mode", "anchor_based"),

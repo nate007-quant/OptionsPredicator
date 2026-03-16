@@ -2013,6 +2013,27 @@ def create_app() -> FastAPI:
         except Exception:
             return None
 
+    def _normalize_entry_weekdays(params: dict[str, Any]) -> set[int]:
+        p = params or {}
+        vals = p.get('entry_days_of_week')
+        if not isinstance(vals, list):
+            vals = ['MON', 'TUE', 'WED', 'THU', 'FRI']
+        _map = {
+            'MONDAY': 0, 'MON': 0,
+            'TUESDAY': 1, 'TUE': 1,
+            'WEDNESDAY': 2, 'WED': 2,
+            'THURSDAY': 3, 'THU': 3,
+            'FRIDAY': 4, 'FRI': 4,
+        }
+        out = {_map.get(str(x or '').strip().upper()) for x in vals}
+        out = {int(x) for x in out if x is not None}
+        return out or {0, 1, 2, 3, 4}
+
+    def _is_now_allowed_entry_day_ct(params: dict[str, Any]) -> bool:
+        now_ct = datetime.now(timezone.utc).astimezone(CENTRAL_TZ)
+        allowed = _normalize_entry_weekdays(params)
+        return int(now_ct.weekday()) in allowed
+
     def _entry_window_ct_from_params(params: dict[str, Any]) -> tuple[str | None, str | None]:
         p = params or {}
         mode = str(p.get('entry_mode') or 'time_range').strip().lower()
@@ -2033,6 +2054,8 @@ def create_app() -> FastAPI:
         return f"{lo // 60:02d}:{lo % 60:02d}", f"{hi // 60:02d}:{hi % 60:02d}"
 
     def _is_now_in_entry_window_ct(params: dict[str, Any]) -> bool:
+        if not _is_now_allowed_entry_day_ct(params):
+            return False
         now_ct = datetime.now(timezone.utc).astimezone(CENTRAL_TZ)
         cur = now_ct.hour * 60 + now_ct.minute
         lo_s, hi_s = _entry_window_ct_from_params(params)

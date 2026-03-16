@@ -102,6 +102,12 @@ def precheck_candidates_0dte(
         end_t = time(hour=h2, minute=m2)
 
     days = _sample_days(cfg.start_day, cfg.end_day, int(sample_days))
+    _wd_map = {'MON': 0, 'TUE': 1, 'WED': 2, 'THU': 3, 'FRI': 4}
+    _allowed_wd = {_wd_map.get(str(x).strip().upper()) for x in (cfg.entry_days_of_week or ())}
+    _allowed_wd = {x for x in _allowed_wd if x is not None}
+    if not _allowed_wd:
+        _allowed_wd = {0, 1, 2, 3, 4}
+    days = [d for d in days if d.weekday() in _allowed_wd]
     if not days:
         return PrecheckResult(False, "no_days", 0, 0, 0, scores_available)
 

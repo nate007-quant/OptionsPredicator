@@ -41,6 +41,7 @@ class DebitBacktestConfig:
     entry_first_n_minutes: int = 60
     entry_start_ct: str = "08:40"
     entry_end_ct: str = "09:30"
+    entry_days_of_week: tuple[str, ...] = ("MON", "TUE", "WED", "THU", "FRI")
 
     max_trades_per_day: int = 1
     one_trade_at_a_time: bool = True
@@ -1233,7 +1234,15 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
     strike_cache: dict[tuple[datetime, date], list[float]] = {}
     regime_cache: dict[datetime, dict[str, Any] | None] = {}
 
+    _wd_map = {'MON': 0, 'TUE': 1, 'WED': 2, 'THU': 3, 'FRI': 4}
+    _allowed_wd = {_wd_map.get(str(x).strip().upper()) for x in (cfg.entry_days_of_week or ())}
+    _allowed_wd = {x for x in _allowed_wd if x is not None}
+    if not _allowed_wd:
+        _allowed_wd = {0, 1, 2, 3, 4}
+
     for day_local in _daterange(cfg.start_day, cfg.end_day):
+        if day_local.weekday() not in _allowed_wd:
+            continue
         day_trades = 0
         in_position = False
         position_exit_ts: datetime | None = None
