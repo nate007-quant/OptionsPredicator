@@ -1487,6 +1487,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
               <fieldset class="fs" style="margin-top:10px;">
                 <legend>Filters + cleanup (client-side)</legend>
                 <div class="row">
+                  <label>Run ID <input id="btRunsId" type="number" step="1" min="1" placeholder="e.g. 1234" style="width:120px;" /></label>
                   <label>Min win rate % <input id="btRunsMinWin" type="number" step="0.1" placeholder="e.g. 50" style="width:120px;" /></label>
                   <label>Min profit factor <input id="btRunsMinPF" type="number" step="0.1" placeholder="e.g. 3.0" style="width:120px;" /></label>
                   <label>Min avg PnL ($) <input id="btRunsMinAvg" type="number" step="1" placeholder="e.g. 120" style="width:120px;" /></label>
@@ -2649,6 +2650,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
     function btRunsFiltersDefault() {
       return {
+        runId: null,
         minWinRatePct: null,
         minProfitFactor: null,
         minAvgPnl: null,
@@ -2661,6 +2663,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
     function btRunsReadFiltersFromUI() {
       const f = btRunsFiltersDefault();
+      f.runId = btRunsParseNum(document.getElementById('btRunsId')?.value);
       f.minWinRatePct = btRunsParseNum(document.getElementById('btRunsMinWin')?.value);
       f.minProfitFactor = btRunsParseNum(document.getElementById('btRunsMinPF')?.value);
       f.minAvgPnl = btRunsParseNum(document.getElementById('btRunsMinAvg')?.value);
@@ -2673,6 +2676,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
     function btRunsWriteFiltersToUI(f) {
       const setv = (id, v) => { const el = document.getElementById(id); if (el) el.value = (v === null || v === undefined) ? '' : String(v); };
+      setv('btRunsId', f.runId);
       setv('btRunsMinWin', f.minWinRatePct);
       setv('btRunsMinPF', f.minProfitFactor);
       setv('btRunsMinAvg', f.minAvgPnl);
@@ -2832,6 +2836,11 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     }
 
     function btRunsPassesThresholds(it, f) {
+      if (f.runId !== null && f.runId !== undefined) {
+        const want = Math.floor(Number(f.runId));
+        const got = Math.floor(Number(it?.id));
+        if (!Number.isFinite(want) || !Number.isFinite(got) || got !== want) return false;
+      }
       const wr = btRunsMetric(it, 'win_rate');
       const pf = btRunsMetric(it, 'profit_factor');
       const avg = btRunsMetric(it, 'avg_pnl_dollars');
@@ -6691,9 +6700,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
 
     // Backtest run filters (client-side)
-    ;['btRunsMinWin','btRunsMinPF','btRunsMinAvg','btRunsMinTotal','btRunsKeepTopPnl','btRunsKeepTopPF'].forEach(id => {
-      document.getElementById(id)?.addEventListener('change', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
-      document.getElementById(id)?.addEventListener('keyup', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
+    ;['btRunsId','btRunsMinWin','btRunsMinPF','btRunsMinAvg','btRunsMinTotal','btRunsKeepTopPnl','btRunsKeepTopPF'].forEach(id => {
+      const el = document.getElementById(id);
+      el?.addEventListener('input', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
+      el?.addEventListener('change', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
     });
     document.getElementById('btRunsOnlyShowPassing')?.addEventListener('change', () => { btRunsPage = 1; btRunsRenderTable(btRunsRaw); });
     document.getElementById('btRunsShowZeroTrades')?.addEventListener('change', () => { btRunsPage = 1; safe('bt_runs', () => btRefreshRuns()); });
