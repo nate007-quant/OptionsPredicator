@@ -1913,7 +1913,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         }
       }
 
-      return { items: pfPortfolios, source: loadedFrom };
+      return data;
     }
 
     // Backtest
@@ -3394,7 +3394,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         if (Array.isArray(btRunsRaw) && btRunsRaw.length) btRunsRenderTable(btRunsRaw);
       } catch {}
 
-      return data;
+      return { items: pfPortfolios, source: loadedFrom };
     }
 
     function pfSelectedPortfolioId() {
