@@ -496,6 +496,7 @@ class ExecutionExecutor:
               execution_intent_id, status, underlying, side, qty, open_reason, run_payload_json
             )
             VALUES(?,?,?,?,?,'opening',?,?,?,?,?)
+            RETURNING id
             """,
             (
                 _now_utc_iso(),
@@ -510,7 +511,8 @@ class ExecutionExecutor:
                 json.dumps(payload, separators=(",", ":"), sort_keys=True),
             ),
         )
-        return int(cur.lastrowid)
+        rr = cur.fetchone()
+        return int(rr[0] if not isinstance(rr, dict) else rr.get('id'))
 
     def _current_reject_streak(self, con: Any) -> int:
         rows = con.execute(

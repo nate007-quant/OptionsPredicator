@@ -987,6 +987,51 @@ def create_app() -> FastAPI:
     @app.get("/api/metrics/daily")
     def metrics_daily(days: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
         with _connect(db_path) as con:
+            # Engage close-only gate immediately so new entries are blocked while flatten executes.
+            con.execute(
+                """
+                INSERT INTO risk_session_state(created_at_utc, updated_at_utc, environment, broker_name, session_day_local, session_tz,
+                                               realized_pnl_usd, unrealized_pnl_usd, max_daily_loss_usd, block_new_entries, reason)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT (environment, broker_name, session_day_local)
+                DO UPDATE SET updated_at_utc=EXCLUDED.updated_at_utc,
+                              block_new_entries=1,
+                              reason=EXCLUDED.reason
+                """,
+                (
+                    now, now, str(cfg.broker_env), str(cfg.broker_name),
+                    datetime.now(timezone.utc).date().isoformat(),
+                    str(getattr(cfg, 'session_tz', 'America/Chicago')),
+                    0.0, 0.0, float(cfg.max_daily_loss_usd), 1,
+                    'operator_flatten_all_active',
+                ),
+            )
+
+            # Cancel non-terminal intents that are not tied to active trades.
+            _c1 = con.execute(
+                """
+                UPDATE execution_intents ei
+                   SET status='cancelled',
+                       error=COALESCE(error,'cancelled_by_flatten_all'),
+                       updated_at_utc=?
+                 WHERE ei.environment=?
+                   AND ei.broker_name=?
+                   AND lower(ei.status) NOT IN ('filled','cancelled','rejected','expired','blocked','error','quarantined','protection_arming_failed','precheck_failed')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM trade_runs tr
+                        WHERE tr.execution_intent_id = ei.id
+                          AND tr.environment = ei.environment
+                          AND tr.broker_name = ei.broker_name
+                          AND tr.status IN ('opening','open','closing')
+                   )
+                """,
+                (now, str(cfg.broker_env), str(cfg.broker_name)),
+            )
+            try:
+                intents_cancelled = int(getattr(_c1, 'rowcount', 0) or 0)
+            except Exception:
+                intents_cancelled = 0
+
             rows = con.execute(
                 """
                 SELECT observed_ts_utc, timestamp, result, confidence
@@ -3360,6 +3405,48 @@ def create_app() -> FastAPI:
                 client = None
 
         with _connect(db_path) as con:
+            # 1) Engage close-only gate so new entries are blocked during flatten.
+            con.execute(
+                """
+                INSERT INTO risk_session_state(created_at_utc, updated_at_utc, environment, broker_name, session_day_local, session_tz,
+                                               realized_pnl_usd, unrealized_pnl_usd, max_daily_loss_usd, block_new_entries, reason)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT (environment, broker_name, session_day_local)
+                DO UPDATE SET updated_at_utc=EXCLUDED.updated_at_utc,
+                              block_new_entries=1,
+                              reason=EXCLUDED.reason
+                """,
+                (
+                    now, now, str(cfg.broker_env), str(cfg.broker_name),
+                    datetime.now(timezone.utc).date().isoformat(),
+                    str(getattr(cfg, 'session_tz', 'America/Chicago')),
+                    0.0, 0.0, float(cfg.max_daily_loss_usd), 1,
+                    'operator_flatten_all_active',
+                ),
+            )
+
+            # 2) Cancel non-terminal intents that are not tied to active trades.
+            c_cancel = con.execute(
+                """
+                UPDATE execution_intents ei
+                   SET status='cancelled',
+                       error=COALESCE(error,'cancelled_by_flatten_all'),
+                       updated_at_utc=?
+                 WHERE ei.environment=?
+                   AND ei.broker_name=?
+                   AND lower(ei.status) NOT IN ('filled','cancelled','rejected','expired','blocked','error','quarantined','protection_arming_failed','precheck_failed')
+                   AND NOT EXISTS (
+                       SELECT 1 FROM trade_runs tr
+                        WHERE tr.execution_intent_id = ei.id
+                          AND tr.environment = ei.environment
+                          AND tr.broker_name = ei.broker_name
+                          AND tr.status IN ('opening','open','closing')
+                   )
+                RETURNING id
+                """,
+                (now, str(cfg.broker_env), str(cfg.broker_name)),
+            )
+
             rows = con.execute(
                 "SELECT id, execution_intent_id, qty, underlying, run_payload_json, entry_order_id, opened_at_utc FROM trade_runs WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')",
                 (str(cfg.broker_env), str(cfg.broker_name)),
@@ -3367,6 +3454,7 @@ def create_app() -> FastAPI:
             n = 0
             submitted = 0
             errors = 0
+            intents_cancelled = int(len(c_cancel.fetchall() or []))
             for r in rows:
                 rid = int(r['id'])
                 iid = (int(r['execution_intent_id']) if r['execution_intent_id'] is not None else None)
@@ -3451,8 +3539,8 @@ def create_app() -> FastAPI:
                 )
                 n += 1
             con.commit()
-        _audit_execution(actor='dashboard_api', action='flatten_all_requested', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'affected_trades': n, 'submitted': submitted, 'errors': errors})
-        return {'ok': True, 'affected_trades': n, 'submitted': submitted, 'errors': errors}
+        _audit_execution(actor='dashboard_api', action='flatten_all_requested', entity_type='execution_control', entity_id=str(cfg.broker_env), details={'affected_trades': n, 'submitted': submitted, 'errors': errors, 'intents_cancelled': intents_cancelled})
+        return {'ok': True, 'affected_trades': n, 'submitted': submitted, 'errors': errors, 'intents_cancelled': intents_cancelled}
 
     @app.get('/api/execution/kpis')
     def execution_kpis(days: int = Query(7, ge=1, le=60)) -> dict[str, Any]:
