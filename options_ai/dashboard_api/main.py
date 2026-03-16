@@ -987,51 +987,6 @@ def create_app() -> FastAPI:
     @app.get("/api/metrics/daily")
     def metrics_daily(days: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
         with _connect(db_path) as con:
-            # Engage close-only gate immediately so new entries are blocked while flatten executes.
-            con.execute(
-                """
-                INSERT INTO risk_session_state(created_at_utc, updated_at_utc, environment, broker_name, session_day_local, session_tz,
-                                               realized_pnl_usd, unrealized_pnl_usd, max_daily_loss_usd, block_new_entries, reason)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT (environment, broker_name, session_day_local)
-                DO UPDATE SET updated_at_utc=EXCLUDED.updated_at_utc,
-                              block_new_entries=1,
-                              reason=EXCLUDED.reason
-                """,
-                (
-                    now, now, str(cfg.broker_env), str(cfg.broker_name),
-                    datetime.now(timezone.utc).date().isoformat(),
-                    str(getattr(cfg, 'session_tz', 'America/Chicago')),
-                    0.0, 0.0, float(cfg.max_daily_loss_usd), 1,
-                    'operator_flatten_all_active',
-                ),
-            )
-
-            # Cancel non-terminal intents that are not tied to active trades.
-            _c1 = con.execute(
-                """
-                UPDATE execution_intents ei
-                   SET status='cancelled',
-                       error=COALESCE(error,'cancelled_by_flatten_all'),
-                       updated_at_utc=?
-                 WHERE ei.environment=?
-                   AND ei.broker_name=?
-                   AND lower(ei.status) NOT IN ('filled','cancelled','rejected','expired','blocked','error','quarantined','protection_arming_failed','precheck_failed')
-                   AND NOT EXISTS (
-                       SELECT 1 FROM trade_runs tr
-                        WHERE tr.execution_intent_id = ei.id
-                          AND tr.environment = ei.environment
-                          AND tr.broker_name = ei.broker_name
-                          AND tr.status IN ('opening','open','closing')
-                   )
-                """,
-                (now, str(cfg.broker_env), str(cfg.broker_name)),
-            )
-            try:
-                intents_cancelled = int(getattr(_c1, 'rowcount', 0) or 0)
-            except Exception:
-                intents_cancelled = 0
-
             rows = con.execute(
                 """
                 SELECT observed_ts_utc, timestamp, result, confidence
