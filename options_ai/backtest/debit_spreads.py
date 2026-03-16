@@ -161,6 +161,13 @@ def _max_drawdown(equity: list[float]) -> float:
     return float(mdd)
 
 
+def _local_day_bounds_utc(day_local: date, tz_local: str) -> tuple[datetime, datetime]:
+    tz = ZoneInfo(tz_local)
+    dt0 = datetime(day_local.year, day_local.month, day_local.day, 0, 0, 0, tzinfo=tz)
+    dt1 = dt0 + timedelta(days=1)
+    return dt0.astimezone(timezone.utc), dt1.astimezone(timezone.utc)
+
+
 def _fetch_snapshots_in_window(
     conn: psycopg.Connection,
     *,
@@ -169,17 +176,24 @@ def _fetch_snapshots_in_window(
     end_t: time,
     tz_local: str,
 ) -> list[datetime]:
+    tz = ZoneInfo(tz_local)
+    start_local = datetime(day_local.year, day_local.month, day_local.day, start_t.hour, start_t.minute, start_t.second, tzinfo=tz)
+    end_local = datetime(day_local.year, day_local.month, day_local.day, end_t.hour, end_t.minute, end_t.second, tzinfo=tz)
+    if end_local <= start_local:
+        end_local = end_local + timedelta(days=1)
+    start_utc = start_local.astimezone(timezone.utc)
+    end_utc = end_local.astimezone(timezone.utc)
+
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT snapshot_ts
             FROM spx.chain_features_0dte
-            WHERE (snapshot_ts AT TIME ZONE %s)::date = %s::date
-              AND (snapshot_ts AT TIME ZONE %s)::time >= %s::time
-              AND (snapshot_ts AT TIME ZONE %s)::time < %s::time
+            WHERE snapshot_ts >= %s
+              AND snapshot_ts < %s
             ORDER BY snapshot_ts ASC
             """,
-            (tz_local, day_local.isoformat(), tz_local, start_t.strftime("%H:%M:%S"), tz_local, end_t.strftime("%H:%M:%S")),
+            (start_utc, end_utc),
         )
         return [r[0] for r in cur.fetchall()]
 
@@ -938,6 +952,10 @@ def _fetch_path_snapshots(
     target = entry_ts + timedelta(minutes=int(horizon_minutes))
     max_ts = target + timedelta(minutes=int(max_future_lookahead_minutes))
 
+    day_start_utc, day_end_utc = _local_day_bounds_utc(day_local, tz_local)
+    lo = max(entry_ts, day_start_utc)
+    hi = min(max_ts, day_end_utc)
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -945,10 +963,9 @@ def _fetch_path_snapshots(
             FROM spx.chain_features_0dte
             WHERE snapshot_ts >= %s
               AND snapshot_ts <= %s
-              AND (snapshot_ts AT TIME ZONE %s)::date = %s::date
             ORDER BY snapshot_ts ASC
             """,
-            (entry_ts, max_ts, tz_local, day_local.isoformat()),
+            (lo, hi),
         )
         snaps = [r[0] for r in cur.fetchall()]
 
@@ -1329,16 +1346,18 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                 spot_delta_5m = None
                 if cfg.rotation_filter == "spot_delta_5m":
                     with conn.cursor() as cur:
+                        day_start_utc, day_end_utc = _local_day_bounds_utc(day_local, tz_local)
                         cur.execute(
                             """
                             SELECT spot
                             FROM spx.chain_features_0dte
-                            WHERE (snapshot_ts AT TIME ZONE %s)::date = %s::date
+                            WHERE snapshot_ts >= %s
+                              AND snapshot_ts < %s
                               AND snapshot_ts < %s
                             ORDER BY snapshot_ts DESC
                             LIMIT 1
                             """,
-                            (tz_local, day_local.isoformat(), ts),
+                            (day_start_utc, day_end_utc, ts),
                         )
                         r = cur.fetchone()
                         if r and r[0] is not None:
