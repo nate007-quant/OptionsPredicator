@@ -4494,8 +4494,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
                   })()}
                 </select>
               </label>
-              <button id="pfCardAcctSave-${pid}">Pair</button>
-              <button class="btn-danger" id="pfCardAcctUnpair-${pid}">Unpair</button>
+              <button type="button" id="pfCardAcctSave-${pid}">Pair</button>
+              <button type="button" class="btn-danger" id="pfCardAcctUnpair-${pid}">Unpair</button>
               <label style="display:inline-flex; align-items:center; gap:8px;">
                 <span>Emit signals</span>
                 <label class="switch"><input id="pfCardEmit-${pid}" type="checkbox" role="switch" ${it.signal_engine_enabled ? "checked" : ""} /><span class="slider"></span></label>
@@ -4647,7 +4647,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         document.getElementById(`pfCardAcctSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_acct_${pid}`, async () => {
           await pfSaveGroupAccountPair(pid);
         }));
-        document.getElementById(`pfCardAcctUnpair-${pid}`)?.addEventListener('click', () => safe(`pf_card_unpair_${pid}`, () => pfUnpairGroupAccount(pid)));
+        document.getElementById(`pfCardAcctUnpair-${pid}`)?.addEventListener('click', (ev) => { ev.preventDefault(); safe(`pf_card_unpair_${pid}`, () => pfUnpairGroupAccount(pid)); });
         document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_emit_${pid}`, async () => {
           const cb = ev.target;
           const on = !!cb?.checked;
