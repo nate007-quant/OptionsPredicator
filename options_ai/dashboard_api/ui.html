@@ -3327,9 +3327,20 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     }
 
     async function pfReloadPortfolios() {
-      const data = await jget('/api/portfolios');
-      pfPortfolios = (data && data.items) ? data.items : []
-      pfSavePortfoliosCache(pfPortfolios);
+      let loadedFrom = 'server';
+      try {
+        const data = await jget('/api/portfolios');
+        pfPortfolios = (data && data.items) ? data.items : [];
+        pfSavePortfoliosCache(pfPortfolios);
+      } catch (e) {
+        const cached = pfLoadPortfoliosCache();
+        if (Array.isArray(cached) && cached.length) {
+          pfPortfolios = cached;
+          loadedFrom = 'local-fallback';
+        } else {
+          throw e;
+        }
+      }
 
       // If none exist, create a default portfolio so the screen is usable out-of-the-box.
       if ((!pfPortfolios || pfPortfolios.length === 0) && !pfAutoCreatedDefault) {
@@ -3342,6 +3353,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           console.error('pf_default_create_failed', e);
         }
       }
+
+      const cacheNote = document.getElementById('pfCacheNote');
+      if (cacheNote) cacheNote.textContent = (loadedFrom === 'server') ? 'snapshot source: server' : 'snapshot source: local fallback';
 
       // Render group portfolio table when portfolio list changes (not on health refresh).
       pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
@@ -4523,14 +4537,46 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         `;
         host.appendChild(card);
 
-        // Hydrate card from cache (if valid) for instant load.
-        const cached = pfLoadCardCache(pid, it.updated_at_utc || '');
-        if (cached) {
+        // Server-first snapshot hydrate.
+        let snapshotSeed = null;
+        safe(`pf_card_remote_${pid}`, async () => {
+          const remote = await pfLoadCardCacheRemote(pid, it.updated_at_utc || '');
+          if (remote) {
+            snapshotSeed = remote;
+            pfSaveCardCache(pid, it.updated_at_utc || '', remote.combined_summary, remote.combined_equity_curve || [], remote.legs_summaries || [], remote.progress_snapshot || null);
+            if (Array.isArray(remote.combined_equity_curve)) pfRenderCardEquity(pid, remote.combined_equity_curve);
+            pfRenderCardSummaryGraphics(pid, remote.combined_summary || {});
+            pfRenderCardLineMetrics(pid, remote.legs_summaries || []);
+            const ps = (remote.progress_snapshot && typeof remote.progress_snapshot === 'object') ? remote.progress_snapshot : null;
+            if (ps) {
+              const stLike = {
+                status: 'running',
+                progress_percent_estimate: Number(ps.progress_percent_estimate || 0),
+                current_leg_index: Number(ps.current_leg_index || 0),
+                avg_leg_seconds_estimate: Number(ps.avg_leg_seconds_estimate || 0),
+                last_activity_at_utc: ps.last_activity_at_utc || null,
+              };
+              pfRenderCardProgress(pid, Number(ps.legs_completed || 0), Number(ps.legs_total || 0), stLike);
+            }
+            const note = document.getElementById(`pfCardNote-${pid}`);
+            if (note) {
+              const dt = new Date(Number(remote.saved_at_ms || 0));
+              const iso = isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0,10);
+              note.textContent = iso ? `Status: Synced snapshot · ${iso}` : 'Status: Synced snapshot';
+            }
+            return;
+          }
+
+          // fallback to local only when server snapshot missing/unavailable
+          const cached = pfLoadCardCache(pid, it.updated_at_utc || '');
+          if (!cached) return;
+          snapshotSeed = cached;
           if (Array.isArray(cached.combined_equity_curve)) pfRenderCardEquity(pid, cached.combined_equity_curve);
           pfRenderCardSummaryGraphics(pid, cached.combined_summary || {});
+          pfRenderCardLineMetrics(pid, cached.legs_summaries || []);
           const doneN = Array.isArray(legs) ? legs.length : 0;
           const persistedSid = Number(pfCardSessions[String(pid)] || 0);
-          const ps = (cached && cached.progress_snapshot && typeof cached.progress_snapshot === 'object') ? cached.progress_snapshot : null;
+          const ps = (cached.progress_snapshot && typeof cached.progress_snapshot === 'object') ? cached.progress_snapshot : null;
           if (persistedSid > 0) {
             const stLike = {
               status: 'running',
@@ -4539,39 +4585,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
               avg_leg_seconds_estimate: Number((ps && ps.avg_leg_seconds_estimate) || 0),
               last_activity_at_utc: (ps && ps.last_activity_at_utc) || null,
             };
-            const c0 = Number((ps && ps.legs_completed) || 0);
-            const t0 = Number((ps && ps.legs_total) || doneN || 0);
-            pfRenderCardProgress(pid, c0, t0, stLike);
+            pfRenderCardProgress(pid, Number((ps && ps.legs_completed) || 0), Number((ps && ps.legs_total) || doneN || 0), stLike);
           } else {
             pfRenderCardProgress(pid, doneN, doneN);
-          }
-          const note = document.getElementById(`pfCardNote-${pid}`);
-          if (note) {
-            const dt = new Date(Number(cached.saved_at_ms || 0));
-            const iso = isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0,10);
-            note.textContent = iso ? `Status: Cached snapshot · ${iso}` : 'Status: Cached snapshot';
-          }
-        }
-
-        safe(`pf_card_remote_${pid}`, async () => {
-          const remote = await pfLoadCardCacheRemote(pid, it.updated_at_utc || '');
-          if (!remote) return;
-          const local = pfLoadCardCache(pid, it.updated_at_utc || '');
-          if (local && Number(local.saved_at_ms || 0) >= Number(remote.saved_at_ms || 0)) return;
-          pfSaveCardCache(pid, it.updated_at_utc || '', remote.combined_summary, remote.combined_equity_curve || [], remote.legs_summaries || [], remote.progress_snapshot || null);
-          if (Array.isArray(remote.combined_equity_curve)) pfRenderCardEquity(pid, remote.combined_equity_curve);
-          pfRenderCardSummaryGraphics(pid, remote.combined_summary || {});
-          pfRenderCardLineMetrics(pid, remote.legs_summaries || []);
-          const ps = (remote.progress_snapshot && typeof remote.progress_snapshot === 'object') ? remote.progress_snapshot : null;
-          if (ps) {
-            const stLike = {
-              status: 'running',
-              progress_percent_estimate: Number(ps.progress_percent_estimate || 0),
-              current_leg_index: Number(ps.current_leg_index || 0),
-              avg_leg_seconds_estimate: Number(ps.avg_leg_seconds_estimate || 0),
-              last_activity_at_utc: ps.last_activity_at_utc || null,
-            };
-            pfRenderCardProgress(pid, Number(ps.legs_completed || 0), Number(ps.legs_total || 0), stLike);
           }
         });
 
@@ -4619,8 +4635,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         }
 
         // cached metric hydration must happen after table rows exist
-        if (cached && Array.isArray(cached.legs_summaries) && cached.legs_summaries.length) {
-          pfRenderCardLineMetrics(pid, cached.legs_summaries);
+        if (snapshotSeed && Array.isArray(snapshotSeed.legs_summaries) && snapshotSeed.legs_summaries.length) {
+          pfRenderCardLineMetrics(pid, snapshotSeed.legs_summaries);
         }
 
         document.getElementById(`pfCardRun-${pid}`)?.addEventListener('click', (ev) => { ev.preventDefault(); safe(`pf_card_run_${pid}`, () => pfRunSingleGroup(pid)); });
@@ -6760,8 +6776,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       await safe('config', () => refreshConfig());
       exApplyTooltips();
 
-      // Prioritize Parameter Group cards for fast first paint.
-      pfHydratePortfoliosFromCache();
+      // Server-first model: load Parameter Groups from API; fallback to local cache on failure.
       await safe('pf_portfolios', () => pfReloadPortfolios());
 
       // Backtest filter state (lightweight)
