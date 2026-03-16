@@ -4342,6 +4342,17 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       toast(`account pair saved (${env}${label ? ' ' + label : ''})`, 'success');
     }
 
+    async function pfToggleGroupAccountPair(pid) {
+      const it = (pfPortfolios || []).find(x => String(x.id) === String(pid));
+      if (!it) throw new Error('group not found');
+      const cur = String(it.paired_account_label || '').trim();
+      if (cur) {
+        await pfUnpairGroupAccount(pid);
+      } else {
+        await pfSaveGroupAccountPair(pid);
+      }
+    }
+
     async function pfEmitGroupSignals(pid, source = "manual") {
       const acct = pfSelectedAccountByCard(pid);
       if (!acct) throw new Error('select an active account');
@@ -4494,8 +4505,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
                   })()}
                 </select>
               </label>
-              <button type="button" id="pfCardAcctSave-${pid}">Pair</button>
-              <button type="button" class="btn-danger" id="pfCardAcctUnpair-${pid}">Unpair</button>
+              <button type="button" id="pfCardAcctToggle-${pid}" class="${String(it.paired_account_label || '').trim() ? 'btn-danger' : ''}">${String(it.paired_account_label || '').trim() ? 'Unpair' : 'Pair'}</button>
               <label style="display:inline-flex; align-items:center; gap:8px;">
                 <span>Emit signals</span>
                 <label class="switch"><input id="pfCardEmit-${pid}" type="checkbox" role="switch" ${it.signal_engine_enabled ? "checked" : ""} /><span class="slider"></span></label>
@@ -4644,10 +4654,12 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         document.getElementById(`pfCardAdd-${pid}`)?.addEventListener('click', () => safe(`pf_card_add_${pid}`, () => pfAddGroupLine(pid)));
         document.getElementById(`pfCardMode-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_mode_${pid}`, () => pfSetGroupExecutionMode(pid, ev.target.value)));
         document.getElementById(`pfCardExitPolicy-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_exit_policy_${pid}`, () => pfSetGroupExitPolicy(pid, ev.target.value)));
-        document.getElementById(`pfCardAcctSave-${pid}`)?.addEventListener('click', () => safe(`pf_card_acct_${pid}`, async () => {
-          await pfSaveGroupAccountPair(pid);
-        }));
-        document.getElementById(`pfCardAcctUnpair-${pid}`)?.addEventListener('click', (ev) => { ev.preventDefault(); safe(`pf_card_unpair_${pid}`, () => pfUnpairGroupAccount(pid)); });
+        document.getElementById(`pfCardAcctToggle-${pid}`)?.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          safe(`pf_card_acct_toggle_${pid}`, async () => {
+            await pfToggleGroupAccountPair(pid);
+          });
+        });
         document.getElementById(`pfCardEmit-${pid}`)?.addEventListener('change', (ev) => safe(`pf_card_emit_${pid}`, async () => {
           const cb = ev.target;
           const on = !!cb?.checked;
