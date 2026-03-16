@@ -241,14 +241,24 @@ class ExecutionMonitor:
                     return [x for x in v if isinstance(x, dict)]
         return []
 
+    @staticmethod
+    def _first_float(obj: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+        for k in keys:
+            if k in obj and obj.get(k) is not None:
+                try:
+                    return float(obj.get(k))
+                except Exception:
+                    continue
+        return None
+
     def _streamer_down_breaker(self, con: Any) -> tuple[bool, dict[str, Any]]:
         row = con.execute(
             """
             SELECT created_at_utc FROM order_events
-            WHERE environment=? AND broker_name=? AND event_type LIKE 'stream:%'
+            WHERE environment=? AND broker_name=? AND event_type LIKE ?
             ORDER BY id DESC LIMIT 1
             """,
-            (self.environment, self.broker_name),
+            (self.environment, self.broker_name, 'stream:%'),
         ).fetchone()
         if not row:
             return False, {'last_stream_event_utc': None, 'downtime_seconds': None, 'threshold_seconds': self.max_streamer_downtime_seconds}
@@ -461,6 +471,37 @@ class ExecutionMonitor:
 
                 # Persist position snapshot event (best-effort)
                 scoped_positions = [p for p in positions if not underlying or str(p.get("underlying-symbol") or p.get("underlying") or p.get("symbol") or "").upper().startswith(underlying.upper())]
+                pnl_unrealized = None
+                pnl_realized = None
+                if scoped_positions:
+                    up_keys = (
+                        'unrealized-pnl', 'unrealized_pnl',
+                        'unrealized-day-gain-loss', 'unrealized_day_gain_loss',
+                        'unrealized-day-gain-loss-dollar', 'unrealized_day_gain_loss_dollar',
+                    )
+                    rp_keys = (
+                        'realized-pnl', 'realized_pnl',
+                        'realized-day-gain-loss', 'realized_day_gain_loss',
+                        'realized-day-gain-loss-dollar', 'realized_day_gain_loss_dollar',
+                    )
+                    up_sum = 0.0
+                    rp_sum = 0.0
+                    up_any = False
+                    rp_any = False
+                    for pos in scoped_positions:
+                        if not isinstance(pos, dict):
+                            continue
+                        up = self._first_float(pos, up_keys)
+                        rp = self._first_float(pos, rp_keys)
+                        if up is not None:
+                            up_sum += float(up)
+                            up_any = True
+                        if rp is not None:
+                            rp_sum += float(rp)
+                            rp_any = True
+                    pnl_unrealized = (up_sum if up_any else None)
+                    pnl_realized = (rp_sum if rp_any else None)
+
                 self._record_position_event(
                     con,
                     trade_run_id=trade_run_id,
@@ -468,11 +509,17 @@ class ExecutionMonitor:
                     event_type="rest_sync_positions",
                     qty=None,
                     price=None,
-                    pnl_unrealized_usd=None,
-                    pnl_realized_usd=None,
+                    pnl_unrealized_usd=pnl_unrealized,
+                    pnl_realized_usd=pnl_realized,
                     payload={"positions": scoped_positions},
                 )
                 st.position_events_written += 1
+
+                if (pnl_unrealized is not None) or (pnl_realized is not None):
+                    con.execute(
+                        "UPDATE trade_runs SET pnl_unrealized_usd=COALESCE(?, pnl_unrealized_usd), pnl_realized_usd=COALESCE(?, pnl_realized_usd), updated_at_utc=? WHERE id=?",
+                        (pnl_unrealized, pnl_realized, _now_utc_iso(), trade_run_id),
+                    )
 
                 tr_status = str(tr["status"] or "")
                 if tr_status == 'closing' and len(scoped_positions) == 0:

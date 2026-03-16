@@ -839,7 +839,7 @@
         </div>
 
         <div class="card" style="margin-top: var(--space-4);">
-          <div class="card-h"><h2>Trade History (Broker Source of Truth)</h2><div class="hint">Direct Tastytrade API pull (sandbox + live)</div></div>
+          <div class="card-h"><h2>Trade History (Execution Trade Runs)</h2><div class="hint">Internal trade lifecycle (open + closed) with realized/unrealized PnL</div></div>
           <div class="card-b">
             <div class="row">
               <label>Limit <input id="exHistLimit" type="number" min="1" max="2000" value="200" style="width:90px;" /></label>
@@ -856,7 +856,7 @@
                 <div class="hint" style="margin-bottom:6px;">Sandbox</div>
                 <div style="overflow:auto; max-height:320px;">
                   <table>
-                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>size</th><th>received</th><th>terminal</th><th>price</th></tr></thead>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>opened</th><th>closed</th><th>realized</th><th>unrealized</th><th>close_reason</th></tr></thead>
                     <tbody id="exHistSandboxTable"></tbody>
                   </table>
                 </div>
@@ -865,7 +865,7 @@
                 <div class="hint" style="margin-bottom:6px;">Live</div>
                 <div style="overflow:auto; max-height:320px;">
                   <table>
-                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>size</th><th>received</th><th>terminal</th><th>price</th></tr></thead>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>opened</th><th>closed</th><th>realized</th><th>unrealized</th><th>close_reason</th></tr></thead>
                     <tbody id="exHistLiveTable"></tbody>
                   </table>
                 </div>
@@ -6079,15 +6079,16 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       tb.innerHTML = '';
       for (const it of (items || [])) {
         const tr = document.createElement('tr');
-        const px = (it.price === null || it.price === undefined || it.price === '') ? '—' : `${it.price} ${it.price_effect || ''}`.trim();
         tr.innerHTML = `
           <td>${it.id ?? ''}</td>
           <td>${it.status ?? ''}</td>
           <td>${it.underlying ?? ''}</td>
-          <td>${it.size ?? ''}</td>
-          <td>${it.received_at ?? ''}</td>
-          <td>${it.terminal_at ?? ''}</td>
-          <td>${px}</td>
+          <td>${it.qty ?? ''}</td>
+          <td>${it.opened_at_utc ?? ''}</td>
+          <td>${it.closed_at_utc ?? ''}</td>
+          <td>${exFmtMoney(it.pnl_realized_usd)}</td>
+          <td>${exFmtMoney(it.pnl_unrealized_usd)}</td>
+          <td>${it.close_reason ?? ''}</td>
         `;
         tb.appendChild(tr);
       }
@@ -6100,7 +6101,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
         async function fetchEnv(env) {
           try {
-            return await jget(`/api/execution/broker/orders?environment=${encodeURIComponent(env)}&limit=${encodeURIComponent(limit)}`);
+            return await jget(`/api/execution/trades/history?environment=${encodeURIComponent(env)}&limit=${encodeURIComponent(limit)}`);
           } catch (e) {
             return { environment: env, items: [], error: String(e && e.message ? e.message : e) };
           }
