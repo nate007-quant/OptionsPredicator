@@ -2109,7 +2109,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       const td = parseInt(document.getElementById('btTargetDte')?.value || '7', 10);
       // TERM horizon choices (minutes) by target DTE
-      if (td === 7) return [5760, 10080];
+      if (td === 7) return [5760, 7560, 10080];
       if (td === 14) return [10080, 20160];
       if (td === 21) return [15840, 30240];
       if (td === 30) return [21600, 43200];
