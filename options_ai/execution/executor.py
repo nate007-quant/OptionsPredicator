@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import traceback
 import httpx
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -105,7 +106,7 @@ def compute_reprice_limit(
 
 
 def _format_exception_details(e: Exception) -> dict[str, Any]:
-    out: dict[str, Any] = {"error": str(e), "error_type": type(e).__name__}
+    out: dict[str, Any] = {"error": str(e), "error_type": type(e).__name__, "traceback": traceback.format_exc(limit=25)}
     if isinstance(e, httpx.HTTPStatusError):
         req = e.request
         resp = e.response
@@ -808,6 +809,7 @@ class ExecutionExecutor:
             for it in intents:
                 out["scanned"] += 1
                 iid = int(it["id"])
+                trade_run_id: int | None = None
 
                 try:
                     payload = _parse_json(it["intent_payload_json"], {})
@@ -1197,13 +1199,25 @@ class ExecutionExecutor:
                     self._mark_intent(con, intent_id=iid, status="error", error=str(details.get("error") or str(e)))
                     self._record_order_event(
                         con,
-                        trade_run_id=None,
+                        trade_run_id=trade_run_id,
                         execution_intent_id=iid,
                         order_id=None,
                         event_type="executor_error",
                         status="error",
                         payload=details,
                     )
+                    if trade_run_id is not None:
+                        now = _now_utc_iso()
+                        con.execute(
+                            """
+                            UPDATE trade_runs
+                            SET status='rejected',
+                                close_reason=COALESCE(close_reason,'executor_error'),
+                                updated_at_utc=?
+                            WHERE id=? AND status='opening'
+                            """,
+                            (now, int(trade_run_id)),
+                        )
                     out["errors"] += 1
                     out["processed"] += 1
 
