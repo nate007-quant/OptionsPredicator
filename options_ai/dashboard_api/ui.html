@@ -1190,6 +1190,16 @@ How many minutes after Session start to consider for entries.">i</span> <input i
                   <label><input id="btEntryDayThu" type="checkbox" checked /> Thu</label>
                   <label><input id="btEntryDayFri" type="checkbox" checked /> Fri</label>
                 </div>
+                <div class="row" style="margin-top:6px;">
+                  <label>Entry retrace % <span class="tip" data-tip="0 disables retrace. Example: 0.25 waits for a 0.25% pullback before entry.">i</span> <input id="btEntryRetracePct" type="number" min="0" step="0.01" value="0" style="width:110px;" /></label>
+                  <label>Retrace timeout (sec) <span class="tip" data-tip="How long to wait for retrace before fallback action.">i</span> <input id="btEntryRetraceTimeout" type="number" min="5" max="1800" step="1" value="90" style="width:110px;" /></label>
+                  <label>Retrace fallback <span class="tip" data-tip="enter_now: submit normally when timeout hits. skip: expire intent if retrace never happens.">i</span>
+                    <select id="btEntryRetraceFallback" style="width:130px;">
+                      <option value="enter_now" selected>enter_now</option>
+                      <option value="skip">skip</option>
+                    </select>
+                  </label>
+                </div>
               </fieldset>
 
               <fieldset class="fs" style="margin-top:10px;">
@@ -2318,6 +2328,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         entry_mode,
         session_start_ct: document.getElementById('btSessionStart')?.value || '08:30',
         entry_days_of_week: btReadEntryDaysOfWeek(),
+        entry_retrace_pct: parseFloat(document.getElementById('btEntryRetracePct')?.value || '0'),
+        entry_retrace_timeout_sec: parseInt(document.getElementById('btEntryRetraceTimeout')?.value || '90', 10),
+        entry_retrace_fallback: document.getElementById('btEntryRetraceFallback')?.value || 'enter_now',
 
         max_trades_per_day: parseInt(document.getElementById('btMaxPerDay')?.value || '1', 10),
         one_trade_at_a_time: !!document.getElementById('btOneAtATime')?.checked,
@@ -2443,6 +2456,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       setv('btEntryStart', p.entry_start_ct);
       setv('btEntryEnd', p.entry_end_ct);
       btSetEntryDaysOfWeek(p.entry_days_of_week);
+      setv('btEntryRetracePct', p.entry_retrace_pct);
+      setv('btEntryRetraceTimeout', p.entry_retrace_timeout_sec);
+      setv('btEntryRetraceFallback', p.entry_retrace_fallback);
       setv('btMaxPerDay', p.max_trades_per_day);
       setc('btOneAtATime', p.one_trade_at_a_time);
       setv('btAnchorMode', p.anchor_mode);
@@ -4473,6 +4489,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         ['expiration_mode', 'exp'],
         ['spread_style', 'style'],
         ['entry_days_of_week', 'days'],
+        ['entry_retrace_pct', 'retrace%'],
+        ['entry_retrace_timeout_sec', 'retrace_tmo_s'],
+        ['entry_retrace_fallback', 'retrace_fallback'],
         ['min_p_bigwin', 'min_p'],
         ['min_pred_change', 'min_pred'],
       ];

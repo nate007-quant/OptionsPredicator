@@ -42,6 +42,9 @@ class DebitBacktestConfig:
     entry_start_ct: str = "08:40"
     entry_end_ct: str = "09:30"
     entry_days_of_week: tuple[str, ...] = ("MON", "TUE", "WED", "THU", "FRI")
+    entry_retrace_pct: float = 0.0
+    entry_retrace_timeout_sec: int = 90
+    entry_retrace_fallback: str = "enter_now"
 
     max_trades_per_day: int = 1
     one_trade_at_a_time: bool = True

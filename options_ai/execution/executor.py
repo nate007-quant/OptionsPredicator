@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import httpx
 from dataclasses import dataclass
@@ -639,6 +640,145 @@ class ExecutionExecutor:
             return False, checks, ','.join(failed)
         return True, checks, None
 
+    @staticmethod
+    def _parse_iso(ts: str | None) -> datetime | None:
+        if not ts:
+            return None
+        try:
+            d = datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return d.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _option_type_from_symbol(sym: str | None) -> str | None:
+        s = str(sym or '').strip().upper()
+        if not s:
+            return None
+        m = re.search(r'([CP])\d{8}$', s)
+        if m:
+            return str(m.group(1))
+        return None
+
+    def _infer_retrace_direction(self, params: dict[str, Any]) -> str | None:
+        p = params or {}
+        sp = str(p.get('spread_type') or p.get('option_side') or '').strip().upper()
+        if sp in {'CALL', 'C'}:
+            return 'bullish'
+        if sp in {'PUT', 'P'}:
+            return 'bearish'
+        ot = self._option_type_from_symbol(str(p.get('long_symbol') or ''))
+        if ot == 'C':
+            return 'bullish'
+        if ot == 'P':
+            return 'bearish'
+        return None
+
+    def _latest_underlying_spot(self, con: Any, *, symbol: str) -> float | None:
+        # Best-effort local source: latest predictions.spot_price
+        # This avoids direct broker quote dependencies in executor loop v1.
+        try:
+            r = con.execute(
+                """
+                SELECT spot_price
+                FROM predictions
+                WHERE spot_price IS NOT NULL
+                ORDER BY COALESCE(observed_ts_utc, timestamp, scored_at) DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not r:
+                return None
+            return float(r[0] if not isinstance(r, dict) else r.get('spot_price'))
+        except Exception:
+            return None
+
+    def _persist_intent_payload(self, con: Any, *, intent_id: int, payload: dict[str, Any]) -> None:
+        con.execute(
+            "UPDATE execution_intents SET intent_payload_json=?, updated_at_utc=? WHERE id=?",
+            (json.dumps(payload, separators=(',', ':'), sort_keys=True), _now_utc_iso(), int(intent_id)),
+        )
+
+    def _retrace_gate(self, con: Any, *, intent_id: int, payload: dict[str, Any], params: dict[str, Any], created_at_utc: str | None, symbol: str) -> tuple[bool, str | None]:
+        try:
+            pct = max(0.0, float(params.get('entry_retrace_pct') or 0.0))
+        except Exception:
+            pct = 0.0
+        if pct <= 0.0:
+            return True, None
+
+        try:
+            timeout_sec = max(5, int(params.get('entry_retrace_timeout_sec') or 90))
+        except Exception:
+            timeout_sec = 90
+        fallback = str(params.get('entry_retrace_fallback') or 'enter_now').strip().lower()
+        if fallback not in {'enter_now', 'skip'}:
+            fallback = 'enter_now'
+
+        cur_spot = self._latest_underlying_spot(con, symbol=symbol)
+        if cur_spot is None:
+            return False, None
+
+        st = (payload.get('entry_retrace_state') or {}) if isinstance(payload, dict) else {}
+        if not isinstance(st, dict):
+            st = {}
+
+        direction = str(st.get('direction') or '')
+        if direction not in {'bullish', 'bearish'}:
+            direction = str(self._infer_retrace_direction(params) or '')
+
+        if direction not in {'bullish', 'bearish'}:
+            # No safe direction inference -> do not block entries.
+            return True, None
+
+        trigger_spot = st.get('trigger_spot')
+        try:
+            trigger_spot = float(trigger_spot)
+        except Exception:
+            trigger_spot = None
+
+        armed_at = self._parse_iso(str(st.get('armed_at_utc') or ''))
+        if trigger_spot is None:
+            trigger_spot = float(cur_spot)
+            armed_at = datetime.now(timezone.utc)
+
+        if direction == 'bullish':
+            target = trigger_spot * (1.0 - pct / 100.0)
+            hit = float(cur_spot) <= float(target)
+        else:
+            target = trigger_spot * (1.0 + pct / 100.0)
+            hit = float(cur_spot) >= float(target)
+
+        st.update({
+            'direction': direction,
+            'retrace_pct': float(pct),
+            'timeout_sec': int(timeout_sec),
+            'fallback': fallback,
+            'trigger_spot': float(trigger_spot),
+            'target_spot': float(target),
+            'last_spot': float(cur_spot),
+            'armed_at_utc': (armed_at or datetime.now(timezone.utc)).replace(microsecond=0).isoformat(),
+            'last_eval_utc': _now_utc_iso(),
+        })
+        payload['entry_retrace_state'] = st
+        self._persist_intent_payload(con, intent_id=int(intent_id), payload=payload)
+
+        if hit:
+            return True, None
+
+        base_ts = armed_at or self._parse_iso(created_at_utc) or datetime.now(timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - base_ts).total_seconds()
+        if elapsed < float(timeout_sec):
+            return False, None
+
+        if fallback == 'skip':
+            self._mark_intent(con, intent_id=int(intent_id), status='expired', error='entry retrace timeout (skip)')
+            return False, 'expired'
+
+        return True, 'fallback_enter_now'
+
     def process_once(self, *, limit: int = 25) -> dict[str, Any]:
         out = {
             "scanned": 0,
@@ -656,7 +796,7 @@ class ExecutionExecutor:
         with self._connect() as con:
             intents = con.execute(
                 """
-                SELECT id, strategy_key, symbol, intent_payload_json
+                SELECT id, created_at_utc, strategy_key, symbol, intent_payload_json
                 FROM execution_intents
                 WHERE status='pending' AND environment=? AND broker_name=?
                 ORDER BY id ASC
@@ -724,6 +864,21 @@ class ExecutionExecutor:
                         self._mark_intent(con, intent_id=iid, status="expired", error="outside entry window")
                         out["expired"] += 1
                         out["processed"] += 1
+                        continue
+
+                    # optional retrace gate (pending hold until pullback/timeout)
+                    go, retrace_note = self._retrace_gate(
+                        con,
+                        intent_id=iid,
+                        payload=payload,
+                        params=params,
+                        created_at_utc=(it.get('created_at_utc') if isinstance(it, dict) else None),
+                        symbol=str(it['symbol'] or 'SPX'),
+                    )
+                    if not go:
+                        if retrace_note == 'expired':
+                            out['expired'] += 1
+                            out['processed'] += 1
                         continue
 
                     # strategy-level gates carried from triggering params
