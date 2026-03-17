@@ -191,6 +191,10 @@ class TastytradeClient:
         self.session_token = (session_token or os.getenv("TASTY_SESSION_TOKEN") or "").strip() or None
         self.username = (username or os.getenv("TASTY_USERNAME") or "").strip() or None
         self.password = (password or os.getenv("TASTY_PASSWORD") or "").strip() or None
+        # Hardening: if credentials are present, prefer fresh session auth over
+        # potentially stale pre-seeded token from env.
+        if self.session_token and self.username and self.password:
+            self.session_token = None
         self.account_number = (account_number or os.getenv("TASTY_ACCOUNT_NUMBER") or "").strip() or None
         self.timeout_seconds = int(timeout_seconds)
         self.dry_run = bool(dry_run)
