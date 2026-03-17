@@ -26,8 +26,8 @@ Environment=TARGET_DTE_DAYS=30
 Environment=DTE_TOLERANCE_DAYS=5
 Environment=TERM_BUCKET=term_dte30t5
 
-# half/full horizons (calendar days): 15d, 30d
-Environment=HORIZONS_MINUTES=21600,43200
+# quarter/full horizons (calendar days): 7.5d, 30d
+Environment=HORIZONS_MINUTES=10800,43200
 Environment=MAX_FUTURE_LOOKAHEAD_MINUTES=20160
 
 ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.phase2_term_main

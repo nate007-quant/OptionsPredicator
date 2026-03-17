@@ -26,7 +26,7 @@ Environment=TARGET_DTE_DAYS=7
 Environment=DTE_TOLERANCE_DAYS=2
 Environment=TERM_BUCKET=term_dte7t2
 
-Environment=DEBIT_HORIZONS_MINUTES=5760,10080
+Environment=DEBIT_HORIZONS_MINUTES=2520,10080
 Environment=MAX_FUTURE_LOOKAHEAD_MINUTES=20160
 
 ExecStart=/opt/OptionsPredicator/.venv/bin/python -m options_ai.debit_spreads_term_main
