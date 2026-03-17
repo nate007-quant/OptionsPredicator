@@ -251,6 +251,63 @@ class ExecutionMonitor:
                     continue
         return None
 
+    @staticmethod
+    def _first_text(obj: dict[str, Any], keys: tuple[str, ...]) -> str:
+        for k in keys:
+            v = obj.get(k)
+            if v is None:
+                continue
+            t = str(v).strip()
+            if t:
+                return t
+        return ""
+
+    @staticmethod
+    def _order_time_key(o: dict[str, Any]) -> str:
+        return ExecutionMonitor._first_text(o, (
+            'terminal-at', 'terminal_at',
+            'updated-at', 'updated_at',
+            'received-at', 'received_at',
+            'created-at', 'created_at',
+        ))
+
+    def _infer_close_reason_from_orders(self, orders: list[dict[str, Any]]) -> tuple[str, dict[str, Any]] | None:
+        if not isinstance(orders, list) or not orders:
+            return None
+        terminal_filled = {'FILLED', 'EXECUTED', 'DONE'}
+        filled = []
+        for o in orders:
+            if not isinstance(o, dict):
+                continue
+            st = self._first_text(o, ('status', 'order-status', 'order_status')).upper()
+            if st in terminal_filled:
+                filled.append(o)
+        if not filled:
+            return None
+
+        filled.sort(key=lambda x: self._order_time_key(x))
+        last = filled[-1]
+
+        otype = self._first_text(last, ('order-type', 'order_type', 'type')).upper()
+        tag = self._first_text(last, ('complex-order-tag', 'complex_order_tag', 'tag', 'client-order-id', 'client_order_id')).upper()
+        text = ' '.join([otype, tag])
+
+        if any(k in text for k in ('STOP', 'STOP_LIMIT', 'TRIGGER', 'CLAMP')):
+            reason = 'broker_stop_clamp_filled'
+        elif 'OCO' in text:
+            reason = 'broker_protective_exit_filled'
+        else:
+            reason = 'broker_exit_filled'
+
+        details = {
+            'order_id': self._first_text(last, ('id', 'order-id', 'order_id')),
+            'status': self._first_text(last, ('status', 'order-status', 'order_status')),
+            'order_type': self._first_text(last, ('order-type', 'order_type', 'type')),
+            'tag': self._first_text(last, ('complex-order-tag', 'complex_order_tag', 'tag', 'client-order-id', 'client_order_id')),
+            'terminal_at': self._order_time_key(last),
+        }
+        return reason, details
+
     def _streamer_down_breaker(self, con: Any) -> tuple[bool, dict[str, Any]]:
         row = con.execute(
             """
@@ -522,20 +579,31 @@ class ExecutionMonitor:
                     )
 
                 tr_status = str(tr["status"] or "")
-                if tr_status == 'closing' and len(scoped_positions) == 0:
-                    con.execute(
-                        "UPDATE trade_runs SET status='closed', close_reason=COALESCE(close_reason,'operator_flatten_complete'), closed_at_utc=COALESCE(closed_at_utc, ?), updated_at_utc=? WHERE id=?",
-                        (_now_utc_iso(), _now_utc_iso(), trade_run_id),
-                    )
-                    self._record_order_event(
-                        con,
-                        trade_run_id=trade_run_id,
-                        execution_intent_id=intent_id,
-                        order_id=None,
-                        event_type="close_detected_from_positions",
-                        status="filled",
-                        payload={"positions_count": 0},
-                    )
+                if len(scoped_positions) == 0 and tr_status in {'open', 'working', 'closing'}:
+                    inferred = self._infer_close_reason_from_orders(scoped_orders)
+                    close_reason = None
+                    details: dict[str, Any] = {'positions_count': 0, 'from_status': tr_status}
+
+                    if inferred is not None:
+                        close_reason, inf = inferred
+                        details.update({'inferred': inf})
+                    elif tr_status == 'closing':
+                        close_reason = 'operator_flatten_complete'
+
+                    if close_reason:
+                        con.execute(
+                            "UPDATE trade_runs SET status='closed', close_reason=COALESCE(close_reason, ?), closed_at_utc=COALESCE(closed_at_utc, ?), updated_at_utc=? WHERE id=?",
+                            (close_reason, _now_utc_iso(), _now_utc_iso(), trade_run_id),
+                        )
+                        self._record_order_event(
+                            con,
+                            trade_run_id=trade_run_id,
+                            execution_intent_id=intent_id,
+                            order_id=None,
+                            event_type="close_detected_from_positions",
+                            status="filled",
+                            payload=details,
+                        )
 
                 if (not self._has_protective_exit(con, trade_run_id)) and (not self._already_alerted_missing_protection(con, trade_run_id)):
                     self._audit(
