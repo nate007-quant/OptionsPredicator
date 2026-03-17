@@ -665,7 +665,10 @@ def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: s
         return [(r[0], r[1]) for r in cur.fetchall()]
 
 
-def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, max_horizon_minutes: int, limit: int) -> list[tuple[datetime, Any]]:
+def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, horizons_minutes: tuple[int, ...], max_horizon_minutes: int, limit: int) -> list[tuple[datetime, Any]]:
+    hs = [int(x) for x in (horizons_minutes or ()) if int(x) > 0]
+    if not hs:
+        hs = [int(max_horizon_minutes)]
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -673,17 +676,23 @@ def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, 
             FROM spx.debit_spread_candidates_term c
             WHERE c.term_bucket = %s
               AND c.snapshot_ts <= (SELECT max(snapshot_ts) FROM spx.option_chain) - (%s * INTERVAL '1 minute')
-              AND NOT EXISTS (
+              AND EXISTS (
                 SELECT 1
-                FROM spx.debit_spread_labels_term l
-                WHERE l.snapshot_ts = c.snapshot_ts
-                  AND l.expiration_date = c.expiration_date
+                FROM unnest(%s::int[]) AS h(hm)
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM spx.debit_spread_labels_term l
+                  WHERE l.snapshot_ts = c.snapshot_ts
+                    AND l.expiration_date = c.expiration_date
+                    AND l.term_bucket = c.term_bucket
+                    AND l.horizon_minutes = h.hm
+                )
               )
             GROUP BY c.snapshot_ts, c.expiration_date
             ORDER BY c.snapshot_ts DESC
             LIMIT %s
             """,
-            (term_bucket, int(candidate_min_age_minutes), int(limit)),
+            (term_bucket, int(max_horizon_minutes), hs, int(limit)),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
@@ -706,7 +715,13 @@ def run_daemon(cfg: DebitSpreadTermConfig) -> None:
                     if n:
                         did = True
 
-                for ts, exp in _feature_rows_missing_labels(conn, term_bucket=cfg.term_bucket, max_horizon_minutes=max(cfg.horizons_minutes), limit=cfg.batch_limit):
+                for ts, exp in _feature_rows_missing_labels(
+                    conn,
+                    term_bucket=cfg.term_bucket,
+                    horizons_minutes=cfg.horizons_minutes,
+                    max_horizon_minutes=max(cfg.horizons_minutes),
+                    limit=cfg.batch_limit,
+                ):
                     n = compute_labels_for_snapshot(conn, snapshot_ts=ts, expiration_date=exp, cfg=cfg)
                     if n:
                         did = True
