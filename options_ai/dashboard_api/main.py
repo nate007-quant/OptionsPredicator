@@ -2163,6 +2163,25 @@ def create_app() -> FastAPI:
                 )
                 return [str(r[0]) for r in cur.fetchall()]
 
+
+    def _engine_latest_snapshot_ts() -> str | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_scores_0dte")
+                r = cur.fetchone()
+                if not r or not r[0]:
+                    return None
+                return str(r[0])
+
+    def _params_have_leg_symbols(params: dict[str, Any]) -> bool:
+        p = params or {}
+        long_sym = str(p.get('long_symbol') or '').strip()
+        short_sym = str(p.get('short_symbol') or '').strip()
+        return bool(long_sym and short_sym)
+
     def _intent_symbol_from_payload(payload: dict[str, Any]) -> str:
         try:
             p = (payload or {}).get('params') or {}
@@ -2309,29 +2328,47 @@ def create_app() -> FastAPI:
                 rr2 = con.execute("SELECT COALESCE(MAX(id),0) AS mx FROM predictions").fetchone()
                 marker = str(int(rr2['mx'] or 0))
 
+            # For manual emits, resolve a snapshot to enrich params with tradable leg symbols.
+            enrich_snapshot_ts = source_snapshot_ts
+            if not enrich_snapshot_ts:
+                enrich_snapshot_ts = _engine_latest_snapshot_ts() or ''
+
             if mode == 'merged':
                 lines: list[dict[str, Any]] = []
                 strategy_keys: list[str] = []
+                missing_symbol_lines: list[int] = []
                 for i, leg in enumerate(legs):
                     sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
                     strategy_keys.append(sid)
                     params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
-                    if emit_source == 'engine' and source_snapshot_ts:
-                        cand = _engine_pick_candidate_for_line(snapshot_ts=source_snapshot_ts, params=params)
-                        if cand is None:
+
+                    p2 = dict(params)
+                    cand = None
+                    if not _params_have_leg_symbols(p2):
+                        if enrich_snapshot_ts:
+                            cand = _engine_pick_candidate_for_line(snapshot_ts=enrich_snapshot_ts, params=p2)
+                        if cand is not None:
+                            p2.update({
+                                'long_symbol': cand.get('long_symbol'),
+                                'short_symbol': cand.get('short_symbol'),
+                                'debit_points': cand.get('debit_points'),
+                            })
+
+                    if not _params_have_leg_symbols(p2):
+                        if emit_source == 'engine' and source_snapshot_ts:
                             continue
-                        p2 = dict(params)
-                        p2.update({
-                            'long_symbol': cand.get('long_symbol'),
-                            'short_symbol': cand.get('short_symbol'),
-                            'debit_points': cand.get('debit_points'),
-                        })
-                        lines.append({'line_index': int(i), 'strategy_key': sid, 'params': p2, 'candidate': cand})
-                    else:
-                        lines.append({'line_index': int(i), 'strategy_key': sid, 'params': params})
+                        missing_symbol_lines.append(int(i))
+                        continue
+
+                    row = {'line_index': int(i), 'strategy_key': sid, 'params': p2}
+                    if cand is not None:
+                        row['candidate'] = cand
+                    lines.append(row)
 
                 if emit_source == 'engine' and source_snapshot_ts and (not lines):
                     return {'ok': True, 'portfolio_id': int(portfolio_id), 'mode': mode, 'environment': env, 'account_label': account_label, 'inserted': 0, 'existing': 0}
+                if missing_symbol_lines and (not lines):
+                    raise HTTPException(status_code=409, detail=f'no tradable legs for lines {missing_symbol_lines}; check market window/snapshot and strategy params')
 
                 merge_exit_policy = str(r.get('execution_exit_policy') or 'any_leg').strip().lower()
                 if merge_exit_policy not in {'any_leg','entry_leg'}:
@@ -2383,16 +2420,19 @@ def create_app() -> FastAPI:
                     sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
                     params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
 
-                    if emit_source == 'engine' and source_snapshot_ts:
-                        cand = _engine_pick_candidate_for_line(snapshot_ts=source_snapshot_ts, params=params)
-                        if cand is None:
+                    if not _params_have_leg_symbols(params):
+                        cand = _engine_pick_candidate_for_line(snapshot_ts=enrich_snapshot_ts, params=params) if enrich_snapshot_ts else None
+                        if cand is not None:
+                            params = dict(params)
+                            params.update({
+                                'long_symbol': cand.get('long_symbol'),
+                                'short_symbol': cand.get('short_symbol'),
+                                'debit_points': cand.get('debit_points'),
+                            })
+                    if not _params_have_leg_symbols(params):
+                        if emit_source == 'engine' and source_snapshot_ts:
                             continue
-                        params = dict(params)
-                        params.update({
-                            'long_symbol': cand.get('long_symbol'),
-                            'short_symbol': cand.get('short_symbol'),
-                            'debit_points': cand.get('debit_points'),
-                        })
+                        raise HTTPException(status_code=409, detail=f'line {int(i)} missing tradable legs; check market window/snapshot and strategy params')
 
                     payload = {
                         'source': {'type': 'portfolio_group', 'id': int(portfolio_id), 'name': str(r['name']), 'line_index': int(i)},
