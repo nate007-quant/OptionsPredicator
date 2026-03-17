@@ -3487,47 +3487,59 @@ def create_app() -> FastAPI:
                 event_type = 'operator_flatten_all'
                 status = 'accepted'
                 raw = {'note': 'operator flatten-all requested'}
+                no_open = (r['entry_order_id'] is None) and (r['opened_at_utc'] is None)
 
-                try:
-                    if auth_error:
-                        raise RuntimeError(f'broker auth unavailable: {auth_error}')
-                    if (client is None) or (not account_number):
-                        raise RuntimeError('broker client unavailable or missing account number')
-                    if (not long_sym) or (not short_sym):
-                        raise RuntimeError('missing long_symbol/short_symbol in trade run payload')
+                if no_open:
+                    # Safety: if we never recorded entry evidence, do not submit broker close legs.
+                    # Submitting a close on a non-open trade can accidentally open a new position.
+                    event_type = 'operator_flatten_skip_no_open'
+                    raw = {'submitted': False, 'reason': 'no_entry_evidence'}
+                else:
+                    try:
+                        if auth_error:
+                            raise RuntimeError(f'broker auth unavailable: {auth_error}')
+                        if (client is None) or (not account_number):
+                            raise RuntimeError('broker client unavailable or missing account number')
+                        if (not long_sym) or (not short_sym):
+                            raise RuntimeError('missing long_symbol/short_symbol in trade run payload')
 
-                    close_dto = OrderDTO(
-                        account_number=account_number,
-                        underlying=underlying,
-                        quantity=qty,
-                        price_effect='CREDIT',
-                        limit_price=0.05,
-                        legs=[
-                            OptionLeg(symbol=long_sym, quantity=qty, side='SELL', effect='CLOSE'),
-                            OptionLeg(symbol=short_sym, quantity=qty, side='BUY', effect='CLOSE'),
-                        ],
-                        client_order_id=f'flatten-{rid}-{int(datetime.now(timezone.utc).timestamp())}',
-                    )
-                    resp = client.place_order_with_warning_reconfirm(close_dto, dry_run=(not bool(cfg.trading_enabled)))
-                    data = (resp.get('data') if isinstance(resp, dict) else None) or {}
-                    od = (data.get('order') if isinstance(data, dict) else None) or {}
-                    exit_order_id = (data.get('id') or od.get('id') or (resp.get('order-id') if isinstance(resp, dict) else None))
-                    raw = {'response': resp, 'submitted': True}
-                    event_type = 'operator_flatten_submit'
-                    submitted += 1
-                except Exception as e:
-                    raw = {'error': str(e), 'submitted': False}
-                    event_type = 'operator_flatten_submit_error'
-                    status = 'error'
-                    errors += 1
+                        close_dto = OrderDTO(
+                            account_number=account_number,
+                            underlying=underlying,
+                            quantity=qty,
+                            price_effect='CREDIT',
+                            limit_price=0.05,
+                            legs=[
+                                OptionLeg(symbol=long_sym, quantity=qty, side='SELL', effect='CLOSE'),
+                                OptionLeg(symbol=short_sym, quantity=qty, side='BUY', effect='CLOSE'),
+                            ],
+                            client_order_id=f'flatten-{rid}-{int(datetime.now(timezone.utc).timestamp())}',
+                        )
+                        resp = client.place_order_with_warning_reconfirm(close_dto, dry_run=(not bool(cfg.trading_enabled)))
+                        data = (resp.get('data') if isinstance(resp, dict) else None) or {}
+                        od = (data.get('order') if isinstance(data, dict) else None) or {}
+                        exit_order_id = (data.get('id') or od.get('id') or (resp.get('order-id') if isinstance(resp, dict) else None))
+                        raw = {'response': resp, 'submitted': True}
+                        event_type = 'operator_flatten_submit'
+                        submitted += 1
+                    except Exception as e:
+                        raw = {'error': str(e), 'submitted': False}
+                        event_type = 'operator_flatten_submit_error'
+                        status = 'error'
+                        errors += 1
 
                 if status == 'accepted':
-                    con.execute(
-                        "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', exit_order_id=COALESCE(?, exit_order_id), updated_at_utc=? WHERE id=?",
-                        ((str(exit_order_id) if exit_order_id is not None else None), now, rid),
-                    )
+                    if no_open:
+                        con.execute(
+                            "UPDATE trade_runs SET status='closed', close_mode='operator_flatten', close_reason=COALESCE(close_reason,'operator_flatten_no_open_position'), closed_at_utc=COALESCE(closed_at_utc, ?), updated_at_utc=? WHERE id=?",
+                            (now, now, rid),
+                        )
+                    else:
+                        con.execute(
+                            "UPDATE trade_runs SET status='closing', close_mode='operator_flatten', exit_order_id=COALESCE(?, exit_order_id), updated_at_utc=? WHERE id=?",
+                            ((str(exit_order_id) if exit_order_id is not None else None), now, rid),
+                        )
                 else:
-                    no_open = (r['entry_order_id'] is None) and (r['opened_at_utc'] is None)
                     if no_open:
                         con.execute(
                             "UPDATE trade_runs SET status='closed', close_mode='operator_flatten', close_reason=COALESCE(close_reason,'operator_flatten_no_open_position'), closed_at_utc=COALESCE(closed_at_utc, ?), updated_at_utc=? WHERE id=?",
