@@ -217,7 +217,7 @@ class TastytradeClient:
         url = f"{self.base_url}{path}"
 
         # Lazy auth: services can start with username/password in env and no pre-seeded token.
-        if (path != "/sessions") and (not self.session_token) and self.username and self.password:
+        if (not path.startswith("/sessions")) and (not self.session_token) and self.username and self.password:
             self.authenticate()
 
         last_exc: Exception | None = None
@@ -227,7 +227,7 @@ class TastytradeClient:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
                     resp = client.request(method.upper(), url, headers=self._headers(), json=json_body, params=params)
                     # 401 can happen when token expired/invalid; re-auth once then retry immediately.
-                    if resp.status_code == 401 and (path != "/sessions") and self.username and self.password and (not did_reauth):
+                    if resp.status_code == 401 and (not path.startswith("/sessions")) and self.username and self.password and (not did_reauth):
                         did_reauth = True
                         self.session_token = None
                         self.authenticate()
