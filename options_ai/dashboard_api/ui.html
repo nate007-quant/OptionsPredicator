@@ -736,6 +736,8 @@
                       <th>status</th>
                       <th>underlying</th>
                       <th>qty</th>
+                      <th>type</th>
+                      <th>legs (entry)</th>
                       <th>protection</th>
                       <th>realized</th>
                       <th>unrealized</th>
@@ -828,6 +830,13 @@
                 <div>Open positions: <span id="exReconPositions" class="pill">—</span></div>
               </div>
               <div id="exReconDiff" style="margin-top:10px; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px;"></div>
+              <div style="margin-top:10px;" class="hint">Open Orders Detail</div>
+              <div style="margin-top:6px; overflow:auto; max-height:180px;">
+                <table>
+                  <thead><tr><th>id</th><th>status</th><th>underlying</th><th>type</th><th>qty</th><th>legs</th><th>received</th></tr></thead>
+                  <tbody id="exOpenOrdersTable"></tbody>
+                </table>
+              </div>
               <div style="margin-top:10px; overflow:auto; max-height:180px;">
                 <table>
                   <thead><tr><th>time</th><th>action</th><th>entity</th></tr></thead>
@@ -856,7 +865,7 @@
                 <div class="hint" style="margin-bottom:6px;">Sandbox</div>
                 <div style="overflow:auto; max-height:320px;">
                   <table>
-                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>opened</th><th>closed</th><th>realized</th><th>unrealized</th><th>close_reason</th></tr></thead>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>type</th><th>legs (entry)</th><th>opened</th><th>closed</th><th>realized</th><th>unrealized</th><th>close_reason</th></tr></thead>
                     <tbody id="exHistSandboxTable"></tbody>
                   </table>
                 </div>
@@ -865,7 +874,7 @@
                 <div class="hint" style="margin-bottom:6px;">Live</div>
                 <div style="overflow:auto; max-height:320px;">
                   <table>
-                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>opened</th><th>closed</th><th>realized</th><th>unrealized</th><th>close_reason</th></tr></thead>
+                    <thead><tr><th>id</th><th>status</th><th>underlying</th><th>qty</th><th>type</th><th>legs (entry)</th><th>opened</th><th>closed</th><th>realized</th><th>unrealized</th><th>close_reason</th></tr></thead>
                     <tbody id="exHistLiveTable"></tbody>
                   </table>
                 </div>
@@ -6062,6 +6071,51 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       }
     }
 
+    function exTradeType(it) {
+      const rp = (it && typeof it.run_payload === 'object') ? it.run_payload : {};
+      const params = (rp.params && typeof rp.params === 'object') ? rp.params : {};
+      const gl0 = (Array.isArray(rp.group_lines) && rp.group_lines.length) ? rp.group_lines[0] : null;
+      const cand = (gl0 && gl0.candidate && typeof gl0.candidate === 'object') ? gl0.candidate : {};
+      const parts = [];
+      if (rp.strategy_key) parts.push(String(rp.strategy_key));
+      if (params.spread_style) parts.push(String(params.spread_style).toUpperCase());
+      if (cand.spread_type) parts.push(`${String(cand.spread_type).toUpperCase()} spread`);
+      if (it && it.side) parts.push(`price:${String(it.side).toUpperCase()}`);
+      return parts.length ? parts.join(' · ') : '—';
+    }
+
+    function exTradeLegs(it) {
+      const rp = (it && typeof it.run_payload === 'object') ? it.run_payload : {};
+      const params = (rp.params && typeof rp.params === 'object') ? rp.params : {};
+      const gl0 = (Array.isArray(rp.group_lines) && rp.group_lines.length) ? rp.group_lines[0] : null;
+      const cand = (gl0 && gl0.candidate && typeof gl0.candidate === 'object') ? gl0.candidate : {};
+      const longSym = params.long_symbol || cand.long_symbol || null;
+      const shortSym = params.short_symbol || cand.short_symbol || null;
+      if (!longSym && !shortSym) return '—';
+      const parts = [];
+      if (longSym) parts.push(`BUY ${longSym} (long)`);
+      if (shortSym) parts.push(`SELL ${shortSym} (short)`);
+      return parts.join(' / ');
+    }
+
+    function exOrderType(o) {
+      const pe = o?.price_effect || o?.['price-effect'] || o?.priceEffect || '';
+      const ot = o?.order_type || o?.['order-type'] || o?.orderType || '';
+      const parts = [pe, ot].filter(Boolean).map(v => String(v).toUpperCase());
+      return parts.length ? parts.join(' / ') : '—';
+    }
+
+    function exOrderLegs(o) {
+      const legs = o?.legs || o?.['order-leg-collection'] || [];
+      if (!Array.isArray(legs) || !legs.length) return '—';
+      return legs.map((lg) => {
+        const side = lg?.action || lg?.side || lg?.['buy-sell'] || '';
+        const qty = lg?.quantity ?? lg?.qty ?? '';
+        const sym = lg?.symbol || lg?.['instrument-symbol'] || lg?.option_symbol || '';
+        return [String(side || '').toUpperCase(), qty ? String(qty) : '', sym].filter(Boolean).join(' ');
+      }).join(' / ');
+    }
+
     async function exRefreshOpenTrades() {
       exBoxLoading('Trades', true);
       try {
@@ -6076,6 +6130,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
             <td>${it.status ?? ''}</td>
             <td>${it.underlying ?? ''}</td>
             <td>${it.qty ?? ''}</td>
+            <td>${esc(exTradeType(it))}</td>
+            <td>${esc(exTradeLegs(it))}</td>
             <td>${it.protection_status ?? ''}</td>
             <td>${exFmtMoney(it.pnl_realized_usd)}</td>
             <td>${exFmtMoney(it.pnl_unrealized_usd)}</td>
@@ -6103,6 +6159,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           <td>${it.status ?? ''}</td>
           <td>${it.underlying ?? ''}</td>
           <td>${it.qty ?? ''}</td>
+          <td>${esc(exTradeType(it))}</td>
+          <td>${esc(exTradeLegs(it))}</td>
           <td>${it.opened_at_utc ?? ''}</td>
           <td>${it.closed_at_utc ?? ''}</td>
           <td>${exFmtMoney(it.pnl_realized_usd)}</td>
@@ -6163,10 +6221,33 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     async function exRefreshReconciliation() {
       const d = await jget('/api/execution/reconciliation/latest');
       document.getElementById('exReconResolved').textContent = d.resolved_bool ? 'YES' : 'NO';
-      const oo = Array.isArray((d.open_orders || {}).items) ? d.open_orders.items.length : 0;
+      const openOrders = Array.isArray((d.open_orders || {}).items) ? d.open_orders.items : [];
+      const oo = openOrders.length;
       const op = Array.isArray((d.open_positions || {}).items) ? d.open_positions.items.length : 0;
       document.getElementById('exReconOrders').textContent = String(oo);
       document.getElementById('exReconPositions').textContent = String(op);
+      const tb = document.getElementById('exOpenOrdersTable');
+      if (tb) {
+        tb.innerHTML = '';
+        for (const o of openOrders) {
+          const tr = document.createElement('tr');
+          const oid = o?.id ?? o?.order_id ?? o?.['order-id'] ?? '';
+          const status = o?.status ?? '';
+          const und = o?.underlying_symbol ?? o?.['underlying-symbol'] ?? o?.symbol ?? '';
+          const qty = o?.quantity ?? o?.size ?? '';
+          const recv = o?.received_at ?? o?.['received-at'] ?? o?.updated_at ?? '';
+          tr.innerHTML = `
+            <td>${esc(String(oid))}</td>
+            <td>${esc(String(status))}</td>
+            <td>${esc(String(und))}</td>
+            <td>${esc(exOrderType(o))}</td>
+            <td>${esc(String(qty))}</td>
+            <td>${esc(exOrderLegs(o))}</td>
+            <td>${esc(String(recv))}</td>
+          `;
+          tb.appendChild(tr);
+        }
+      }
       renderReconDiffWidgets(d);
       return d;
     }
