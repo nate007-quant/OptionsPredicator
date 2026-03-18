@@ -1172,10 +1172,10 @@ DTE is computed using the local trade date (Central time).">i</span>
                       <option value="full">full (100%)</option>
                     </select>
                   </label>
-                  <label>Horizon (min) <span class="tip" data-tip="How far in the future we measure the outcome / exit.
+                  <label id="btHWrap">Horizon (min) <span class="tip" data-tip="How far in the future we measure the outcome / exit.
 
 0DTE: intraday horizons.
-Weekly Friday: use weekly_horizon_mode and this value is snapped to nearest available weekly scored horizon.
+Weekly Friday: driven by Weekly horizon mode (quarter/full).
 Advanced target_dte: multi-day fixed horizons.">i</span>
                     <select id="btH" style="width:140px;"></select>
                   </label>
@@ -2198,9 +2198,11 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const tw = document.getElementById('btTargetDteWrap');
       const tolw = document.getElementById('btDteTolWrap');
       const whw = document.getElementById('btWeeklyHModeWrap');
+      const hmw = document.getElementById('btHWrap');
       if (tw) tw.style.display = showTarget ? '' : 'none';
       if (tolw) tolw.style.display = showTarget ? '' : 'none';
       if (whw) whw.style.display = showWeekly ? '' : 'none';
+      if (hmw) hmw.style.display = showWeekly ? 'none' : '';
     
 
 
