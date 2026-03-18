@@ -1119,7 +1119,7 @@
       <section class="view" id="view-paramtest">
         <div class="grid1">
           <div class="card">
-            <div class="card-h"><h2>Parameter Testing — Single Parameter Backtester</h2><div class="hint">0DTE uses ML scores; target-DTE mode builds candidates on-the-fly.</div></div>
+            <div class="card-h"><h2>Parameter Testing — Single Parameter Backtester</h2><div class="hint">0DTE uses ML scores; weekly Friday mode uses TERM weekly candidates/scores.</div></div>
             <div class="card-b">
 
               <fieldset class="fs" style="margin-top:6px;">
@@ -1140,9 +1140,12 @@
                 <div class="row">
                   <label>Expiration mode <span class="tip" data-tip="0dte: use same-day expiration from the 0DTE feature table.
 
+current_week_friday: use this week's Friday expiration (weekly profile).
+
 target_dte: pick an expiration near Target DTE using DTE tolerance.">i</span>
                     <select id="btExpMode">
                       <option value="0dte" selected>0dte</option>
+                      <option value="current_week_friday">current_week_friday</option>
                       <option value="target_dte">target_dte</option>
                     </select>
                   </label>
@@ -1150,8 +1153,7 @@ target_dte: pick an expiration near Target DTE using DTE tolerance.">i</span>
 
 We pick an expiration whose DTE is closest to this target (within tolerance).">i</span>
                     <select id="btTargetDte">
-                      <option value="7" selected>7</option>
-                      <option value="14">14</option>
+                      <option value="14" selected>14</option>
                       <option value="21">21</option>
                       <option value="30">30</option>
                     </select>
@@ -1164,10 +1166,17 @@ Example: target 14, tol 2 ⇒ accepts expirations with DTE 12–16 days.
 DTE is computed using the local trade date (Central time).">i</span>
                     <input id="btDteTol" type="number" min="0" max="14" value="2" style="width:110px;" />
                   </label>
+                  <label id="btWeeklyHModeWrap" style="display:none;">Weekly horizon mode <span class="tip" data-tip="Used only for current_week_friday. quarter = 25% of time-to-Friday-close; full = 100% of time-to-Friday-close.">i</span>
+                    <select id="btWeeklyHMode" style="width:140px;">
+                      <option value="quarter" selected>quarter (25%)</option>
+                      <option value="full">full (100%)</option>
+                    </select>
+                  </label>
                   <label>Horizon (min) <span class="tip" data-tip="How far in the future we measure the outcome / exit.
 
-0DTE: currently aligned to ML horizon 30m.
-TERM: horizons are multi-day (e.g. 5760=4d).">i</span>
+0DTE: intraday horizons.
+Weekly Friday: use weekly_horizon_mode and this value is snapped to nearest available weekly scored horizon.
+TERM target_dte: multi-day fixed horizons.">i</span>
                     <select id="btH" style="width:140px;"></select>
                   </label>
                 </div>
@@ -2115,15 +2124,15 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     function btHorizonChoices() {
       const em = document.getElementById('btExpMode')?.value || '0dte';
       if (em === '0dte') return [15, 30, 45, 60, 90, 120]; // supported 0DTE horizons
+      if (em === 'current_week_friday') return [390, 1170, 2520, 5040, 10080]; // weekly Friday scored horizons
 
-      const td = parseInt(document.getElementById('btTargetDte')?.value || '7', 10);
+      const td = parseInt(document.getElementById('btTargetDte')?.value || '14', 10);
       // TERM horizon choices (minutes) by target DTE
-      if (td === 7) return [2520, 10080];
       if (td === 14) return [5040, 20160];
       if (td === 21) return [7560, 30240];
       if (td === 30) return [10800, 43200];
       // fallback
-      return [10080, 20160];
+      return [5040, 20160];
     }
 
     function btUpdateHorizonOptions() {
@@ -2183,11 +2192,15 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (cfw) cfw.style.display = (cOn && (document.getElementById('btContrarianMode')?.value || 'direction_only') !== 'ml_invert') ? '' : 'none';
       // expiration/tenor controls
       const em = document.getElementById('btExpMode')?.value || '0dte';
-      const showTerm = (em === 'target_dte');
+      const showTerm = (em === 'target_dte' || em === 'current_week_friday');
+      const showTarget = (em === 'target_dte');
+      const showWeekly = (em === 'current_week_friday');
       const tw = document.getElementById('btTargetDteWrap');
       const tolw = document.getElementById('btDteTolWrap');
-      if (tw) tw.style.display = showTerm ? '' : 'none';
-      if (tolw) tolw.style.display = showTerm ? '' : 'none';
+      const whw = document.getElementById('btWeeklyHModeWrap');
+      if (tw) tw.style.display = showTarget ? '' : 'none';
+      if (tolw) tolw.style.display = showTarget ? '' : 'none';
+      if (whw) whw.style.display = showWeekly ? '' : 'none';
     
 
 
@@ -2203,9 +2216,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     function btExpKey() {
       const em = document.getElementById('btExpMode')?.value || '0dte';
       if (em === '0dte') return 'exp0dte';
-      const td = parseInt(document.getElementById('btTargetDte')?.value || '7', 10);
+      if (em === 'current_week_friday') return 'expcwf';
+      const td = parseInt(document.getElementById('btTargetDte')?.value || '14', 10);
       const tol = parseInt(document.getElementById('btDteTol')?.value || '2', 10);
-      const td2 = Number.isFinite(td) ? td : 7;
+      const td2 = Number.isFinite(td) ? td : 14;
       const tol2 = Number.isFinite(tol) ? tol : 2;
       return `dte${td2}t${tol2}`;
     }
@@ -2363,8 +2377,15 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       // expiration extras (only when applicable)
       if (expiration_mode === 'target_dte') {
-        base.target_dte_days = parseInt(document.getElementById('btTargetDte')?.value || '7', 10);
+        base.target_dte_days = parseInt(document.getElementById('btTargetDte')?.value || '14', 10);
         base.dte_tolerance_days = parseInt(document.getElementById('btDteTol')?.value || '2', 10);
+      } else if (expiration_mode === 'current_week_friday') {
+        base.target_dte_days = 7;
+        base.dte_tolerance_days = 2;
+        base.term_bucket = 'term_dte7t2';
+        const hmode = document.getElementById('btWeeklyHMode')?.value || 'quarter';
+        base.weekly_horizon_mode = hmode;
+        base.horizon_profile = hmode;
       }
 
       // entry window extras (only when applicable)
@@ -2443,6 +2464,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       setv('btExpMode', p.expiration_mode);
       setv('btTargetDte', p.target_dte_days);
       setv('btDteTol', p.dte_tolerance_days);
+      setv('btWeeklyHMode', p.weekly_horizon_mode || p.horizon_profile);
       setv('btH', p.horizon_minutes);
 
       // If horizon is a value not present in the <select> options (e.g. sampler found 70), add it so reruns match.
@@ -2579,9 +2601,13 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const sm = (p.strategy_mode === 'structural_walls') ? 'sw' : ((p.strategy_mode === 'flow_regime') ? 'fr' : 'ab');
       let exp = '0dte';
       if (p.expiration_mode && p.expiration_mode !== '0dte') {
-        const td = (p.target_dte_days ?? 'x');
-        const tol = (p.dte_tolerance_days ?? 'x');
-        exp = `dte${td}t${tol}`;
+        if (String(p.expiration_mode) === 'current_week_friday') {
+          exp = 'wkfri';
+        } else {
+          const td = (p.target_dte_days ?? 'x');
+          const tol = (p.dte_tolerance_days ?? 'x');
+          exp = `dte${td}t${tol}`;
+        }
       }
 
       const h = (p.horizon_minutes != null) ? `H${p.horizon_minutes}` : 'H?';
