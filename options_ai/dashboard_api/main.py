@@ -2069,6 +2069,32 @@ def create_app() -> FastAPI:
             return False
         return True
 
+    def _current_week_friday_for_snapshot(snapshot_ts: str | datetime, *, tz: ZoneInfo = CENTRAL_TZ) -> date | None:
+        try:
+            ts = snapshot_ts if isinstance(snapshot_ts, datetime) else datetime.fromisoformat(str(snapshot_ts).replace('Z', '+00:00'))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            local_dt = ts.astimezone(tz)
+            days_to_friday = max(0, 4 - int(local_dt.weekday()))
+            return local_dt.date() + timedelta(days=days_to_friday)
+        except Exception:
+            return None
+
+    def _weekly_remaining_minutes_to_close(snapshot_ts: str | datetime, *, close_hour_ct: int = 15, close_minute_ct: int = 0) -> int | None:
+        try:
+            ts = snapshot_ts if isinstance(snapshot_ts, datetime) else datetime.fromisoformat(str(snapshot_ts).replace('Z', '+00:00'))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            local_dt = ts.astimezone(CENTRAL_TZ)
+            fri = _current_week_friday_for_snapshot(local_dt, tz=CENTRAL_TZ)
+            if fri is None:
+                return None
+            close_dt = datetime(fri.year, fri.month, fri.day, int(close_hour_ct), int(close_minute_ct), tzinfo=CENTRAL_TZ)
+            mins = int((close_dt - local_dt).total_seconds() // 60)
+            return max(1, mins)
+        except Exception:
+            return None
+
     def _engine_pick_candidate_for_line(*, snapshot_ts: str, params: dict[str, Any]) -> dict[str, Any] | None:
         dsn = _pg_dsn()
         if not dsn:
@@ -2081,19 +2107,102 @@ def create_app() -> FastAPI:
         if not _is_now_in_entry_window_ct(params or {}):
             return None
 
+        p = params or {}
+        exp_mode = str(p.get('expiration_mode') or '0dte').strip().lower()
+        term_mode = exp_mode in {'target_dte', 'current_week_friday'}
+
         try:
-            hz = int((params or {}).get('horizon_minutes') or 30)
+            hz = int((p or {}).get('horizon_minutes') or 30)
         except Exception:
             hz = 30
-        min_p = float((params or {}).get('min_p_bigwin') or 0.0)
-        min_pred = float((params or {}).get('min_pred_change') or 0.0)
-        spread_hint = str((params or {}).get('spread_type') or (params or {}).get('option_side') or '').strip().upper()
-        allowed = None
-        if spread_hint in {'CALL','PUT'}:
-            allowed = spread_hint
+
+        # Weekly profile: if horizon looks intraday/default, derive a dynamic target from remaining time.
+        # Then snap to nearest available scored horizon at this snapshot/expiration.
+        if term_mode and exp_mode == 'current_week_friday' and hz <= 180:
+            rem = _weekly_remaining_minutes_to_close(snapshot_ts)
+            hm = str(p.get('weekly_horizon_mode') or p.get('horizon_profile') or 'quarter').strip().lower()
+            if rem is not None:
+                hz = max(1, int(rem if hm in {'full', '100', '100%'} else max(15, round(0.25 * rem))))
+
+        min_p = float((p or {}).get('min_p_bigwin') or 0.0)
+        min_pred = float((p or {}).get('min_pred_change') or 0.0)
+        spread_hint = str((p or {}).get('spread_type') or (p or {}).get('option_side') or '').strip().upper()
+        allowed = spread_hint if spread_hint in {'CALL', 'PUT'} else None
 
         with _pg_connect(dsn) as conn:
             with conn.cursor() as cur:
+                if not term_mode:
+                    cur.execute(
+                        """
+                        SELECT
+                          c.anchor_type,
+                          c.spread_type,
+                          c.anchor_strike,
+                          c.k_long,
+                          c.k_short,
+                          c.debit_points,
+                          c.long_symbol,
+                          c.short_symbol,
+                          s.pred_change,
+                          s.p_bigwin
+                        FROM spx.debit_spread_candidates_0dte c
+                        JOIN spx.chain_features_0dte f ON f.snapshot_ts = c.snapshot_ts
+                        JOIN spx.debit_spread_scores_0dte s
+                          ON s.snapshot_ts = c.snapshot_ts
+                         AND s.horizon_minutes = %s
+                         AND s.anchor_type = c.anchor_type
+                         AND s.spread_type = c.spread_type
+                        WHERE c.snapshot_ts = %s
+                          AND c.tradable = true
+                          AND f.low_quality = false
+                          AND s.p_bigwin IS NOT NULL
+                          AND s.pred_change IS NOT NULL
+                          AND s.p_bigwin >= %s
+                          AND s.pred_change >= %s
+                          AND (%s::text IS NULL OR c.spread_type = %s::text)
+                        ORDER BY s.p_bigwin DESC NULLS LAST, s.pred_change DESC NULLS LAST, c.debit_points ASC NULLS LAST
+                        LIMIT 1
+                        """,
+                        (int(hz), snapshot_ts, float(min_p), float(min_pred), allowed, allowed),
+                    )
+                    r = cur.fetchone()
+                    if not r:
+                        return None
+                    return {
+                        'snapshot_ts': snapshot_ts,
+                        'underlying': underlying,
+                        'anchor_type': r[0],
+                        'spread_type': r[1],
+                        'anchor_strike': float(r[2]) if r[2] is not None else None,
+                        'k_long': float(r[3]) if r[3] is not None else None,
+                        'k_short': float(r[4]) if r[4] is not None else None,
+                        'debit_points': float(r[5]) if r[5] is not None else None,
+                        'long_symbol': r[6],
+                        'short_symbol': r[7],
+                        'pred_change': float(r[8]) if r[8] is not None else None,
+                        'p_bigwin': float(r[9]) if r[9] is not None else None,
+                    }
+
+                term_bucket = str(p.get('term_bucket') or os.getenv('TERM_BUCKET') or 'term_dte7t2').strip()
+                target_dte = int(p.get('target_dte_days') or os.getenv('TARGET_DTE_DAYS') or 7)
+                dte_tol = int(p.get('dte_tolerance_days') or os.getenv('DTE_TOLERANCE_DAYS') or 2)
+                exp_date = _current_week_friday_for_snapshot(snapshot_ts) if exp_mode == 'current_week_friday' else None
+
+                # Snap requested horizon to nearest scored horizon for this snapshot/bucket(/expiration)
+                cur.execute(
+                    """
+                    SELECT DISTINCT s.horizon_minutes
+                    FROM spx.debit_spread_scores_term s
+                    WHERE s.snapshot_ts = %s
+                      AND s.term_bucket = %s
+                      AND (%s::date IS NULL OR s.expiration_date = %s::date)
+                    ORDER BY 1 ASC
+                    """,
+                    (snapshot_ts, term_bucket, exp_date, exp_date),
+                )
+                hs = [int(rh[0]) for rh in cur.fetchall() if rh and rh[0] is not None]
+                hz_eff = min(hs, key=lambda h: abs(int(h) - int(hz))) if hs else int(hz)
+
                 cur.execute(
                     """
                     SELECT
@@ -2106,15 +2215,26 @@ def create_app() -> FastAPI:
                       c.long_symbol,
                       c.short_symbol,
                       s.pred_change,
-                      s.p_bigwin
-                    FROM spx.debit_spread_candidates_0dte c
-                    JOIN spx.chain_features_0dte f ON f.snapshot_ts = c.snapshot_ts
-                    JOIN spx.debit_spread_scores_0dte s
+                      s.p_bigwin,
+                      c.expiration_date,
+                      s.horizon_minutes
+                    FROM spx.debit_spread_candidates_term c
+                    JOIN spx.chain_features_term f
+                      ON f.snapshot_ts = c.snapshot_ts
+                     AND f.expiration_date = c.expiration_date
+                     AND f.term_bucket = c.term_bucket
+                    JOIN spx.debit_spread_scores_term s
                       ON s.snapshot_ts = c.snapshot_ts
+                     AND s.expiration_date = c.expiration_date
+                     AND s.term_bucket = c.term_bucket
                      AND s.horizon_minutes = %s
                      AND s.anchor_type = c.anchor_type
                      AND s.spread_type = c.spread_type
                     WHERE c.snapshot_ts = %s
+                      AND c.term_bucket = %s
+                      AND c.target_dte_days = %s
+                      AND c.dte_tolerance_days = %s
+                      AND (%s::date IS NULL OR c.expiration_date = %s::date)
                       AND c.tradable = true
                       AND f.low_quality = false
                       AND s.p_bigwin IS NOT NULL
@@ -2125,7 +2245,7 @@ def create_app() -> FastAPI:
                     ORDER BY s.p_bigwin DESC NULLS LAST, s.pred_change DESC NULLS LAST, c.debit_points ASC NULLS LAST
                     LIMIT 1
                     """,
-                    (int(hz), snapshot_ts, float(min_p), float(min_pred), allowed, allowed),
+                    (int(hz_eff), snapshot_ts, term_bucket, int(target_dte), int(dte_tol), exp_date, exp_date, float(min_p), float(min_pred), allowed, allowed),
                 )
                 r = cur.fetchone()
                 if not r:
@@ -2143,8 +2263,11 @@ def create_app() -> FastAPI:
                     'short_symbol': r[7],
                     'pred_change': float(r[8]) if r[8] is not None else None,
                     'p_bigwin': float(r[9]) if r[9] is not None else None,
+                    'expiration_date': str(r[10]) if r[10] is not None else None,
+                    'horizon_minutes': int(r[11]) if r[11] is not None else int(hz_eff),
+                    'term_bucket': term_bucket,
+                    'expiration_mode': exp_mode,
                 }
-
     def _engine_new_snapshots_since(last_source_ts: str | None, *, max_n: int = 50) -> list[str]:
         dsn = _pg_dsn()
         if not dsn:
@@ -2153,29 +2276,43 @@ def create_app() -> FastAPI:
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    WITH u AS (
+                      SELECT snapshot_ts
+                      FROM spx.debit_spread_scores_0dte
+                      WHERE (%s::timestamptz IS NULL OR snapshot_ts > %s::timestamptz)
+                      UNION ALL
+                      SELECT snapshot_ts
+                      FROM spx.debit_spread_scores_term
+                      WHERE (%s::timestamptz IS NULL OR snapshot_ts > %s::timestamptz)
+                    )
                     SELECT DISTINCT snapshot_ts
-                    FROM spx.debit_spread_scores_0dte
-                    WHERE (%s::timestamptz IS NULL OR snapshot_ts > %s::timestamptz)
+                    FROM u
                     ORDER BY snapshot_ts ASC
                     LIMIT %s
                     """,
-                    (last_source_ts if last_source_ts else None, last_source_ts if last_source_ts else None, int(max_n)),
+                    (last_source_ts if last_source_ts else None, last_source_ts if last_source_ts else None, last_source_ts if last_source_ts else None, last_source_ts if last_source_ts else None, int(max_n)),
                 )
                 return [str(r[0]) for r in cur.fetchall()]
-
-
     def _engine_latest_snapshot_ts() -> str | None:
         dsn = _pg_dsn()
         if not dsn:
             return None
         with _pg_connect(dsn) as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_scores_0dte")
+                cur.execute(
+                    """
+                    SELECT max(ts)
+                    FROM (
+                      SELECT max(snapshot_ts) AS ts FROM spx.debit_spread_scores_0dte
+                      UNION ALL
+                      SELECT max(snapshot_ts) AS ts FROM spx.debit_spread_scores_term
+                    ) q
+                    """
+                )
                 r = cur.fetchone()
                 if not r or not r[0]:
                     return None
                 return str(r[0])
-
     def _params_have_leg_symbols(params: dict[str, Any]) -> bool:
         p = params or {}
         long_sym = str(p.get('long_symbol') or '').strip()

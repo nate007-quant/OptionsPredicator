@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Any
+from datetime import date, datetime, timedelta
+from typing import Literal
 
 import psycopg
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,71 @@ def pick_expiration_for_target_dte(
             return None
 
         return PickedExpiration(expiration_date=exp, dte_days=int(dte_days), dte_diff=int(dte_diff))
+
+
+def _current_week_friday_local_date(*, snapshot_ts: datetime, tz_local: str) -> date:
+    tz = ZoneInfo(str(tz_local or "America/Chicago"))
+    local_dt = snapshot_ts.astimezone(tz)
+    # Monday=0 ... Friday=4
+    days_to_friday = max(0, 4 - int(local_dt.weekday()))
+    return (local_dt.date() + timedelta(days=days_to_friday))
+
+
+def pick_current_week_friday_expiration(
+    conn: psycopg.Connection,
+    *,
+    snapshot_ts: datetime,
+    tz_local: str,
+) -> PickedExpiration | None:
+    """Pick expiration that exactly matches current week's Friday (local).
+
+    Returns None if that Friday expiration is not present in the chain snapshot.
+    """
+    friday = _current_week_friday_local_date(snapshot_ts=snapshot_ts, tz_local=tz_local)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              expiration_date,
+              ((expiration_date - (%s AT TIME ZONE %s)::date))::int AS dte_days
+            FROM spx.option_chain
+            WHERE snapshot_ts = %s
+              AND expiration_date = %s
+            GROUP BY expiration_date
+            LIMIT 1
+            """,
+            (snapshot_ts, tz_local, snapshot_ts, friday),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None
+        exp = r[0]
+        dte_days = int(r[1]) if r[1] is not None else None
+        if exp is None or dte_days is None:
+            return None
+        return PickedExpiration(expiration_date=exp, dte_days=int(dte_days), dte_diff=0)
+
+
+def pick_expiration(
+    conn: psycopg.Connection,
+    *,
+    snapshot_ts: datetime,
+    expiration_mode: Literal["target_dte", "current_week_friday"] = "target_dte",
+    target_dte_days: int,
+    dte_tolerance_days: int,
+    tz_local: str,
+) -> PickedExpiration | None:
+    mode = str(expiration_mode or "target_dte").strip().lower()
+    if mode == "current_week_friday":
+        return pick_current_week_friday_expiration(conn, snapshot_ts=snapshot_ts, tz_local=tz_local)
+    return pick_expiration_for_target_dte(
+        conn,
+        snapshot_ts=snapshot_ts,
+        target_dte_days=target_dte_days,
+        dte_tolerance_days=dte_tolerance_days,
+        tz_local=tz_local,
+    )
 
 
 def term_bucket_name(*, target_dte_days: int, dte_tolerance_days: int) -> str:

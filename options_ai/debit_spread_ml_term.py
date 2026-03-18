@@ -29,6 +29,9 @@ class DebitMLTermConfig:
 
     horizons_minutes: tuple[int, ...] = (5760, 10080)
 
+    target_mode: str = "return"  # return|change
+    bigwin_label_mode: str = "return_threshold"  # return_threshold|multiple
+    bigwin_return_threshold: float = 0.30
     bigwin_mult_atm: float = 2.0
     bigwin_mult_wall: float = 4.0
 
@@ -176,7 +179,9 @@ def _fetch_training_rows(conn: psycopg.Connection, *, term_bucket: str, horizon_
         cur.execute(
             """
             SELECT
-              l.change, l.debit_t, l.debit_tH,
+              l.change,
+              CASE WHEN l.debit_t > 0 THEN l.change / l.debit_t ELSE NULL END AS ret_pct,
+              l.debit_t, l.debit_tH,
               c.anchor_type, c.spread_type,
               c.debit_points, c.anchor_strike, c.k_long, c.k_short,
               f.spot, f.atm_iv, f.skew_25d, f.bf_25d, f.pcr_volume, f.pcr_oi,
@@ -206,20 +211,21 @@ def _fetch_training_rows(conn: psycopg.Connection, *, term_bucket: str, horizon_
         rows = []
         for r in cur.fetchall():
             # derived numeric
-            k_long = _as_float(r[7])
-            k_short = _as_float(r[8])
+            k_long = _as_float(r[8])
+            k_short = _as_float(r[9])
             width = abs(float(k_short) - float(k_long)) if k_long is not None and k_short is not None else None
-            anchor_strike = _as_float(r[6])
-            spot = _as_float(r[9])
+            anchor_strike = _as_float(r[7])
+            spot = _as_float(r[10])
             anchor_to_spot = (float(anchor_strike) - float(spot)) if anchor_strike is not None and spot is not None else None
             rows.append(
                 {
-                    "y": _as_float(r[0]),
-                    "debit_t": _as_float(r[1]),
-                    "debit_tH": _as_float(r[2]),
-                    "anchor_type": r[3],
-                    "spread_type": r[4],
-                    "debit_points": _as_float(r[5]),
+                    "change": _as_float(r[0]),
+                    "ret_pct": _as_float(r[1]),
+                    "debit_t": _as_float(r[2]),
+                    "debit_tH": _as_float(r[3]),
+                    "anchor_type": r[4],
+                    "spread_type": r[5],
+                    "debit_points": _as_float(r[6]),
                     "anchor_strike": anchor_strike,
                     "k_long": k_long,
                     "k_short": k_short,
@@ -227,14 +233,14 @@ def _fetch_training_rows(conn: psycopg.Connection, *, term_bucket: str, horizon_
                     "spot": spot,
                     "anchor_to_spot": anchor_to_spot,
                     "abs_anchor_to_spot": abs(anchor_to_spot) if anchor_to_spot is not None else None,
-                    "atm_iv": _as_float(r[10]),
-                    "skew_25d": _as_float(r[11]),
-                    "bf_25d": _as_float(r[12]),
-                    "pcr_volume": _as_float(r[13]),
-                    "pcr_oi": _as_float(r[14]),
-                    "contract_count": _as_float(r[15]),
-                    "valid_iv_count": _as_float(r[16]),
-                    "valid_mid_count": _as_float(r[17]),
+                    "atm_iv": _as_float(r[11]),
+                    "skew_25d": _as_float(r[12]),
+                    "bf_25d": _as_float(r[13]),
+                    "pcr_volume": _as_float(r[14]),
+                    "pcr_oi": _as_float(r[15]),
+                    "contract_count": _as_float(r[16]),
+                    "valid_iv_count": _as_float(r[17]),
+                    "valid_mid_count": _as_float(r[18]),
                 }
             )
         return rows
@@ -281,7 +287,6 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLTermConfig, *, horizon
             pass
 
     rows = _fetch_training_rows(conn, term_bucket=cfg.term_bucket, horizon_minutes=int(horizon_minutes), limit=int(cfg.max_train_rows))
-    rows = [r for r in rows if r.get("y") is not None]
 
     if len(rows) < int(cfg.min_train_rows):
         return None
@@ -303,17 +308,38 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLTermConfig, *, horizon
         m = np.zeros_like(x, dtype=bool)
         m[: len(_NUM_FEATURES)] = np.array(num_mask, dtype=bool)
 
-        X_list.append(x)
-        mask_list.append(m)
-        y_list.append(float(r["y"]))
-
+        change = _as_float(r.get("change"))
+        ret_pct = _as_float(r.get("ret_pct"))
         debit_t = _as_float(r.get("debit_t"))
         debit_tH = _as_float(r.get("debit_tH"))
-        mult = _bigwin_required_mult(str(r.get("anchor_type") or ""), mult_atm=cfg.bigwin_mult_atm, mult_wall=cfg.bigwin_mult_wall)
+
+        if ret_pct is None and change is not None and debit_t is not None and debit_t > 0:
+            ret_pct = float(change) / float(debit_t)
+
+        if str(cfg.target_mode).lower() == "change":
+            y_val = change
+        else:
+            y_val = ret_pct
+
+        if y_val is None:
+            continue
+
+        X_list.append(x)
+        mask_list.append(m)
+        y_list.append(float(y_val))
+
         big = 0
-        if debit_t is not None and debit_tH is not None and debit_t > 0:
-            big = 1 if float(debit_tH) >= float(mult) * float(debit_t) else 0
+        if str(cfg.bigwin_label_mode).lower() == "multiple":
+            mult = _bigwin_required_mult(str(r.get("anchor_type") or ""), mult_atm=cfg.bigwin_mult_atm, mult_wall=cfg.bigwin_mult_wall)
+            if debit_t is not None and debit_tH is not None and debit_t > 0:
+                big = 1 if float(debit_tH) >= float(mult) * float(debit_t) else 0
+        else:
+            if ret_pct is not None:
+                big = 1 if float(ret_pct) >= float(cfg.bigwin_return_threshold) else 0
         y_bigwin.append(int(big))
+
+    if not X_list:
+        return 0
 
     X_raw = np.vstack(X_list)
     mask = np.vstack(mask_list)
@@ -341,6 +367,9 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLTermConfig, *, horizon
         "clf": clf,
         "impute": impute,
         "feature_names": feat_names or [],
+        "target_mode": str(cfg.target_mode),
+        "bigwin_label_mode": str(cfg.bigwin_label_mode),
+        "bigwin_return_threshold": float(cfg.bigwin_return_threshold),
         "trained_at": trained_at,
         "horizon_minutes": int(horizon_minutes),
         "model_version": str(cfg.model_version),
@@ -417,6 +446,7 @@ def _score_one(conn: psycopg.Connection, cfg: DebitMLTermConfig, tm: _TrainedMod
     X_list = []
     mask_list = []
     keys = []
+    debits = []
 
     for rr in rows:
         anchor_type = str(rr[0])
@@ -457,6 +487,10 @@ def _score_one(conn: psycopg.Connection, cfg: DebitMLTermConfig, tm: _TrainedMod
         X_list.append(x)
         mask_list.append(m)
         keys.append((anchor_type, spread_type))
+        debits.append(debit_points)
+
+    if not X_list:
+        return 0
 
     X_raw = np.vstack(X_list)
     mask = np.vstack(mask_list)
@@ -474,6 +508,7 @@ def _score_one(conn: psycopg.Connection, cfg: DebitMLTermConfig, tm: _TrainedMod
     with conn.cursor() as cur:
         for idx, ((anchor_type, spread_type), pred) in enumerate(zip(keys, preds, strict=True)):
             pb = float(p_big[idx]) if p_big is not None else None
+            debit_now = debits[idx] if idx < len(debits) else None
             cur.execute(
                 UPSERT_SCORE_SQL,
                 {
@@ -483,7 +518,7 @@ def _score_one(conn: psycopg.Connection, cfg: DebitMLTermConfig, tm: _TrainedMod
                     "term_bucket": cfg.term_bucket,
                     "anchor_type": anchor_type,
                     "spread_type": spread_type,
-                    "pred_change": float(pred),
+                    "pred_change": (float(pred) if str(cfg.target_mode).lower() == "change" else (float(pred) * float(debit_now) if debit_now is not None else float(pred))),
                     "p_bigwin": pb,
                     "model_version": str(cfg.model_version),
                     "trained_at": tm.trained_at,
@@ -543,6 +578,9 @@ def load_config_from_env() -> DebitMLTermConfig:
         target_dte_days=target,
         dte_tolerance_days=tol,
         horizons_minutes=horizons,
+        target_mode=os.getenv("DEBIT_ML_TARGET_MODE", "return"),
+        bigwin_label_mode=os.getenv("DEBIT_BIGWIN_LABEL_MODE", "return_threshold"),
+        bigwin_return_threshold=float(os.getenv("DEBIT_BIGWIN_RETURN_THRESHOLD", "0.30")),
         bigwin_mult_atm=float(os.getenv("DEBIT_ML_BIGWIN_MULT_ATM", "2.0")),
         bigwin_mult_wall=float(os.getenv("DEBIT_ML_BIGWIN_MULT_WALL", "4.0")),
         min_train_rows=int(os.getenv("DEBIT_ML_MIN_TRAIN_ROWS", "100")),

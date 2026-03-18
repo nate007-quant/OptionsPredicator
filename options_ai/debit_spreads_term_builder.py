@@ -8,7 +8,7 @@ from typing import Any
 
 import psycopg
 
-from options_ai.term_expiration import pick_expiration_for_target_dte, term_bucket_name
+from options_ai.term_expiration import pick_expiration, term_bucket_name
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,7 @@ class DebitSpreadTermConfig:
 
     target_dte_days: int = 7
     dte_tolerance_days: int = 2
+    expiration_mode: str = "target_dte"  # target_dte | current_week_friday
     term_bucket: str = ""
 
     horizons_minutes: tuple[int, ...] = (5760, 10080)
@@ -377,9 +378,10 @@ def _fetch_atm_spot_from_features(conn: psycopg.Connection, *, snapshot_ts: date
 
 
 def compute_candidates_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: datetime, cfg: DebitSpreadTermConfig) -> int:
-    picked = pick_expiration_for_target_dte(
+    picked = pick_expiration(
         conn,
         snapshot_ts=snapshot_ts,
+        expiration_mode=str(cfg.expiration_mode),
         target_dte_days=int(cfg.target_dte_days),
         dte_tolerance_days=int(cfg.dte_tolerance_days),
         tz_local=str(cfg.tz_local),
@@ -741,6 +743,7 @@ def load_config_from_env() -> DebitSpreadTermConfig:
 
     target = int(os.getenv("TARGET_DTE_DAYS", "7"))
     tol = int(os.getenv("DTE_TOLERANCE_DAYS", "2"))
+    expiration_mode = str(os.getenv("EXPIRATION_MODE", "target_dte") or "target_dte").strip().lower()
     bucket = os.getenv("TERM_BUCKET", "").strip() or term_bucket_name(target_dte_days=target, dte_tolerance_days=tol)
 
     horizons_s = os.getenv("DEBIT_HORIZONS_MINUTES", "5760,10080").strip() or "5760,10080"
@@ -751,6 +754,7 @@ def load_config_from_env() -> DebitSpreadTermConfig:
         tz_local=tz_local,
         target_dte_days=target,
         dte_tolerance_days=tol,
+        expiration_mode=expiration_mode,
         term_bucket=bucket,
         horizons_minutes=horizons,
         max_future_lookahead_minutes=int(os.getenv("MAX_FUTURE_LOOKAHEAD_MINUTES", "20160")),
