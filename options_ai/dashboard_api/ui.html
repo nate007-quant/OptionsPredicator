@@ -1142,7 +1142,7 @@
 
 current_week_friday: use this week's Friday expiration (weekly profile).
 
-target_dte: pick an expiration near Target DTE using DTE tolerance.">i</span>
+target_dte: advanced term mode (non-weekly) using target DTE + tolerance.">i</span>
                     <select id="btExpMode">
                       <option value="0dte" selected>0dte</option>
                       <option value="current_week_friday">current_week_friday</option>
@@ -1176,7 +1176,7 @@ DTE is computed using the local trade date (Central time).">i</span>
 
 0DTE: intraday horizons.
 Weekly Friday: use weekly_horizon_mode and this value is snapped to nearest available weekly scored horizon.
-TERM target_dte: multi-day fixed horizons.">i</span>
+Advanced target_dte: multi-day fixed horizons.">i</span>
                     <select id="btH" style="width:140px;"></select>
                   </label>
                 </div>
@@ -1581,7 +1581,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
               <fieldset class="fs" style="margin-top:12px;">
                 <legend>Group Manager</legend>
-                <div class="hint">Manage logical groups (Live, Sandbox-0DTE, Sandbox-30DTE, etc.). Each group is evaluated independently below.</div>
+                <div class="hint">Manage logical groups (Live, Sandbox-0DTE, Sandbox-Weekly-Friday, etc.). Each group is evaluated independently below.</div>
                 <div class="row" style="margin-top:8px;">
                   <label>Portfolio
                     <select id="pfPortfolioSelect" style="min-width:240px;">
