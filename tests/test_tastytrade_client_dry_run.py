@@ -22,13 +22,17 @@ def test_place_order_dry_run_returns_payload() -> None:
     assert out["payload"]["price-effect"] == "Debit"
 
 
-def test_headers_use_raw_session_token() -> None:
+def test_headers_prefix_bare_session_token_as_bearer() -> None:
     c = TastytradeClient(base_url="https://api.cert.tastyworks.com", dry_run=True, session_token="abc123")
     h = c._headers()
-    assert h["Authorization"] == "abc123"
+    assert h["Authorization"] == "Bearer abc123"
 
 
 def test_headers_preserve_prefixed_session_token() -> None:
     c = TastytradeClient(base_url="https://api.cert.tastyworks.com", dry_run=True, session_token="Bearer abc123")
     h = c._headers()
     assert h["Authorization"] == "Bearer abc123"
+
+
+def test_authorization_helper_returns_none_for_empty() -> None:
+    assert TastytradeClient._authorization_header_value("") is None

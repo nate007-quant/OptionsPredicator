@@ -165,7 +165,7 @@ class TastytradeClient:
     """Minimal Tastytrade REST adapter with dry-run support.
 
     Auth notes:
-      - If `session_token` is provided, it is used directly as Bearer token.
+      - If `session_token` is provided, it is used as OAuth2 bearer token.
       - Else if username/password are available, client can call `authenticate()`.
     """
 
@@ -202,15 +202,28 @@ class TastytradeClient:
         self.http_max_retries = max(0, int(http_max_retries))
         self.http_backoff_seconds = max(0.0, float(http_backoff_seconds))
 
+    @staticmethod
+    def _authorization_header_value(token: str | None) -> str | None:
+        """Normalize token to docs-compliant OAuth2 Bearer header value.
+
+        tastytrade API overview specifies:
+          Authorization: Bearer <access_token>
+        """
+        t = str(token or "").strip()
+        if not t:
+            return None
+        if t.lower().startswith("bearer "):
+            return t
+        return f"Bearer {t}"
+
     def _headers(self) -> dict[str, str]:
         h = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        if self.session_token:
-            # Tastytrade expects raw session token in Authorization header
-            # (not Bearer scheme). If caller provides a prefixed value, preserve it.
-            h["Authorization"] = self.session_token
+        auth = self._authorization_header_value(self.session_token)
+        if auth:
+            h["Authorization"] = auth
         if self.target_api_version:
             h["Accept-Version"] = str(self.target_api_version)
         return h
