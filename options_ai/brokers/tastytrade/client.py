@@ -191,10 +191,6 @@ class TastytradeClient:
         self.session_token = (session_token or os.getenv("TASTY_SESSION_TOKEN") or "").strip() or None
         self.username = (username or os.getenv("TASTY_USERNAME") or "").strip() or None
         self.password = (password or os.getenv("TASTY_PASSWORD") or "").strip() or None
-        # Hardening: if credentials are present, prefer fresh session auth over
-        # potentially stale pre-seeded token from env.
-        if self.session_token and self.username and self.password:
-            self.session_token = None
         self.account_number = (account_number or os.getenv("TASTY_ACCOUNT_NUMBER") or "").strip() or None
         self.timeout_seconds = int(timeout_seconds)
         self.dry_run = bool(dry_run)
@@ -288,6 +284,7 @@ class TastytradeClient:
 
         payload = {"login": self.username, "password": self.password}
         last_exc: Exception | None = None
+        attempt_errors: list[str] = []
         for path in ("/sessions", "/sessions/"):
             try:
                 resp = self._request("POST", path, json_body=payload)
@@ -303,13 +300,17 @@ class TastytradeClient:
             except httpx.HTTPStatusError as e:
                 last_exc = e
                 code = int(e.response.status_code) if e.response is not None else 0
+                attempt_errors.append(f"{path} -> HTTP {code}")
                 if code not in {404, 405}:
                     raise
-                # try next path variant
+                continue
+            except Exception as e:
+                last_exc = e
+                attempt_errors.append(f"{path} -> {type(e).__name__}: {e}")
                 continue
 
         if last_exc:
-            raise last_exc
+            raise RuntimeError(f"tasty authenticate failed after attempts: {attempt_errors}") from last_exc
         raise RuntimeError("tasty authenticate failed")
 
     def place_order(self, dto: OrderDTO, *, dry_run: bool | None = None) -> dict[str, Any]:

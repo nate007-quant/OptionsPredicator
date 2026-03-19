@@ -36,3 +36,15 @@ def test_headers_preserve_prefixed_session_token() -> None:
 
 def test_authorization_helper_returns_none_for_empty() -> None:
     assert TastytradeClient._authorization_header_value("") is None
+
+
+def test_prefers_existing_session_token_even_when_credentials_present() -> None:
+    c = TastytradeClient(
+        base_url="https://api.cert.tastyworks.com",
+        dry_run=True,
+        session_token="abc123",
+        username="user",
+        password="pass",
+    )
+    assert c.session_token == "abc123"
+    assert c._headers()["Authorization"] == "Bearer abc123"
