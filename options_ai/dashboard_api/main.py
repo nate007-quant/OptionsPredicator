@@ -5284,6 +5284,9 @@ def create_app() -> FastAPI:
             series.append(cur)
 
         latest = series[-1] if series else None
+        pg_dsn = os.getenv('POSTGRES_DATABASE_URL', '').strip() or os.getenv('PRIMARY_POSTGRES_DATABASE_URL', '').strip()
+        ts_dsn = os.getenv('TIMESCALE_DATABASE_URL', '').strip() or os.getenv('SPX_CHAIN_DATABASE_URL', '').strip()
+        same_dsn = bool(pg_dsn and ts_dsn and (pg_dsn == ts_dsn))
         return {
             'window': window,
             'resolution': resolution,
@@ -5292,8 +5295,9 @@ def create_app() -> FastAPI:
             'latest': latest,
             'postgres_db': (latest.get('postgres_db_name') if latest else None),
             'timescale_db': (latest.get('timescale_db_name') if latest else None),
-            'postgres_dsn_configured': bool(os.getenv('POSTGRES_DATABASE_URL', '').strip() or os.getenv('PRIMARY_POSTGRES_DATABASE_URL', '').strip() or os.getenv('DATABASE_URL', '').strip().startswith('postgres')),
-            'timescale_dsn_configured': bool(os.getenv('TIMESCALE_DATABASE_URL', '').strip() or _pg_dsn()),
+            'postgres_dsn_configured': bool(pg_dsn),
+            'timescale_dsn_configured': bool(ts_dsn),
+            'same_dsn_detected': same_dsn,
         }
 
     @app.get('/api/metrics/database/summary')

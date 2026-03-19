@@ -5329,27 +5329,112 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const c = document.getElementById('opsStorageTrend');
       if (!c) return;
       const rows = Array.isArray(storage?.series) ? storage.series : [];
-      const labels = rows.map(r => String(r.sample_minute_utc || '').replace('T',' ').slice(5,16));
       const gb = (x) => (x === null || x === undefined || Number.isNaN(Number(x))) ? null : (Number(x) / (1024*1024*1024));
+
+      const tVals = rows.map(r => {
+        const t = Date.parse(String(r.sample_minute_utc || ''));
+        return Number.isFinite(t) ? t : null;
+      });
+      const validT = tVals.filter(v => Number.isFinite(v));
+      const spanMs = validT.length >= 2 ? (Math.max(...validT) - Math.min(...validT)) : 0;
+
+      const xLabel = spanMs >= 36*3600*1000 ? 'Date' : 'Time';
+      const xTickFmt = (ms) => {
+        if (!Number.isFinite(ms)) return '';
+        const d = new Date(ms);
+        if (spanMs >= 14*24*3600*1000) {
+          return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`;
+        }
+        if (spanMs >= 36*3600*1000) {
+          return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:00`;
+        }
+        return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      };
+
+      const pgDb = storage?.postgres_db ? String(storage.postgres_db) : 'PostgreSQL';
+      const tsDb = storage?.timescale_db ? String(storage.timescale_db) : 'Timescale';
+
       const data = {
-        labels,
         datasets: [
-          { label: 'PostgreSQL used (GB)', data: rows.map(r => gb(r.postgres_bytes)), borderColor: '#60a5fa', tension: 0.2 },
-          { label: 'Timescale used (GB)', data: rows.map(r => gb(r.timescale_bytes)), borderColor: '#a78bfa', tension: 0.2 },
+          {
+            label: `PostgreSQL (${pgDb})`,
+            data: rows.map((r, i) => ({ x: tVals[i], y: gb(r.postgres_bytes) })),
+            borderColor: '#60a5fa',
+            backgroundColor: 'rgba(96,165,250,0.2)',
+            yAxisID: 'yPg',
+            tension: 0.2,
+            pointRadius: 0,
+            spanGaps: true,
+          },
+          {
+            label: `Timescale (${tsDb})`,
+            data: rows.map((r, i) => ({ x: tVals[i], y: gb(r.timescale_bytes) })),
+            borderColor: '#a78bfa',
+            backgroundColor: 'rgba(167,139,250,0.2)',
+            yAxisID: 'yTs',
+            tension: 0.2,
+            pointRadius: 0,
+            spanGaps: true,
+          },
         ],
       };
+
+      const options = {
+        responsive: true,
+        parsing: false,
+        plugins: {
+          legend: { display: true },
+          tooltip: {
+            callbacks: {
+              title: (items) => {
+                const x = items?.[0]?.parsed?.x;
+                return xTickFmt(x);
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            title: { display: true, text: xLabel },
+            ticks: {
+              callback: (val) => xTickFmt(Number(val)),
+              maxTicksLimit: 10,
+            },
+            grid: { color: 'rgba(148,163,184,0.16)' },
+          },
+          yPg: {
+            type: 'linear',
+            position: 'left',
+            title: { display: true, text: `PostgreSQL GB (${pgDb})` },
+            ticks: { callback: (v) => `${Number(v).toFixed(2)}` },
+            grid: { color: 'rgba(96,165,250,0.12)' },
+          },
+          yTs: {
+            type: 'linear',
+            position: 'right',
+            title: { display: true, text: `Timescale GB (${tsDb})` },
+            ticks: { callback: (v) => `${Number(v).toFixed(2)}` },
+            grid: { drawOnChartArea: false },
+          },
+        },
+      };
+
       if (!opsStorageTrendChart) {
-        opsStorageTrendChart = new Chart(c, {type:'line', data, options:{responsive:true, plugins:{legend:{display:true}}, scales:{x:{display:false}}}});
+        opsStorageTrendChart = new Chart(c, { type: 'line', data, options });
       } else {
         opsStorageTrendChart.data = data;
+        opsStorageTrendChart.options = options;
         opsStorageTrendChart.update();
       }
+
       const cur = storage?.latest || {};
       const pgName = storage?.postgres_db ? ` (${storage.postgres_db})` : '';
       const tsName = storage?.timescale_db ? ` (${storage.timescale_db})` : '';
+      const sameDsn = !!storage?.same_dsn_detected;
       const set = (id, txt, title='') => { const el=document.getElementById(id); if (!el) return; el.textContent = txt; if (title) el.title = title; };
-      set('opsStoragePg', `PostgreSQL${pgName}: ${fmtBytes(cur.postgres_bytes)}`, storage?.postgres_dsn_configured ? 'Measured from POSTGRES_DATABASE_URL (or postgres DATABASE_URL fallback)' : 'POSTGRES_DATABASE_URL not configured');
-      set('opsStorageTs', `Timescale${tsName}: ${(cur.timescale_bytes == null) ? 'unavailable' : fmtBytes(cur.timescale_bytes)}`, storage?.timescale_dsn_configured ? 'Measured from TIMESCALE_DATABASE_URL (or SPX_CHAIN_DATABASE_URL fallback)' : 'TIMESCALE_DATABASE_URL/SPX_CHAIN_DATABASE_URL not configured');
+      set('opsStoragePg', `PostgreSQL${pgName}: ${fmtBytes(cur.postgres_bytes)}`, storage?.postgres_dsn_configured ? 'Measured from POSTGRES_DATABASE_URL/PRIMARY_POSTGRES_DATABASE_URL' : 'POSTGRES_DATABASE_URL/PRIMARY_POSTGRES_DATABASE_URL not configured');
+      set('opsStorageTs', `Timescale${tsName}: ${(cur.timescale_bytes == null) ? 'unavailable' : fmtBytes(cur.timescale_bytes)}${sameDsn ? ' (same DSN as PostgreSQL)' : ''}`, storage?.timescale_dsn_configured ? 'Measured from TIMESCALE_DATABASE_URL or SPX_CHAIN_DATABASE_URL' : 'TIMESCALE_DATABASE_URL/SPX_CHAIN_DATABASE_URL not configured');
       set('opsStorageDisk', `Disk used: ${fmtBytes(cur.disk_used_bytes)}`);
       set('opsStorageFree', `Free: ${fmtBytes(cur.disk_free_bytes)}`);
     }

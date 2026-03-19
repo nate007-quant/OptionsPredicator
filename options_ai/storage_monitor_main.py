@@ -68,8 +68,8 @@ def main() -> None:
     poll_s = max(15, int(os.getenv('STORAGE_MONITOR_POLL_SECONDS', '60') or '60'))
 
     postgres_dsn = os.getenv('POSTGRES_DATABASE_URL', '').strip() or os.getenv('PRIMARY_POSTGRES_DATABASE_URL', '').strip()
-    if not postgres_dsn and database_url.startswith('postgres'):
-        postgres_dsn = database_url
+    # Intentionally do not fall back to DATABASE_URL here.
+    # DATABASE_URL is the app/control-plane DB and may not represent the target PostgreSQL metric source.
 
     timescale_dsn = os.getenv('TIMESCALE_DATABASE_URL', '').strip() or os.getenv('SPX_CHAIN_DATABASE_URL', '').strip()
 
