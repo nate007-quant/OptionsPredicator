@@ -724,7 +724,7 @@
               <div class="row">
                 <button class="btn-primary" id="exRefreshTrades">Refresh</button>
                 <label><input id="exTradesAuto" type="checkbox" checked /> auto-refresh</label>
-                <label>sec <input id="exTradesSec" type="number" min="2" max="120" value="7" style="width:70px;" /></label>
+                <label>sec <input id="exTradesSec" type="number" min="2" max="120" value="60" style="width:70px;" /></label>
                 <span id="exTradesLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
                 <span id="exTradesLast" class="hint ex-last-mini">—</span>
               </div>
@@ -772,7 +772,7 @@
                 </label>
                 <button class="btn-primary" id="exRefreshIntents">Refresh</button>
                 <label><input id="exIntentsAuto" type="checkbox" checked /> auto-refresh</label>
-                <label>sec <input id="exIntentsSec" type="number" min="2" max="120" value="8" style="width:70px;" /></label>
+                <label>sec <input id="exIntentsSec" type="number" min="2" max="120" value="60" style="width:70px;" /></label>
                 <span id="exIntentsLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
                 <span id="exIntentsLast" class="hint ex-last-mini">—</span>
               </div>
@@ -854,7 +854,7 @@
               <label>Limit <input id="exHistLimit" type="number" min="1" max="2000" value="200" style="width:90px;" /></label>
               <button class="btn-primary" id="exRefreshHistory">Refresh</button>
               <label><input id="exHistoryAuto" type="checkbox" checked /> auto-refresh</label>
-              <label>sec <input id="exHistorySec" type="number" min="2" max="120" value="12" style="width:70px;" /></label>
+              <label>sec <input id="exHistorySec" type="number" min="2" max="120" value="60" style="width:70px;" /></label>
               <span id="exHistoryLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span>
               <span id="exHistoryLast" class="hint ex-last-mini">—</span>
               <div>Sandbox: <span id="exHistSandboxCount" class="pill">—</span></div>
@@ -1055,12 +1055,12 @@
         <div class="ops-main" style="margin-top: var(--space-4);">
           <div class="card">
             <div class="card-h"><h2>Pipeline Flow</h2><div class="hint" id="opsBottleneck">Bottleneck: —</div></div>
-            <div class="card-b"><div class="row" style="margin-bottom:8px;"><button id="opsPipeRefresh" class="btn-primary">Refresh</button><label><input id="opsPipeAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsPipeSec" type="number" min="3" max="300" value="10" style="width:70px;" /></label><span id="opsPipeLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsPipeLast" class="hint ex-last-mini">—</span></div><div class="pipeline-flow" id="pipelineFlow"></div></div>
+            <div class="card-b"><div class="row" style="margin-bottom:8px;"><button id="opsPipeRefresh" class="btn-primary">Refresh</button><label><input id="opsPipeAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsPipeSec" type="number" min="3" max="300" value="60" style="width:70px;" /></label><span id="opsPipeLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsPipeLast" class="hint ex-last-mini">—</span></div><div class="pipeline-flow" id="pipelineFlow"></div></div>
           </div>
           <div class="card ops-operator-only">
             <div class="card-h"><h2>Service Control Panel</h2><div class="hint">viewer/operator/admin via X-Role header</div></div>
             <div class="card-b">
-              <div class="row" style="margin-bottom:8px;"><button id="opsSvcRefresh" class="btn-primary">Refresh</button><label><input id="opsSvcAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsSvcSec" type="number" min="3" max="300" value="15" style="width:70px;" /></label><span id="opsSvcLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsSvcLast" class="hint ex-last-mini">—</span></div>
+              <div class="row" style="margin-bottom:8px;"><button id="opsSvcRefresh" class="btn-primary">Refresh</button><label><input id="opsSvcAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsSvcSec" type="number" min="3" max="300" value="60" style="width:70px;" /></label><span id="opsSvcLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsSvcLast" class="hint ex-last-mini">—</span></div>
               <div class="row" style="margin-bottom:8px;">
                 <button onclick="serviceGlobalAction('start-zero-dte')">Start Zero DTE</button>
                 <button onclick="serviceGlobalAction('start-term-services')">Start Term</button>
@@ -1088,7 +1088,7 @@
           <div class="card">
             <div class="card-h"><h2>Storage Trends</h2><div class="hint">PostgreSQL + Timescale used bytes over time</div></div>
             <div class="card-b">
-              <div class="row" style="margin-bottom:8px;"><button id="opsStorageRefresh" class="btn-primary">Refresh</button><label><input id="opsStorageAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsStorageSec" type="number" min="3" max="300" value="20" style="width:70px;" /></label><label>history <select id="opsStorageWindow"><option value="1h">1h</option><option value="24h" selected>24h</option><option value="7d">7d</option><option value="90d">3mo</option><option value="365d">1y</option><option value="all">all</option></select></label><label>res <select id="opsStorageRes"><option value="1m">1m</option><option value="5m" selected>5m</option><option value="15m">15m</option><option value="1h">1h</option></select></label><span id="opsStorageLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsStorageLast" class="hint ex-last-mini">—</span></div>
+              <div class="row" style="margin-bottom:8px;"><button id="opsStorageRefresh" class="btn-primary">Refresh</button><label><input id="opsStorageAuto" type="checkbox" checked /> auto-refresh</label><label>sec <input id="opsStorageSec" type="number" min="3" max="300" value="60" style="width:70px;" /></label><label>history <select id="opsStorageWindow"><option value="1h">1h</option><option value="24h" selected>24h</option><option value="7d">7d</option><option value="90d">3mo</option><option value="365d">1y</option><option value="all">all</option></select></label><label>res <select id="opsStorageRes"><option value="1m">1m</option><option value="5m" selected>5m</option><option value="15m">15m</option><option value="1h">1h</option></select></label><span id="opsStorageLoad" class="box-loading"><span class="box-loading-dot"></span>Updating…</span><span id="opsStorageLast" class="hint ex-last-mini">—</span></div>
               <div class="row" style="margin-bottom:8px;">
                 <span class="pill" id="opsStoragePg">PostgreSQL: —</span>
                 <span class="pill" id="opsStorageTs">Timescale: —</span>
@@ -3380,7 +3380,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       btSamplerId = resp.sampler_id;
       toast('sampler started', 'ok');
       if (btSamplerPoll) clearInterval(btSamplerPoll);
-      btSamplerPoll = setInterval(() => safe('sampler', samplerPollOnce), 2000);
+      btSamplerPoll = setInterval(() => safe('sampler', samplerPollOnce), 60000);
       await samplerPollOnce();
     }
 
@@ -3394,7 +3394,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         btSelectedRunRefined = true;
         toast('refinement sampler started', 'ok');
         if (btSamplerPoll) clearInterval(btSamplerPoll);
-        btSamplerPoll = setInterval(() => safe('sampler', samplerPollOnce), 2000);
+        btSamplerPoll = setInterval(() => safe('sampler', samplerPollOnce), 60000);
         await samplerPollOnce();
         await btRefreshRuns();
       } catch (e) {
@@ -4220,7 +4220,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     async function pfActivateSession(pid, sid) {
       pfSetCardSession(pid, sid);
       if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
-      pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
+      pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 60000);
       await pfPollSingleGroup(pid);
     }
 
@@ -4307,7 +4307,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         const runBtn = document.getElementById(`pfCardRun-${pid}`);
         if (runBtn) runBtn.disabled = true;
         if (!pfQueueWatchers[String(pid)]) {
-          pfQueueWatchers[String(pid)] = setInterval(() => safe(`pf_queue_${pid}`, () => pfProcessQueuedStart(pid)), 2500);
+          pfQueueWatchers[String(pid)] = setInterval(() => safe(`pf_queue_${pid}`, () => pfProcessQueuedStart(pid)), 60000);
         }
         await pfProcessQueuedStart(pid);
         toast(`Queued. Waiting for active session ${sid} to finish.`, 'info');
@@ -4742,7 +4742,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           const note = document.getElementById(`pfCardNote-${pid}`);
           if (note) note.textContent = `Status: Reconnecting… (session ${persistedSid2})`;
           if (pfCardPollers[String(pid)]) clearInterval(pfCardPollers[String(pid)]);
-          pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 2000);
+          pfCardPollers[String(pid)] = setInterval(() => safe(`pf_card_${pid}`, () => pfPollSingleGroup(pid)), 60000);
           safe(`pf_card_boot_${pid}`, () => pfPollSingleGroup(pid));
         }
 
@@ -5013,7 +5013,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       pfGroupRunId = resp.run_id;
       toast('portfolio group run started', 'success');
       if (pfGroupPoll) clearInterval(pfGroupPoll);
-      pfGroupPoll = setInterval(() => safe('pf_group', () => pfGroupPollOnce()), 2000);
+      pfGroupPoll = setInterval(() => safe('pf_group', () => pfGroupPollOnce()), 60000);
       await pfGroupPollOnce();
     }
 
@@ -5093,7 +5093,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       pfSessionId = resp.session_id;
       toast('portfolio backtest started', 'success');
       if (pfPoll) clearInterval(pfPoll);
-      pfPoll = setInterval(() => safe('portfolio', pfPollOnce), 2000);
+      pfPoll = setInterval(() => safe('portfolio', pfPollOnce), 60000);
       await pfPollOnce();
     }
 
@@ -6172,15 +6172,15 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       if (document.getElementById('exTradesAuto')?.checked) {
         if (triggerNow) safe('ex_trades', () => exRefreshOpenTrades());
-        exAutoTimers.trades = setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), exAutoMs('exTradesSec', 7000));
+        exAutoTimers.trades = setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), exAutoMs('exTradesSec', 60000));
       }
       if (document.getElementById('exIntentsAuto')?.checked) {
         if (triggerNow) safe('ex_intents', () => exRefreshIntents());
-        exAutoTimers.intents = setInterval(() => safe('ex_intents', () => exRefreshIntents()), exAutoMs('exIntentsSec', 8000));
+        exAutoTimers.intents = setInterval(() => safe('ex_intents', () => exRefreshIntents()), exAutoMs('exIntentsSec', 60000));
       }
       if (document.getElementById('exHistoryAuto')?.checked) {
         if (triggerNow) safe('ex_trade_history', () => exRefreshTradeHistory());
-        exAutoTimers.history = setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), exAutoMs('exHistorySec', 12000));
+        exAutoTimers.history = setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), exAutoMs('exHistorySec', 60000));
       }
     }
 
@@ -6838,9 +6838,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       for (const k of Object.keys(opsAreaTimers)) {
         if (opsAreaTimers[k]) { clearInterval(opsAreaTimers[k]); opsAreaTimers[k] = null; }
       }
-      if (document.getElementById('opsPipeAuto')?.checked) opsAreaTimers.Pipe = setInterval(() => safe('processing_pipe', () => refreshProcessingPipeline()), _opsAreaMs('opsPipeSec', 10000));
-      if (document.getElementById('opsSvcAuto')?.checked) opsAreaTimers.Svc = setInterval(() => safe('processing_svc', () => refreshProcessingServices()), _opsAreaMs('opsSvcSec', 15000));
-      if (document.getElementById('opsStorageAuto')?.checked) opsAreaTimers.Storage = setInterval(() => safe('processing_storage', () => refreshProcessingStorage()), _opsAreaMs('opsStorageSec', 20000));
+      if (document.getElementById('opsPipeAuto')?.checked) opsAreaTimers.Pipe = setInterval(() => safe('processing_pipe', () => refreshProcessingPipeline()), _opsAreaMs('opsPipeSec', 60000));
+      if (document.getElementById('opsSvcAuto')?.checked) opsAreaTimers.Svc = setInterval(() => safe('processing_svc', () => refreshProcessingServices()), _opsAreaMs('opsSvcSec', 60000));
+      if (document.getElementById('opsStorageAuto')?.checked) opsAreaTimers.Storage = setInterval(() => safe('processing_storage', () => refreshProcessingStorage()), _opsAreaMs('opsStorageSec', 60000));
     }
 
     // wiring
@@ -7121,28 +7121,28 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       setupProcessingAreaRefresh();
 
       // intervals
-      setInterval(() => safe('health', () => refreshHealth()), 5000);
-      setInterval(() => safe('config', () => refreshConfig()), 5000);
-      setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 5000);
-      setInterval(() => safe('ex_workers', () => exRefreshWorkerBanner()), 10000);
-      setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 15000);
+      setInterval(() => safe('health', () => refreshHealth()), 60000);
+      setInterval(() => safe('config', () => refreshConfig()), 60000);
+      setInterval(() => safe('ex_risk', () => exRefreshRiskSession()), 60000);
+      setInterval(() => safe('ex_workers', () => exRefreshWorkerBanner()), 60000);
+      setInterval(() => safe('ex_kpis', () => exRefreshKpis()), 60000);
       setupExecutionAutoRefresh({ triggerNow: false });
-      setInterval(() => exRefreshLastStamps(), 5000);
+      setInterval(() => exRefreshLastStamps(), 60000);
       setInterval(() => safe('ex_accounts', () => exRefreshAccounts()), 60000);
-      setInterval(() => safe('ex_trading_enabled', () => exRefreshTradingEnabled()), 10000);
-      setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 10000);
-      setInterval(() => safe('ex_recon', () => exRefreshReconciliation()), 10000);
-      setInterval(() => safe('ex_actions', () => exRefreshOperatorActions()), 15000);
+      setInterval(() => safe('ex_trading_enabled', () => exRefreshTradingEnabled()), 60000);
+      setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 60000);
+      setInterval(() => safe('ex_recon', () => exRefreshReconciliation()), 60000);
+      setInterval(() => safe('ex_actions', () => exRefreshOperatorActions()), 60000);
       // processing refresh handled by configurable interval
-      setInterval(() => safe('pipes', () => refreshPipelines()), 30000);
-      setInterval(() => safe('tokens', () => refreshTokens()), 10000);
-      setInterval(() => safe('ml', () => refreshML()), 20000);
+      setInterval(() => safe('pipes', () => refreshPipelines()), 60000);
+      setInterval(() => safe('tokens', () => refreshTokens()), 60000);
+      setInterval(() => safe('ml', () => refreshML()), 60000);
 
       // logs auto-refresh
       let logTimer;
       document.getElementById('logAuto').addEventListener('change', (ev) => {
         if (ev.target.checked) {
-          logTimer = setInterval(() => safe('logs', () => refreshLogs()), 5000);
+          logTimer = setInterval(() => safe('logs', () => refreshLogs()), 60000);
         } else {
           if (logTimer) clearInterval(logTimer);
         }
