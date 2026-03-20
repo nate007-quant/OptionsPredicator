@@ -4241,31 +4241,113 @@ def create_app() -> FastAPI:
 
         return {'strategy_key': strategy_key, 'preset_id': preset_id, 'limit': int(limit), 'items': items}
 
+    def _cleanup_run_relationships(run_ids: list[int]) -> dict[str, Any]:
+        import json as _json
+        rid_set = {int(x) for x in (run_ids or []) if str(x).isdigit()}
+        if not rid_set:
+            return {'groups_touched': 0, 'portfolios_touched': 0, 'group_ids': [], 'portfolio_ids': []}
+
+        touched_groups: list[int] = []
+        touched_portfolios: list[int] = []
+        with _connect(db_path) as con:
+            now = _now_utc_iso()
+            # parameter_groups.run_ids_json cleanup
+            grows = con.execute("SELECT id, COALESCE(run_ids_json,'[]') AS run_ids_json FROM parameter_groups").fetchall()
+            for gr in grows:
+                gid = int(gr['id'] if isinstance(gr, dict) else gr[0])
+                raw = (gr['run_ids_json'] if isinstance(gr, dict) else gr[1]) or '[]'
+                try:
+                    rids = [int(x) for x in (_json.loads(raw) or []) if str(x).isdigit()]
+                except Exception:
+                    rids = []
+                new_rids = sorted({x for x in rids if int(x) not in rid_set})
+                if new_rids == sorted(set(rids)):
+                    continue
+                con.execute(
+                    'UPDATE parameter_groups SET run_ids_json=?, updated_at_utc=? WHERE id=?',
+                    (_json.dumps(new_rids), now, gid),
+                )
+                touched_groups.append(gid)
+
+            # portfolio_defs.legs_json cleanup for source=run:<id>
+            prows = con.execute("SELECT id, COALESCE(legs_json,'[]') AS legs_json FROM portfolio_defs").fetchall()
+            for pr in prows:
+                pid = int(pr['id'] if isinstance(pr, dict) else pr[0])
+                raw = (pr['legs_json'] if isinstance(pr, dict) else pr[1]) or '[]'
+                try:
+                    legs = _json.loads(raw) or []
+                except Exception:
+                    legs = []
+                if not isinstance(legs, list):
+                    legs = []
+                kept: list[dict[str, Any]] = []
+                changed = False
+                for leg in legs:
+                    if not isinstance(leg, dict):
+                        kept.append(leg)
+                        continue
+                    src = str(leg.get('source') or '')
+                    drop = False
+                    if src.startswith('run:'):
+                        try:
+                            rr = int(src.split(':', 1)[1])
+                            if rr in rid_set:
+                                drop = True
+                        except Exception:
+                            pass
+                    if drop:
+                        changed = True
+                    else:
+                        kept.append(leg)
+                if not changed:
+                    continue
+                con.execute(
+                    'UPDATE portfolio_defs SET legs_json=?, updated_at_utc=? WHERE id=?',
+                    (_json.dumps(kept, separators=(",", ":"), sort_keys=True), now, pid),
+                )
+                touched_portfolios.append(pid)
+
+            con.commit()
+
+        return {
+            'groups_touched': len(touched_groups),
+            'portfolios_touched': len(touched_portfolios),
+            'group_ids': sorted(touched_groups),
+            'portfolio_ids': sorted(touched_portfolios),
+        }
+
     @app.delete('/api/backtest/runs/{run_id}')
     def backtest_runs_delete(run_id: int) -> dict[str, Any]:
-        groups = _load_parameter_groups()
-        linked = [g['id'] for g in groups if int(run_id) in (g.get('run_ids') or [])]
-        if linked:
-            raise HTTPException(status_code=409, detail=f'run in use by groups: {linked}')
+        rid = int(run_id)
         if bt_use_pg:
             with psycopg.connect(backtest_db_url, row_factory=psycopg.rows.dict_row) as con:
                 with con.cursor() as cur:
-                    cur.execute('SELECT strategy_key FROM backtest_runs WHERE id=%s', (int(run_id),))
+                    cur.execute('SELECT strategy_key FROM backtest_runs WHERE id=%s', (rid,))
                     r = cur.fetchone()
                     if not r:
                         raise HTTPException(status_code=404, detail='run not found')
                     strategy_key = r['strategy_key']
-                    cur.execute('DELETE FROM backtest_runs WHERE id=%s', (int(run_id),))
+                    cur.execute('DELETE FROM backtest_runs WHERE id=%s', (rid,))
                 con.commit()
         else:
             with _connect(db_path) as con:
-                r = con.execute('SELECT strategy_key FROM backtest_runs WHERE id=?', (int(run_id),)).fetchone()
+                r = con.execute('SELECT strategy_key FROM backtest_runs WHERE id=?', (rid,)).fetchone()
                 if not r:
                     raise HTTPException(status_code=404, detail='run not found')
                 strategy_key = r['strategy_key']
-                con.execute('DELETE FROM backtest_runs WHERE id=?', (int(run_id),))
+                con.execute('DELETE FROM backtest_runs WHERE id=?', (rid,))
                 con.commit()
-        return {'ok': True, 'deleted': int(run_id), 'strategy_key': strategy_key}
+
+        cleanup = _cleanup_run_relationships([rid])
+        return {
+            'ok': True,
+            'deleted': rid,
+            'strategy_key': strategy_key,
+            'cleaned_group_refs': int(cleanup.get('groups_touched') or 0),
+            'cleaned_portfolio_refs': int(cleanup.get('portfolios_touched') or 0),
+            'cleaned_group_ids': cleanup.get('group_ids') or [],
+            'cleaned_portfolio_ids': cleanup.get('portfolio_ids') or [],
+        }
 
     
 
@@ -4299,7 +4381,17 @@ def create_app() -> FastAPI:
                 cur = con.execute(f'DELETE FROM backtest_runs WHERE id IN ({q})', tuple(norm))
                 con.commit()
             deleted = int(cur.rowcount if cur.rowcount is not None else 0)
-        return {'ok': True, 'deleted_count': deleted, 'requested': len(norm)}
+
+        cleanup = _cleanup_run_relationships(norm)
+        return {
+            'ok': True,
+            'deleted_count': deleted,
+            'requested': len(norm),
+            'cleaned_group_refs': int(cleanup.get('groups_touched') or 0),
+            'cleaned_portfolio_refs': int(cleanup.get('portfolios_touched') or 0),
+            'cleaned_group_ids': cleanup.get('group_ids') or [],
+            'cleaned_portfolio_ids': cleanup.get('portfolio_ids') or [],
+        }
 
     @app.post("/api/backtest/debit_spreads/run")
     def backtest_debit_spreads_run(payload: dict[str, Any]) -> dict[str, Any]:
