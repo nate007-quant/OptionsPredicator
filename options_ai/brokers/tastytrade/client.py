@@ -8,6 +8,7 @@ import re
 import time
 import json
 import shlex
+import threading
 from datetime import datetime, timezone
 
 import httpx
@@ -207,6 +208,8 @@ class TastytradeClient:
         self.http_backoff_seconds = max(0.0, float(http_backoff_seconds))
         self.verbatim_log_path = (os.getenv('TASTY_VERBATIM_LOG_PATH') or '/mnt/options_ai/logs/tasty_verbatim.log').strip()
         self.verbatim_log_enabled = str(os.getenv('TASTY_VERBATIM_LOG_ENABLED', '1')).strip().lower() not in {'0','false','no','off'}
+        self.intent_logs_dir = (os.getenv('TASTY_INTENT_LOGS_DIR') or '/mnt/options_ai/logs/intents').strip()
+        self._ctx = threading.local()
 
     @staticmethod
     def _authorization_header_value(token: str | None) -> str | None:
@@ -234,18 +237,40 @@ class TastytradeClient:
             h["Accept-Version"] = str(self.target_api_version)
         return h
 
+    def set_debug_context(self, *, intent_id: int | None = None, trade_run_id: int | None = None) -> None:
+        self._ctx.intent_id = (int(intent_id) if intent_id is not None else None)
+        self._ctx.trade_run_id = (int(trade_run_id) if trade_run_id is not None else None)
+
+    def clear_debug_context(self) -> None:
+        self._ctx.intent_id = None
+        self._ctx.trade_run_id = None
+
     def _emit_verbatim(self, payload: dict[str, Any]) -> None:
         if not self.verbatim_log_enabled:
             return
         try:
             rec = dict(payload or {})
             rec.setdefault('ts_utc', datetime.now(timezone.utc).replace(microsecond=0).isoformat())
+            iid = getattr(self._ctx, 'intent_id', None)
+            trid = getattr(self._ctx, 'trade_run_id', None)
+            if iid is not None:
+                rec.setdefault('intent_id', int(iid))
+            if trid is not None:
+                rec.setdefault('trade_run_id', int(trid))
             p = self.verbatim_log_path
             if not p:
                 return
             os.makedirs(os.path.dirname(p), exist_ok=True)
+            line = json.dumps(rec, separators=(',', ':'), sort_keys=True) + '\n'
             with open(p, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(rec, separators=(',', ':'), sort_keys=True) + '\n')
+                f.write(line)
+            if iid is not None:
+                d = self.intent_logs_dir
+                if d:
+                    os.makedirs(d, exist_ok=True)
+                    ip = os.path.join(d, f'intent_{int(iid)}.jsonl')
+                    with open(ip, 'a', encoding='utf-8') as f2:
+                        f2.write(line)
         except Exception:
             pass
 

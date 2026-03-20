@@ -825,6 +825,8 @@ class ExecutionExecutor:
                 trade_run_id: int | None = None
 
                 try:
+                    if hasattr(self.client, "set_debug_context"):
+                        self.client.set_debug_context(intent_id=iid, trade_run_id=trade_run_id)
                     payload = _parse_json(it["intent_payload_json"], {})
                     params = (payload.get("params") or {}) if isinstance(payload, dict) else {}
                     qty = self._intent_qty(params)
@@ -926,6 +928,8 @@ class ExecutionExecutor:
 
                     self._mark_intent(con, intent_id=iid, status="PRECHECK_PENDING", error=None, precheck_status="running")
                     trade_run_id = self._create_trade_run(con, intent_id=iid, payload=payload, qty=qty)
+                    if hasattr(self.client, "set_debug_context"):
+                        self.client.set_debug_context(intent_id=iid, trade_run_id=trade_run_id)
 
                     long_sym, short_sym = self._extract_leg_symbols(params)
                     if not long_sym or not short_sym:
@@ -1237,6 +1241,9 @@ class ExecutionExecutor:
                         self._auth_endpoint_hard_failed = True
                         self._auth_endpoint_hard_fail_reason = str(details.get("error") or str(e))
                         break
+                finally:
+                    if hasattr(self.client, "clear_debug_context"):
+                        self.client.clear_debug_context()
 
             con.commit()
 
