@@ -213,12 +213,14 @@ class TastytradeClient:
         self.base_url = (base_url or env_base or os.getenv("TASTY_BASE_URL") or ("https://api.tastyworks.com" if self.environment == 'live' else "https://api.cert.tastyworks.com")).rstrip("/")
         self.streamer_url = (streamer_url or os.getenv("TASTY_STREAMER_URL") or "").strip()
         self.session_token = (session_token or os.getenv("TASTY_SESSION_TOKEN") or "").strip() or None
+        self.auth_scheme = str(os.getenv('TASTY_AUTH_SCHEME') or ('raw' if self.session_token else 'bearer')).strip().lower()
         self.username = (username or os.getenv("TASTY_USERNAME") or "").strip() or None
         self.password = (password or os.getenv("TASTY_PASSWORD") or "").strip() or None
         self.account_number = (account_number or os.getenv("TASTY_ACCOUNT_NUMBER") or "").strip() or None
         self.timeout_seconds = int(timeout_seconds)
         self.dry_run = bool(dry_run)
         self.target_api_version = (target_api_version or os.getenv("TARGET_API_VERSION") or "").strip() or None
+        self.use_accept_version = str(os.getenv('TASTY_USE_ACCEPT_VERSION','0')).strip().lower() in {'1','true','yes','on'}
         self.http_max_retries = max(0, int(http_max_retries))
         self.http_backoff_seconds = max(0.0, float(http_backoff_seconds))
         self.verbatim_log_path = (os.getenv('TASTY_VERBATIM_LOG_PATH') or '/mnt/options_ai/logs/tasty_verbatim.log').strip()
@@ -227,7 +229,7 @@ class TastytradeClient:
         self._ctx = threading.local()
 
     @staticmethod
-    def _authorization_header_value(token: str | None) -> str | None:
+    def _authorization_header_value(token: str | None, scheme: str = "bearer") -> str | None:
         """Normalize token to docs-compliant OAuth2 Bearer header value.
 
         tastytrade API overview specifies:
@@ -236,19 +238,24 @@ class TastytradeClient:
         t = str(token or "").strip()
         if not t:
             return None
+        sc = str(scheme or "bearer").strip().lower()
+        if sc == "raw":
+            if t.lower().startswith("bearer "):
+                return t.split(" ",1)[1].strip()
+            return t
         if t.lower().startswith("bearer "):
             return t
         return f"Bearer {t}"
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, include_version: bool = True) -> dict[str, str]:
         h = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        auth = self._authorization_header_value(self.session_token)
+        auth = self._authorization_header_value(self.session_token, self.auth_scheme)
         if auth:
             h["Authorization"] = auth
-        if self.target_api_version:
+        if include_version and self.use_accept_version and self.target_api_version:
             h["Accept-Version"] = str(self.target_api_version)
         return h
 
@@ -328,8 +335,6 @@ class TastytradeClient:
         if not path.startswith("/"):
             path = "/" + path
         url = f"{self.base_url}{path}"
-        req_headers = self._headers()
-
         # Lazy auth: services can start with username/password in env and no pre-seeded token.
         if (not path.startswith("/sessions")) and (not path.startswith("/oauth/token")) and (not self.session_token) and self.username and self.password:
             self.authenticate()
@@ -339,6 +344,7 @@ class TastytradeClient:
         for attempt in range(0, self.http_max_retries + 1):
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
+                    req_headers = self._headers(include_version=(not path.startswith("/sessions") and not path.startswith("/oauth/token")))
                     req_id = f"{int(time.time()*1000)}-{attempt}"
                     red_h = self._redact_obj(dict(req_headers or {}))
                     red_b = self._redact_obj(json_body)
@@ -405,21 +411,75 @@ class TastytradeClient:
         if _looks_placeholder(self.username) or _looks_placeholder(self.password):
             raise RuntimeError("tasty credentials invalid/placeholder; refusing auth attempt")
 
-        payload = {"grant_type": "password", "username": str(self.username), "password": str(self.password)}
-        path = "/oauth/token"
-        self._emit_verbatim({"event":"auth_mode","environment":self.environment,"mode":"oauth_password","endpoint":path,"config_injected":True})
-        resp = self._request("POST", path, json_body=payload)
+        last_exc: Exception | None = None
+        attempt_errors: list[str] = []
 
-        token = None
-        if isinstance(resp, dict):
-            token = resp.get("access_token") or resp.get("token")
-            data = resp.get("data")
-            if (not token) and isinstance(data, dict):
-                token = data.get("access_token") or data.get("token") or data.get("session-token") or data.get("session_token")
-        if not token:
-            raise RuntimeError("oauth token response missing access_token")
-        self.session_token = str(token)
-        return {"ok": True, "auth": "oauth_token", "environment": self.environment}
+        # Attempt 1: OAuth token endpoint (form-encoded)
+        try:
+            self._emit_verbatim({"event":"auth_mode","environment":self.environment,"mode":"oauth_password","endpoint":"/oauth/token","config_injected":True})
+            url = f"{self.base_url}/oauth/token"
+            headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
+            body = {"grant_type": "password", "username": str(self.username), "password": str(self.password)}
+            req_id = f"auth-oauth-{int(time.time()*1000)}"
+            self._emit_verbatim({"event":"request","req_id":req_id,"environment":self.environment,"method":"POST","url":url,"path":"/oauth/token","headers":self._redact_obj(headers),"json_body":self._redact_obj(body),"curl":self._curl_cmd('POST',url,self._redact_obj(headers),self._redact_obj(body),None)})
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                resp = client.post(url, headers=headers, data=body)
+            try:
+                rj = resp.json()
+            except Exception:
+                rj = None
+            self._emit_verbatim({"event":"response","req_id":req_id,"environment":self.environment,"method":"POST","url":url,"path":"/oauth/token","status_code":int(resp.status_code),"response_headers":self._redact_obj(dict(resp.headers)),"response_json":self._redact_obj(rj) if rj is not None else None,"response_text":(resp.text if rj is None else None)})
+            if 200 <= int(resp.status_code) < 300:
+                token = None
+                if isinstance(rj, dict):
+                    token = rj.get('access_token') or rj.get('token') or ((rj.get('data') or {}).get('access_token') if isinstance(rj.get('data'), dict) else None)
+                if token:
+                    self.session_token = str(token)
+                    self.auth_scheme = "bearer"
+                    return {"ok": True, "auth": "oauth_token", "environment": self.environment}
+                raise RuntimeError("oauth token response missing access_token")
+            attempt_errors.append(f"/oauth/token -> HTTP {int(resp.status_code)}")
+        except Exception as e:
+            last_exc = e
+            attempt_errors.append(f"/oauth/token -> {type(e).__name__}: {e}")
+
+        # Attempt 2: sessions login endpoint (no Accept-Version)
+        for path in ('/sessions','/sessions/'):
+            try:
+                self._emit_verbatim({"event":"auth_mode","environment":self.environment,"mode":"sessions_login","endpoint":path,"config_injected":True})
+                url = f"{self.base_url}{path}"
+                headers = {"Accept":"application/json","Content-Type":"application/json"}
+                body = {"login": str(self.username), "password": str(self.password)}
+                req_id = f"auth-sessions-{int(time.time()*1000)}"
+                self._emit_verbatim({"event":"request","req_id":req_id,"environment":self.environment,"method":"POST","url":url,"path":path,"headers":self._redact_obj(headers),"json_body":self._redact_obj(body),"curl":self._curl_cmd('POST',url,self._redact_obj(headers),self._redact_obj(body),None)})
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    resp = client.post(url, headers=headers, json=body)
+                try:
+                    rj = resp.json()
+                except Exception:
+                    rj = None
+                self._emit_verbatim({"event":"response","req_id":req_id,"environment":self.environment,"method":"POST","url":url,"path":path,"status_code":int(resp.status_code),"response_headers":self._redact_obj(dict(resp.headers)),"response_json":self._redact_obj(rj) if rj is not None else None,"response_text":(resp.text if rj is None else None)})
+                if 200 <= int(resp.status_code) < 300:
+                    token = None
+                    data = (rj.get('data') if isinstance(rj, dict) else None)
+                    if isinstance(data, dict):
+                        token = data.get('session-token') or data.get('session_token')
+                    if (not token) and isinstance(rj, dict):
+                        token = rj.get('session-token') or rj.get('session_token')
+                    if token:
+                        self.session_token = str(token)
+                        self.auth_scheme = "raw"
+                        return {"ok": True, "auth": "sessions_token", "environment": self.environment}
+                    raise RuntimeError("sessions response missing token")
+                attempt_errors.append(f"{path} -> HTTP {int(resp.status_code)}")
+                last_exc = RuntimeError(f"{path} http {int(resp.status_code)}")
+            except Exception as e:
+                last_exc = e
+                attempt_errors.append(f"{path} -> {type(e).__name__}: {e}")
+
+        if last_exc:
+            raise RuntimeError(f"tasty authenticate failed after attempts: {attempt_errors}") from last_exc
+        raise RuntimeError("tasty authenticate failed")
 
 
     def place_order(self, dto: OrderDTO, *, dry_run: bool | None = None) -> dict[str, Any]:
