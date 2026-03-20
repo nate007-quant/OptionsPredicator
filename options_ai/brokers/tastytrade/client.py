@@ -165,6 +165,21 @@ def normalize_option_symbol_for_tasty(symbol: str) -> str:
         return f"{root}{m.group(2)}{m.group(3)}{m.group(4)}"
     return sym
 
+
+def _looks_placeholder(v: str | None) -> bool:
+    t = str(v or '').strip().lower()
+    if not t:
+        return True
+    bad = {'changeme','change_me','your_username','your_password','username','password','token','your_token'}
+    if t in bad:
+        return True
+    if '<' in t or '>' in t:
+        return True
+    if 'example' in t or 'placeholder' in t:
+        return True
+    return False
+
+
 class TastytradeClient:
     """Minimal Tastytrade REST adapter with dry-run support.
 
@@ -245,6 +260,21 @@ class TastytradeClient:
         self._ctx.intent_id = None
         self._ctx.trade_run_id = None
 
+    @staticmethod
+    def _redact_value(k: str, v: Any) -> Any:
+        kk = str(k or '').lower()
+        if any(x in kk for x in ['password','token','authorization','secret','api_key','apikey']):
+            return '***REDACTED***'
+        return v
+
+    @classmethod
+    def _redact_obj(cls, obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {str(k): cls._redact_obj(cls._redact_value(str(k), v)) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [cls._redact_obj(x) for x in obj]
+        return obj
+
     def _emit_verbatim(self, payload: dict[str, Any]) -> None:
         if not self.verbatim_log_enabled:
             return
@@ -301,7 +331,7 @@ class TastytradeClient:
         req_headers = self._headers()
 
         # Lazy auth: services can start with username/password in env and no pre-seeded token.
-        if (not path.startswith("/sessions")) and (not self.session_token) and self.username and self.password:
+        if (not path.startswith("/sessions")) and (not path.startswith("/oauth/token")) and (not self.session_token) and self.username and self.password:
             self.authenticate()
 
         last_exc: Exception | None = None
@@ -310,15 +340,23 @@ class TastytradeClient:
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
                     req_id = f"{int(time.time()*1000)}-{attempt}"
+                    red_h = self._redact_obj(dict(req_headers or {}))
+                    red_b = self._redact_obj(json_body)
                     self._emit_verbatim({
                         "event": "request", "req_id": req_id, "environment": self.environment, "method": method.upper(), "url": url,
-                        "path": path, "params": params, "json_body": json_body, "headers": req_headers,
-                        "curl": self._curl_cmd(method, url, req_headers, json_body, params),
+                        "path": path, "params": params, "json_body": red_b, "headers": red_h,
+                        "curl": self._curl_cmd(method, url, red_h, red_b, params),
                     })
                     resp = client.request(method.upper(), url, headers=req_headers, json=json_body, params=params)
+                    try:
+                        _rj = resp.json()
+                    except Exception:
+                        _rj = None
                     self._emit_verbatim({
                         "event": "response", "req_id": req_id, "environment": self.environment, "method": method.upper(), "url": url, "path": path,
-                        "status_code": int(resp.status_code), "response_headers": dict(resp.headers), "response_text": (resp.text if resp is not None else None),
+                        "status_code": int(resp.status_code), "response_headers": self._redact_obj(dict(resp.headers)),
+                        "response_json": self._redact_obj(_rj) if _rj is not None else None,
+                        "response_text": (resp.text if _rj is None and resp is not None else None),
                     })
                     # 401 can happen when token expired/invalid; re-auth once then retry immediately.
                     if resp.status_code == 401 and (not path.startswith("/sessions")) and self.username and self.password and (not did_reauth):
@@ -360,43 +398,29 @@ class TastytradeClient:
         raise RuntimeError("request failed with unknown error")
 
     def authenticate(self) -> dict[str, Any]:
-        if self.session_token:
+        if self.session_token and (not _looks_placeholder(self.session_token)):
+            self._emit_verbatim({"event":"auth_mode","environment":self.environment,"mode":"existing_bearer","endpoint":None,"config_injected":True})
             return {"ok": True, "auth": "session_token", "environment": self.environment}
-        if not self.username or not self.password:
-            raise RuntimeError("tasty credentials missing (set TASTY_SESSION_TOKEN or TASTY_USERNAME/TASTY_PASSWORD)")
 
-        payload = {"login": self.username, "password": self.password}
-        last_exc: Exception | None = None
-        attempt_errors: list[str] = []
-        for path in ("/sessions", "/sessions/"):
-            try:
-                resp = self._request("POST", path, json_body=payload)
-                data = resp.get("data") if isinstance(resp, dict) else None
-                token = None
-                if isinstance(data, dict):
-                    token = data.get("session-token") or data.get("session_token")
-                if not token:
-                    token = resp.get("session-token") if isinstance(resp, dict) else None
-                if token:
-                    self.session_token = str(token)
-                return resp
-            except httpx.HTTPStatusError as e:
-                self._emit_verbatim({"event":"auth_http_status_error","environment":self.environment,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
-                last_exc = e
-                code = int(e.response.status_code) if e.response is not None else 0
-                attempt_errors.append(f"{path} -> HTTP {code}")
-                if code not in {404, 405}:
-                    raise
-                continue
-            except Exception as e:
-                self._emit_verbatim({"event":"auth_exception","environment":self.environment,"path":path,"error_type":type(e).__name__,"error":str(e)})
-                last_exc = e
-                attempt_errors.append(f"{path} -> {type(e).__name__}: {e}")
-                continue
+        if _looks_placeholder(self.username) or _looks_placeholder(self.password):
+            raise RuntimeError("tasty credentials invalid/placeholder; refusing auth attempt")
 
-        if last_exc:
-            raise RuntimeError(f"tasty authenticate failed after attempts: {attempt_errors}") from last_exc
-        raise RuntimeError("tasty authenticate failed")
+        payload = {"grant_type": "password", "username": str(self.username), "password": str(self.password)}
+        path = "/oauth/token"
+        self._emit_verbatim({"event":"auth_mode","environment":self.environment,"mode":"oauth_password","endpoint":path,"config_injected":True})
+        resp = self._request("POST", path, json_body=payload)
+
+        token = None
+        if isinstance(resp, dict):
+            token = resp.get("access_token") or resp.get("token")
+            data = resp.get("data")
+            if (not token) and isinstance(data, dict):
+                token = data.get("access_token") or data.get("token") or data.get("session-token") or data.get("session_token")
+        if not token:
+            raise RuntimeError("oauth token response missing access_token")
+        self.session_token = str(token)
+        return {"ok": True, "auth": "oauth_token", "environment": self.environment}
+
 
     def place_order(self, dto: OrderDTO, *, dry_run: bool | None = None) -> dict[str, Any]:
         payload = map_order_dto_to_tasty_payload(dto)
