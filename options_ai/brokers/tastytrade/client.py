@@ -314,7 +314,7 @@ class TastytradeClient:
                     except Exception:
                         return {"ok": True, "status_code": resp.status_code, "raw": resp.text}
             except httpx.HTTPStatusError as e:
-                self._emit_verbatim({"event":"http_status_error","environment":self.environment,"method":method.upper(),"url":url,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
+                self._emit_verbatim({"event":"auth_http_status_error","environment":self.environment,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
                 last_exc = e
                 code = int(e.response.status_code) if e.response is not None else 0
                 if code == 429 or code >= 500:
@@ -323,7 +323,7 @@ class TastytradeClient:
                         continue
                 raise
             except Exception as e:
-                self._emit_verbatim({"event":"request_exception","environment":self.environment,"method":method.upper(),"url":url,"path":path,"error_type":type(e).__name__,"error":str(e)})
+                self._emit_verbatim({"event":"auth_exception","environment":self.environment,"path":path,"error_type":type(e).__name__,"error":str(e)})
                 last_exc = e
                 if attempt < self.http_max_retries:
                     time.sleep(self.http_backoff_seconds * (2 ** attempt))
@@ -356,7 +356,7 @@ class TastytradeClient:
                     self.session_token = str(token)
                 return resp
             except httpx.HTTPStatusError as e:
-                self._emit_verbatim({"event":"http_status_error","environment":self.environment,"method":method.upper(),"url":url,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
+                self._emit_verbatim({"event":"auth_http_status_error","environment":self.environment,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
                 last_exc = e
                 code = int(e.response.status_code) if e.response is not None else 0
                 attempt_errors.append(f"{path} -> HTTP {code}")
@@ -364,7 +364,7 @@ class TastytradeClient:
                     raise
                 continue
             except Exception as e:
-                self._emit_verbatim({"event":"request_exception","environment":self.environment,"method":method.upper(),"url":url,"path":path,"error_type":type(e).__name__,"error":str(e)})
+                self._emit_verbatim({"event":"auth_exception","environment":self.environment,"path":path,"error_type":type(e).__name__,"error":str(e)})
                 last_exc = e
                 attempt_errors.append(f"{path} -> {type(e).__name__}: {e}")
                 continue
