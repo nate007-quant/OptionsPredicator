@@ -3248,8 +3248,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       }
 
       const params = (runItem && runItem.params) ? runItem.params : {};
-      const sid = pfStrategyIdFromStrategyKey(runItem?.strategy_key);
-      legs.push({ strategy_id: sid || 'debit_spreads', params: params, source: src });
+      // Registry strategy id is debit_spreads for both debit and credit styles.
+      const sid = pfStrategyIdFromStrategyKey(runItem?.strategy_key) || 'debit_spreads';
+      legs.push({ strategy_id: sid, params: params, source: src });
 
       await jput(`/api/portfolios/${pid}`, { legs });
       return { added: true };

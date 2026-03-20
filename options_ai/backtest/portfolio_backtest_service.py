@@ -266,6 +266,14 @@ class PortfolioBacktestService:
         self._worker: threading.Thread | None = None
         self._live_leg: dict[int, dict[str, Any]] = {}
 
+    @staticmethod
+    def _normalize_strategy_id(strategy_id: Any) -> str:
+        sid = str(strategy_id or '').strip() or 'debit_spreads'
+        # Backward-compat: portfolio legs may contain strategy_key-like prefix.
+        if sid == 'credit_spreads':
+            return 'debit_spreads'
+        return sid
+
     def _ensure_no_active(self) -> None:
         with self._connect(self.db_path) as con:
             r = con.execute(
@@ -327,7 +335,7 @@ class PortfolioBacktestService:
         for leg in legs:
             if not isinstance(leg, dict):
                 raise HTTPException(status_code=400, detail="each leg must be an object")
-            sid = str(leg.get("strategy_id") or "").strip() or "debit_spreads"
+            sid = self._normalize_strategy_id(leg.get("strategy_id"))
             params = leg.get("params")
             if not isinstance(params, dict):
                 raise HTTPException(status_code=400, detail="leg.params must be an object")
@@ -576,7 +584,7 @@ class PortfolioBacktestService:
                 hb = threading.Thread(target=_hb, daemon=True)
                 hb.start()
 
-                sid = str(leg.get("strategy_id") or "debit_spreads")
+                sid = self._normalize_strategy_id(leg.get("strategy_id"))
                 params = leg.get("params") or {}
                 try:
                     strat = self._registry.get(sid)
