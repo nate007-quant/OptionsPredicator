@@ -600,6 +600,23 @@ class ExecutionExecutor:
             'short_symbol': short_sym,
         }
 
+        # broker instrument universe validation
+        if hasattr(self.client, 'instrument_supported'):
+            try:
+                il = self.client.instrument_supported(long_sym)
+                is_ = self.client.instrument_supported(short_sym)
+                ok_i = bool((il or {}).get('supported', False)) and bool((is_ or {}).get('supported', False))
+                checks['broker_instrument_validation'] = {
+                    'ok': ok_i,
+                    'long': il,
+                    'short': is_,
+                    'message': (None if ok_i else 'unsupported instrument at broker'),
+                }
+            except Exception as ex:
+                checks['broker_instrument_validation'] = {'ok': False, 'error': str(ex), 'message': 'broker instrument validation error'}
+        else:
+            checks['broker_instrument_validation'] = {'ok': True, 'skipped': 'unavailable'}
+
         # order dry-run
         try:
             r = self.client.place_order(dto, dry_run=True)
@@ -1213,7 +1230,12 @@ class ExecutionExecutor:
                     out["processed"] += 1
                 except Exception as e:
                     details = _format_exception_details(e)
-                    self._mark_intent(con, intent_id=iid, status="error", error=str(details.get("error") or str(e)))
+                    http_status = int(details.get('http_status') or 0) if isinstance(details, dict) else 0
+                    dmsg = str(details.get("error") or str(e))
+                    if http_status == 422 and ('instrument' in str(details.get('response_body') or '').lower() or 'preflight' in str(details.get('response_body') or '').lower()):
+                        self._mark_intent(con, intent_id=iid, status="PRECHECK_FAILED", error=f"unsupported_instrument: {dmsg}", precheck_status="failed", quarantine_reason="unsupported_instrument")
+                    else:
+                        self._mark_intent(con, intent_id=iid, status="error", error=dmsg)
                     self._record_order_event(
                         con,
                         trade_run_id=trade_run_id,

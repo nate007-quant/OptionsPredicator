@@ -383,7 +383,7 @@ class TastytradeClient:
                     except Exception:
                         return {"ok": True, "status_code": resp.status_code, "raw": resp.text}
             except httpx.HTTPStatusError as e:
-                self._emit_verbatim({"event":"auth_http_status_error","environment":self.environment,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
+                self._emit_verbatim({"event":"http_status_error","environment":self.environment,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
                 last_exc = e
                 code = int(e.response.status_code) if e.response is not None else 0
                 if code == 429 or code >= 500:
@@ -480,6 +480,27 @@ class TastytradeClient:
         if last_exc:
             raise RuntimeError(f"tasty authenticate failed after attempts: {attempt_errors}") from last_exc
         raise RuntimeError("tasty authenticate failed")
+
+
+    def instrument_supported(self, symbol: str) -> dict[str, Any]:
+        sym = normalize_option_symbol_for_tasty(str(symbol or ''))
+        if not sym:
+            return {'ok': False, 'supported': False, 'reason': 'empty_symbol'}
+        from urllib.parse import quote
+        path = f"/instruments/equity-options/{quote(sym, safe='')}"
+        try:
+            resp = self._request('GET', path)
+            return {'ok': True, 'supported': True, 'symbol': sym, 'response': resp}
+        except httpx.HTTPStatusError as e:
+            code = int(e.response.status_code) if e.response is not None else 0
+            if code in {404, 422}:
+                msg = None
+                try:
+                    msg = e.response.text if e.response is not None else None
+                except Exception:
+                    msg = None
+                return {'ok': True, 'supported': False, 'symbol': sym, 'status_code': code, 'message': msg}
+            raise
 
 
     def place_order(self, dto: OrderDTO, *, dry_run: bool | None = None) -> dict[str, Any]:
