@@ -177,6 +177,8 @@ class ExecutionExecutor:
         self.startup_reconcile_required = bool(startup_reconcile_required)
         self.strict_quarantine_requires_operator_clear = bool(strict_quarantine_requires_operator_clear)
         self.live_armed = bool(live_armed)
+        self._auth_endpoint_hard_failed = False
+        self._auth_endpoint_hard_fail_reason: str | None = None
 
     def _connect(self):
         if self._connect_fn is not None:
@@ -186,6 +188,12 @@ class ExecutionExecutor:
     def startup_reconcile_ready(self) -> tuple[bool, dict[str, Any]]:
         if not self.startup_reconcile_required:
             return True, {'required': False}
+        if self._auth_endpoint_hard_failed:
+            out["errors"] = 1
+            out["auth_hard_fail"] = True
+            out["auth_hard_fail_reason"] = str(self._auth_endpoint_hard_fail_reason or "auth endpoint unavailable")
+            return out
+
         with self._connect() as con:
             r = con.execute(
                 """
@@ -780,6 +788,11 @@ class ExecutionExecutor:
 
         return True, 'fallback_enter_now'
 
+    @staticmethod
+    def _is_auth_endpoint_missing_error(err: Any) -> bool:
+        msg = str(err or '').lower()
+        return ('/sessions -> http 404' in msg) or ('/sessions/ -> http 404' in msg) or ('unknown endpoint' in msg and 'sessions' in msg)
+
     def process_once(self, *, limit: int = 25) -> dict[str, Any]:
         out = {
             "scanned": 0,
@@ -1220,6 +1233,10 @@ class ExecutionExecutor:
                         )
                     out["errors"] += 1
                     out["processed"] += 1
+                    if self._is_auth_endpoint_missing_error(details.get("error") or str(e)):
+                        self._auth_endpoint_hard_failed = True
+                        self._auth_endpoint_hard_fail_reason = str(details.get("error") or str(e))
+                        break
 
             con.commit()
 

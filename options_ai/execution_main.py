@@ -102,6 +102,15 @@ def main() -> None:
         dry_run=(not (cfg.trading_enabled and cfg.live_execution_enabled and cfg.live_armed)),
         target_api_version=cfg.target_api_version,
     )
+    log_daemon_event(
+        paths.logs_daemon_dir,
+        "info",
+        "execution_broker_endpoints",
+        sandbox_base_url=str(sandbox_client.base_url),
+        live_base_url=str(live_client.base_url),
+        broker_env=str(cfg.broker_env),
+    )
+
     ex_live = ExecutionExecutor(
         db_path=db_path,
         environment='live',

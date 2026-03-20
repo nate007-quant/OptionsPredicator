@@ -186,7 +186,12 @@ class TastytradeClient:
         http_backoff_seconds: float = 0.5,
     ) -> None:
         self.environment = str(environment or "sandbox").lower()
-        self.base_url = (base_url or os.getenv("TASTY_BASE_URL") or "https://api.cert.tastyworks.com").rstrip("/")
+        env_base = None
+        if self.environment == 'live':
+            env_base = os.getenv('TASTY_LIVE_BASE_URL')
+        else:
+            env_base = os.getenv('TASTY_SANDBOX_BASE_URL')
+        self.base_url = (base_url or env_base or os.getenv("TASTY_BASE_URL") or ("https://api.tastyworks.com" if self.environment == 'live' else "https://api.cert.tastyworks.com")).rstrip("/")
         self.streamer_url = (streamer_url or os.getenv("TASTY_STREAMER_URL") or "").strip()
         self.session_token = (session_token or os.getenv("TASTY_SESSION_TOKEN") or "").strip() or None
         self.username = (username or os.getenv("TASTY_USERNAME") or "").strip() or None
