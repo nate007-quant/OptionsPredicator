@@ -221,6 +221,7 @@ class TastytradeClient:
         self.dry_run = bool(dry_run)
         self.target_api_version = (target_api_version or os.getenv("TARGET_API_VERSION") or "").strip() or None
         self.use_accept_version = str(os.getenv('TASTY_USE_ACCEPT_VERSION','0')).strip().lower() in {'1','true','yes','on'}
+        self.enable_oauth_fallback = str(os.getenv('TASTY_ENABLE_OAUTH_FALLBACK','0')).strip().lower() in {'1','true','yes','on'}
         self.http_max_retries = max(0, int(http_max_retries))
         self.http_backoff_seconds = max(0.0, float(http_backoff_seconds))
         self.verbatim_log_path = (os.getenv('TASTY_VERBATIM_LOG_PATH') or '/mnt/options_ai/logs/tasty_verbatim.log').strip()
@@ -414,36 +415,37 @@ class TastytradeClient:
         last_exc: Exception | None = None
         attempt_errors: list[str] = []
 
-        # Attempt 1: OAuth token endpoint (form-encoded)
-        try:
-            self._emit_verbatim({"event":"auth_mode","environment":self.environment,"mode":"oauth_password","endpoint":"/oauth/token","config_injected":True})
-            url = f"{self.base_url}/oauth/token"
-            headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
-            body = {"grant_type": "password", "username": str(self.username), "password": str(self.password)}
-            req_id = f"auth-oauth-{int(time.time()*1000)}"
-            self._emit_verbatim({"event":"request","req_id":req_id,"environment":self.environment,"method":"POST","url":url,"path":"/oauth/token","headers":self._redact_obj(headers),"json_body":self._redact_obj(body),"curl":self._curl_cmd('POST',url,self._redact_obj(headers),self._redact_obj(body),None)})
-            with httpx.Client(timeout=self.timeout_seconds) as client:
-                resp = client.post(url, headers=headers, data=body)
+        # Optional OAuth fallback (disabled by default to reduce noise)
+        if self.enable_oauth_fallback:
             try:
-                rj = resp.json()
-            except Exception:
-                rj = None
-            self._emit_verbatim({"event":"response","req_id":req_id,"environment":self.environment,"method":"POST","url":url,"path":"/oauth/token","status_code":int(resp.status_code),"response_headers":self._redact_obj(dict(resp.headers)),"response_json":self._redact_obj(rj) if rj is not None else None,"response_text":(resp.text if rj is None else None)})
-            if 200 <= int(resp.status_code) < 300:
-                token = None
-                if isinstance(rj, dict):
-                    token = rj.get('access_token') or rj.get('token') or ((rj.get('data') or {}).get('access_token') if isinstance(rj.get('data'), dict) else None)
-                if token:
-                    self.session_token = str(token)
-                    self.auth_scheme = "bearer"
-                    return {"ok": True, "auth": "oauth_token", "environment": self.environment}
-                raise RuntimeError("oauth token response missing access_token")
-            attempt_errors.append(f"/oauth/token -> HTTP {int(resp.status_code)}")
-        except Exception as e:
-            last_exc = e
-            attempt_errors.append(f"/oauth/token -> {type(e).__name__}: {e}")
+                self._emit_verbatim({"event":"auth_mode","environment":self.environment,"mode":"oauth_password","endpoint":"/oauth/token","config_injected":True})
+                url = f"{self.base_url}/oauth/token"
+                headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
+                body = {"grant_type": "password", "username": str(self.username), "password": str(self.password)}
+                req_id = f"auth-oauth-{int(time.time()*1000)}"
+                self._emit_verbatim({"event":"request","req_id":req_id,"environment":self.environment,"method":"POST","url":url,"path":"/oauth/token","headers":self._redact_obj(headers),"json_body":self._redact_obj(body),"curl":self._curl_cmd('POST',url,self._redact_obj(headers),self._redact_obj(body),None)})
+                with httpx.Client(timeout=self.timeout_seconds) as client:
+                    resp = client.post(url, headers=headers, data=body)
+                try:
+                    rj = resp.json()
+                except Exception:
+                    rj = None
+                self._emit_verbatim({"event":"response","req_id":req_id,"environment":self.environment,"method":"POST","url":url,"path":"/oauth/token","status_code":int(resp.status_code),"response_headers":self._redact_obj(dict(resp.headers)),"response_json":self._redact_obj(rj) if rj is not None else None,"response_text":(resp.text if rj is None else None)})
+                if 200 <= int(resp.status_code) < 300:
+                    token = None
+                    if isinstance(rj, dict):
+                        token = rj.get('access_token') or rj.get('token') or ((rj.get('data') or {}).get('access_token') if isinstance(rj.get('data'), dict) else None)
+                    if token:
+                        self.session_token = str(token)
+                        self.auth_scheme = "bearer"
+                        return {"ok": True, "auth": "oauth_token", "environment": self.environment}
+                    raise RuntimeError("oauth token response missing access_token")
+                attempt_errors.append(f"/oauth/token -> HTTP {int(resp.status_code)}")
+            except Exception as e:
+                last_exc = e
+                attempt_errors.append(f"/oauth/token -> {type(e).__name__}: {e}")
 
-        # Attempt 2: sessions login endpoint (no Accept-Version)
+        # Primary auth path: sessions login endpoint
         for path in ('/sessions','/sessions/'):
             try:
                 self._emit_verbatim({"event":"auth_mode","environment":self.environment,"mode":"sessions_login","endpoint":path,"config_injected":True})

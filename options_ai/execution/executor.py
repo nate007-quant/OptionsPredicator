@@ -598,6 +598,7 @@ class ExecutionExecutor:
             'ok': bool(long_sym and short_sym and long_sym != short_sym),
             'long_symbol': long_sym,
             'short_symbol': short_sym,
+            'symbol_source': 'manual',
         }
 
         # broker instrument universe validation
@@ -610,6 +611,9 @@ class ExecutionExecutor:
                     'ok': ok_i,
                     'long': il,
                     'short': is_,
+                    'symbol_source': 'broker_chain',
+                    'instrument_lookup_found': bool(ok_i),
+                    'preflight_category': ('instrument_validation' if (not ok_i) else None),
                     'message': (None if ok_i else 'unsupported instrument at broker'),
                 }
             except Exception as ex:
@@ -997,7 +1001,7 @@ class ExecutionExecutor:
                             con,
                             intent_id=iid,
                             status="PRECHECK_FAILED",
-                            error=(pre_fail or "precheck failed"),
+                            error=(("unsupported_instrument" if str(pre_fail or '').find('broker_instrument_validation')>=0 else (pre_fail or 'precheck failed'))),
                             broker_external_id=broker_external_id,
                             precheck_status="failed",
                             precheck_payload=pre_payload,
@@ -1234,6 +1238,7 @@ class ExecutionExecutor:
                     dmsg = str(details.get("error") or str(e))
                     if http_status == 422 and ('instrument' in str(details.get('response_body') or '').lower() or 'preflight' in str(details.get('response_body') or '').lower()):
                         self._mark_intent(con, intent_id=iid, status="PRECHECK_FAILED", error=f"unsupported_instrument: {dmsg}", precheck_status="failed", quarantine_reason="unsupported_instrument")
+                        details['preflight_category'] = 'instrument_validation'
                     else:
                         self._mark_intent(con, intent_id=iid, status="error", error=dmsg)
                     self._record_order_event(
