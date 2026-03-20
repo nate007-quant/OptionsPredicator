@@ -2604,17 +2604,39 @@ def create_app() -> FastAPI:
 
     @app.delete('/api/portfolios/{portfolio_id}')
     def portfolios_delete(portfolio_id: int) -> dict[str, Any]:
-        groups = _load_parameter_groups()
-        linked = [g['id'] for g in groups if int(portfolio_id) in (g.get('portfolio_ids') or [])]
-        if linked:
-            raise HTTPException(status_code=409, detail=f'portfolio in use by groups: {linked}')
+        import json as _json
+
+        pid = int(portfolio_id)
+        cleaned_group_ids: list[int] = []
         with _connect(db_path) as con:
-            r = con.execute('SELECT id FROM portfolio_defs WHERE id=?', (int(portfolio_id),)).fetchone()
+            r = con.execute('SELECT id FROM portfolio_defs WHERE id=?', (pid,)).fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail='portfolio not found')
-            con.execute('DELETE FROM portfolio_defs WHERE id=?', (int(portfolio_id),))
+
+            # Cascade-clean parameter_groups relationship refs to keep graph tidy.
+            rows = con.execute("SELECT id, COALESCE(portfolio_ids_json,'[]') AS portfolio_ids_json FROM parameter_groups").fetchall()
+            for gr in rows:
+                gid = int(gr['id'] if isinstance(gr, dict) else gr[0])
+                raw = (gr['portfolio_ids_json'] if isinstance(gr, dict) else gr[1]) or '[]'
+                try:
+                    pids = [int(x) for x in (_json.loads(raw) or []) if str(x).isdigit()]
+                except Exception:
+                    pids = []
+                if pid not in pids:
+                    continue
+                new_pids = sorted({x for x in pids if int(x) != pid})
+                con.execute('UPDATE parameter_groups SET portfolio_ids_json=?, updated_at_utc=? WHERE id=?', (_json.dumps(new_pids), _now_utc_iso(), gid))
+                cleaned_group_ids.append(gid)
+
+            con.execute('DELETE FROM portfolio_defs WHERE id=?', (pid,))
             con.commit()
-        return {'ok': True, 'deleted_id': int(portfolio_id)}
+
+        return {
+            'ok': True,
+            'deleted_id': pid,
+            'cleaned_group_refs': len(cleaned_group_ids),
+            'cleaned_group_ids': sorted(cleaned_group_ids),
+        }
 
 
 # ---- Portfolio Backtest (multi-leg) ----
