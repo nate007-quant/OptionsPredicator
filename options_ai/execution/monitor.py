@@ -579,6 +579,38 @@ class ExecutionMonitor:
                     )
 
                 tr_status = str(tr["status"] or "")
+
+                # Reconcile orphan opening runs: if intent is already terminal and there is no broker order/position,
+                # this run cannot fill and should not keep gates blocked.
+                if tr_status == 'opening' and (not tr.get('entry_order_id')) and len(scoped_positions) == 0:
+                    intent_st = None
+                    if intent_id is not None:
+                        try:
+                            rr_i = con.execute('SELECT status, error FROM execution_intents WHERE id=?', (int(intent_id),)).fetchone()
+                            if rr_i is not None:
+                                intent_st = str((rr_i['status'] if isinstance(rr_i, dict) else rr_i[0]) or '').strip().lower()
+                                intent_err = str((rr_i['error'] if isinstance(rr_i, dict) else rr_i[1]) or '')
+                            else:
+                                intent_err = ''
+                        except Exception:
+                            intent_st = None
+                            intent_err = ''
+                    term = {'rejected','error','precheck_failed','quarantined','blocked','expired','cancelled','protection_arming_failed'}
+                    if intent_st in term:
+                        con.execute(
+                            "UPDATE trade_runs SET status='rejected', close_reason=COALESCE(close_reason,'intent_terminal_without_order'), updated_at_utc=? WHERE id=? AND status='opening'",
+                            (_now_utc_iso(), trade_run_id),
+                        )
+                        self._record_order_event(
+                            con,
+                            trade_run_id=trade_run_id,
+                            execution_intent_id=intent_id,
+                            order_id=None,
+                            event_type='opening_orphan_reconciled',
+                            status='rejected',
+                            payload={'intent_status': intent_st, 'intent_error': intent_err, 'positions_count': 0},
+                        )
+
                 if len(scoped_positions) == 0 and tr_status in {'open', 'working', 'closing'}:
                     inferred = self._infer_close_reason_from_orders(scoped_orders)
                     close_reason = None
