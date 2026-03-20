@@ -6,6 +6,9 @@ from typing import Any, Literal
 import os
 import re
 import time
+import json
+import shlex
+from datetime import datetime, timezone
 
 import httpx
 
@@ -202,6 +205,8 @@ class TastytradeClient:
         self.target_api_version = (target_api_version or os.getenv("TARGET_API_VERSION") or "").strip() or None
         self.http_max_retries = max(0, int(http_max_retries))
         self.http_backoff_seconds = max(0.0, float(http_backoff_seconds))
+        self.verbatim_log_path = (os.getenv('TASTY_VERBATIM_LOG_PATH') or '/mnt/options_ai/logs/tasty_verbatim.log').strip()
+        self.verbatim_log_enabled = str(os.getenv('TASTY_VERBATIM_LOG_ENABLED', '1')).strip().lower() not in {'0','false','no','off'}
 
     @staticmethod
     def _authorization_header_value(token: str | None) -> str | None:
@@ -229,10 +234,46 @@ class TastytradeClient:
             h["Accept-Version"] = str(self.target_api_version)
         return h
 
+    def _emit_verbatim(self, payload: dict[str, Any]) -> None:
+        if not self.verbatim_log_enabled:
+            return
+        try:
+            rec = dict(payload or {})
+            rec.setdefault('ts_utc', datetime.now(timezone.utc).replace(microsecond=0).isoformat())
+            p = self.verbatim_log_path
+            if not p:
+                return
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(rec, separators=(',', ':'), sort_keys=True) + '\n')
+        except Exception:
+            pass
+
+    @staticmethod
+    def _curl_cmd(method: str, url: str, headers: dict[str, str], json_body: Any | None, params: dict[str, Any] | None) -> str:
+        parts = ['curl', '-i', '-sS', '-X', str(method).upper()]
+        for k, v in (headers or {}).items():
+            parts += ['-H', f"{k}: {v}"]
+        if params:
+            import urllib.parse as _up
+            qs = _up.urlencode({k: v for k, v in params.items() if v is not None})
+            if qs:
+                sep = '&' if ('?' in url) else '?'
+                url = f"{url}{sep}{qs}"
+        if json_body is not None:
+            try:
+                jb = json.dumps(json_body, separators=(',', ':'), sort_keys=True)
+            except Exception:
+                jb = str(json_body)
+            parts += ['--data-raw', jb]
+        parts.append(url)
+        return ' '.join(shlex.quote(x) for x in parts)
+
     def _request(self, method: str, path: str, *, json_body: Any | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not path.startswith("/"):
             path = "/" + path
         url = f"{self.base_url}{path}"
+        req_headers = self._headers()
 
         # Lazy auth: services can start with username/password in env and no pre-seeded token.
         if (not path.startswith("/sessions")) and (not self.session_token) and self.username and self.password:
@@ -243,7 +284,17 @@ class TastytradeClient:
         for attempt in range(0, self.http_max_retries + 1):
             try:
                 with httpx.Client(timeout=self.timeout_seconds) as client:
-                    resp = client.request(method.upper(), url, headers=self._headers(), json=json_body, params=params)
+                    req_id = f"{int(time.time()*1000)}-{attempt}"
+                    self._emit_verbatim({
+                        "event": "request", "req_id": req_id, "environment": self.environment, "method": method.upper(), "url": url,
+                        "path": path, "params": params, "json_body": json_body, "headers": req_headers,
+                        "curl": self._curl_cmd(method, url, req_headers, json_body, params),
+                    })
+                    resp = client.request(method.upper(), url, headers=req_headers, json=json_body, params=params)
+                    self._emit_verbatim({
+                        "event": "response", "req_id": req_id, "environment": self.environment, "method": method.upper(), "url": url, "path": path,
+                        "status_code": int(resp.status_code), "response_headers": dict(resp.headers), "response_text": (resp.text if resp is not None else None),
+                    })
                     # 401 can happen when token expired/invalid; re-auth once then retry immediately.
                     if resp.status_code == 401 and (not path.startswith("/sessions")) and self.username and self.password and (not did_reauth):
                         did_reauth = True
@@ -263,6 +314,7 @@ class TastytradeClient:
                     except Exception:
                         return {"ok": True, "status_code": resp.status_code, "raw": resp.text}
             except httpx.HTTPStatusError as e:
+                self._emit_verbatim({"event":"http_status_error","environment":self.environment,"method":method.upper(),"url":url,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
                 last_exc = e
                 code = int(e.response.status_code) if e.response is not None else 0
                 if code == 429 or code >= 500:
@@ -271,6 +323,7 @@ class TastytradeClient:
                         continue
                 raise
             except Exception as e:
+                self._emit_verbatim({"event":"request_exception","environment":self.environment,"method":method.upper(),"url":url,"path":path,"error_type":type(e).__name__,"error":str(e)})
                 last_exc = e
                 if attempt < self.http_max_retries:
                     time.sleep(self.http_backoff_seconds * (2 ** attempt))
@@ -303,6 +356,7 @@ class TastytradeClient:
                     self.session_token = str(token)
                 return resp
             except httpx.HTTPStatusError as e:
+                self._emit_verbatim({"event":"http_status_error","environment":self.environment,"method":method.upper(),"url":url,"path":path,"status_code":(int(e.response.status_code) if e.response is not None else None),"error":str(e),"response_text":((e.response.text if e.response is not None else None))})
                 last_exc = e
                 code = int(e.response.status_code) if e.response is not None else 0
                 attempt_errors.append(f"{path} -> HTTP {code}")
@@ -310,6 +364,7 @@ class TastytradeClient:
                     raise
                 continue
             except Exception as e:
+                self._emit_verbatim({"event":"request_exception","environment":self.environment,"method":method.upper(),"url":url,"path":path,"error_type":type(e).__name__,"error":str(e)})
                 last_exc = e
                 attempt_errors.append(f"{path} -> {type(e).__name__}: {e}")
                 continue
