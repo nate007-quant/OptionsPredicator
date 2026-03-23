@@ -714,6 +714,7 @@ def _fetch_candidates_for_window(
     flow_gate_min_confidence: float,
     contrarian_enabled: bool,
     contrarian_ml_invert: bool,
+    tz_local: str,
 ) -> dict[datetime, list[dict[str, Any]]]:
     if not snapshots:
         return {}
@@ -756,6 +757,7 @@ def _fetch_candidates_for_window(
              AND s.spread_type = c.spread_type
             WHERE c.snapshot_ts = ANY(%s)
               AND c.tradable = true
+              AND c.expiration_date = ((c.snapshot_ts AT TIME ZONE %s)::date)
               AND f.low_quality = false
               AND c.debit_points > 0
               AND c.debit_points <= %s
@@ -782,6 +784,7 @@ def _fetch_candidates_for_window(
             (
                 int(horizon_minutes),
                 snapshots,
+                str(tz_local),
                 float(max_debit_points),
                 allowed_anchors,
                 list(allowed_spreads),
@@ -1276,6 +1279,7 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     flow_gate_min_confidence=cfg.flow_gate_min_confidence,
                     contrarian_enabled=cfg.contrarian_enabled,
                     contrarian_ml_invert=contrarian_ml_invert,
+                    tz_local=tz_local,
                 )
             else:
                 by_ts = _fetch_candidates_term_anchor_based(
@@ -1470,6 +1474,13 @@ def run_backtest_debit_spreads(conn: psycopg.Connection, cfg: DebitBacktestConfi
                     continue
 
             if exp_date is None or long_sym is None or short_sym is None or entry_debit is None:
+                continue
+
+            # Hard guard against stale/invalid contracts in backtests.
+            entry_local_date = entry_ts.astimezone(ZoneInfo(tz_local)).date()
+            if exp_date < entry_local_date:
+                continue
+            if cfg.expiration_mode == '0dte' and exp_date != entry_local_date:
                 continue
 
             # Build forward snapshot path for exits

@@ -152,6 +152,7 @@ def precheck_candidates_0dte(
              AND s.spread_type = c.spread_type
             WHERE c.snapshot_ts = ANY(%s)
               AND c.tradable = true
+              AND c.expiration_date = ((c.snapshot_ts AT TIME ZONE %s)::date)
               AND f.low_quality = false
               AND c.debit_points > 0
               AND c.debit_points <= %s
@@ -163,6 +164,7 @@ def precheck_candidates_0dte(
             (
                 int(cfg.horizon_minutes),
                 uniq_snaps,
+                str(cfg.tz_local),
                 float(cfg.max_debit_points),
                 allowed_anchors,
                 list(cfg.allowed_spreads),
