@@ -2734,6 +2734,24 @@ def create_app() -> FastAPI:
             marker = str((body or {}).get('signal_marker') or '').strip()
             source_snapshot_ts = str((body or {}).get('snapshot_ts') or '').strip()
             if emit_source == 'engine' and source_snapshot_ts:
+                ok_rt, reason = _is_realtime_signal_snapshot(
+                    source_snapshot_ts,
+                    now_utc=datetime.now(timezone.utc),
+                    max_age_minutes=max(1, int(os.getenv('SIGNAL_ENGINE_MAX_SNAPSHOT_AGE_MINUTES', '45') or '45')),
+                )
+                if not ok_rt:
+                    return {
+                        'ok': True,
+                        'portfolio_id': int(portfolio_id),
+                        'mode': mode,
+                        'environment': env,
+                        'account_label': account_label,
+                        'inserted': 0,
+                        'existing': 0,
+                        'source_snapshot_ts': source_snapshot_ts,
+                        'skipped': 'stale_snapshot',
+                        'reason': str(reason or 'stale_snapshot'),
+                    }
                 marker = source_snapshot_ts.replace(':','_')
             if emit_source == 'engine' and (not marker):
                 rr2 = con.execute("SELECT COALESCE(MAX(id),0) AS mx FROM predictions").fetchone()
@@ -5902,6 +5920,35 @@ def create_app() -> FastAPI:
         except Exception:
             return False
 
+    def _parse_utc_ts(ts: str | None) -> datetime | None:
+        t = str(ts or '').strip()
+        if not t:
+            return None
+        try:
+            dt = datetime.fromisoformat(t.replace('Z', '+00:00'))
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _is_realtime_signal_snapshot(snapshot_ts: str | None, *, now_utc: datetime, max_age_minutes: int) -> tuple[bool, str | None]:
+        dt = _parse_utc_ts(snapshot_ts)
+        if dt is None:
+            return False, 'invalid_snapshot_ts'
+        age_min = (now_utc - dt).total_seconds() / 60.0
+        if age_min < -2.0:
+            return False, f'snapshot_in_future:{age_min:.1f}m'
+        if age_min > float(max_age_minutes):
+            return False, f'snapshot_too_old:{age_min:.1f}m'
+        # Prevent prior-day replay even if max-age is increased.
+        try:
+            if dt.astimezone(CENTRAL_TZ).date() != now_utc.astimezone(CENTRAL_TZ).date():
+                return False, 'snapshot_not_today_central'
+        except Exception:
+            return False, 'snapshot_tz_error'
+        return True, None
+
     def _signal_engine_tick() -> None:
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
@@ -5917,7 +5964,10 @@ def create_app() -> FastAPI:
         if not rows:
             return
 
-        market_open = _is_market_hours_central(datetime.now(timezone.utc))
+        now_dt = datetime.now(timezone.utc)
+        market_open = _is_market_hours_central(now_dt)
+        max_age_minutes = max(1, int(os.getenv('SIGNAL_ENGINE_MAX_SNAPSHOT_AGE_MINUTES', '45') or '45'))
+
         for r in rows:
             pid = int(r['id'])
             # load last source marker
@@ -5942,9 +5992,30 @@ def create_app() -> FastAPI:
                         con.commit()
                     continue
 
+                fresh_snaps: list[str] = []
+                newest_seen = last_src
+                stale_reasons: list[str] = []
+                for ss in snaps:
+                    newest_seen = ss
+                    ok_rt, reason = _is_realtime_signal_snapshot(ss, now_utc=now_dt, max_age_minutes=max_age_minutes)
+                    if ok_rt:
+                        fresh_snaps.append(ss)
+                    else:
+                        if reason:
+                            stale_reasons.append(str(reason))
+
+                if not fresh_snaps:
+                    with _connect(db_path) as con:
+                        con.execute(
+                            "UPDATE portfolio_defs SET signal_last_source_ts=?, signal_last_error=? WHERE id=?",
+                            (newest_seen or last_src, (f"skipped stale snapshots ({len(snaps)}): " + ','.join(sorted(set(stale_reasons))[:3]))[:240], pid),
+                        )
+                        con.commit()
+                    continue
+
                 inserted_total = 0
                 newest = last_src
-                for ss in snaps:
+                for ss in fresh_snaps:
                     out = portfolios_emit_signals(pid, {'source': 'engine', 'snapshot_ts': ss})
                     inserted_total += int(out.get('inserted') or 0)
                     newest = ss
