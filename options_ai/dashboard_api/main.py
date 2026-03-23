@@ -741,7 +741,7 @@ def create_app() -> FastAPI:
 
 
     @app.get('/api/status/pipelines')
-    def status_pipelines(window: int = Query(500, ge=50, le=5000)) -> dict[str, Any]:
+    def status_pipelines(window: int = Query(500, ge=50, le=5000), ticker: str | None = Query(None, pattern=r"^[A-Za-z0-9._-]{1,32}$")) -> dict[str, Any]:
         """Return Timescale-backed pipeline progress + state cursors.
 
         This is used by the Processing tab to show how far each stage is behind the
@@ -749,9 +749,12 @@ def create_app() -> FastAPI:
         """
         dsn = _pg_dsn()
         tz_local = os.getenv('TZ_LOCAL', 'America/Chicago').strip() or 'America/Chicago'
+        selected_ticker = _resolve_market_ticker(ticker)
+
         out: dict[str, Any] = {
             'ok': True,
             'window': int(window),
+            'ticker': selected_ticker,
             'ts': _now_central_iso(),
             'timescale': {'ok': False, 'error': None},
             'latest': {},
@@ -796,7 +799,10 @@ def create_app() -> FastAPI:
             with _pg_connect(dsn) as conn:
                 with conn.cursor() as cur:
                     def max_ts(table: str) -> Any:
-                        cur.execute(f"SELECT max(snapshot_ts) FROM {table}")
+                        if table == 'spx.option_chain':
+                            cur.execute("SELECT max(snapshot_ts) FROM spx.option_chain WHERE UPPER(underlying) = %s", (selected_ticker,))
+                        else:
+                            cur.execute(f"SELECT max(snapshot_ts) FROM {table}")
                         r = cur.fetchone()
                         return r[0] if r else None
 
@@ -851,6 +857,7 @@ def create_app() -> FastAPI:
                           SELECT DISTINCT snapshot_ts
                           FROM spx.option_chain
                           WHERE expiration_date = ((snapshot_ts AT TIME ZONE %s)::date)
+                            AND UPPER(underlying) = %s
                           ORDER BY snapshot_ts DESC
                           LIMIT %s
                         )
@@ -861,7 +868,7 @@ def create_app() -> FastAPI:
                         LEFT JOIN spx.chain_features_0dte f
                           ON f.snapshot_ts = oc.snapshot_ts
                         """,
-                        (tz_local, int(window)),
+                        (tz_local, selected_ticker, int(window)),
                     )
                     r = cur.fetchone()
                     out['counts_recent']['features_missing'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
@@ -4616,12 +4623,12 @@ def create_app() -> FastAPI:
         return {'window': window, 'resolution': resolution, 'series': rows}
 
     @app.get('/api/metrics/processing/pipeline')
-    def metrics_processing_pipeline(window: str = Query('15m')) -> dict[str, Any]:
+    def metrics_processing_pipeline(window: str = Query('15m'), ticker: str | None = Query(None, pattern=r"^[A-Za-z0-9._-]{1,32}$")) -> dict[str, Any]:
         ws = _parse_window_seconds(window)
         cutoff_dt = _now_utc() - timedelta(seconds=ws)
         cutoff_iso = cutoff_dt.replace(microsecond=0).isoformat()
 
-        pp = status_pipelines(window=max(50, min(5000, int(ws / 3))))
+        pp = status_pipelines(window=max(50, min(5000, int(ws / 3))), ticker=ticker)
         counts = pp.get('counts_recent') or {}
         n_0dte = int(((counts.get('features_missing') or {}).get('n')) or 0)
 
@@ -4684,10 +4691,16 @@ def create_app() -> FastAPI:
                             if not tb:
                                 continue
                             tcol = time_cols.get(str(tb), 'snapshot_ts')
-                            cur.execute(
-                                f"SELECT COUNT(*), COUNT(DISTINCT snapshot_ts), MAX(snapshot_ts), MAX({tcol}) FROM {tb} WHERE {tcol} >= %s",
-                                (cutoff_dt,),
-                            )
+                            if key == 'option_chain':
+                                cur.execute(
+                                    f"SELECT COUNT(*), COUNT(DISTINCT snapshot_ts), MAX(snapshot_ts), MAX({tcol}) FROM {tb} WHERE {tcol} >= %s AND UPPER(underlying) = %s",
+                                    (cutoff_dt, str(pp.get('ticker') or 'SPX').upper()),
+                                )
+                            else:
+                                cur.execute(
+                                    f"SELECT COUNT(*), COUNT(DISTINCT snapshot_ts), MAX(snapshot_ts), MAX({tcol}) FROM {tb} WHERE {tcol} >= %s",
+                                    (cutoff_dt,),
+                                )
                             r = cur.fetchone()
                             stage_metrics[key] = {
                                 'rows_window': int((r[0] or 0) if r else 0),

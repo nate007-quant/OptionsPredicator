@@ -15,6 +15,7 @@ from options_ai.term_expiration import pick_expiration, term_bucket_name
 class DebitSpreadTermConfig:
     db_dsn: str
     tz_local: str = "America/Chicago"
+    underlying: str = "SPX"
 
     target_dte_days: int = 7
     dte_tolerance_days: int = 2
@@ -223,7 +224,7 @@ def _mid_from_row(r: dict[str, Any]) -> float | None:
     return None
 
 
-def _fetch_chain_rows(conn: psycopg.Connection, snapshot_ts: datetime, expiration_date) -> list[dict[str, Any]]:
+def _fetch_chain_rows(conn: psycopg.Connection, snapshot_ts: datetime, expiration_date, underlying: str) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -233,9 +234,9 @@ def _fetch_chain_rows(conn: psycopg.Connection, snapshot_ts: datetime, expiratio
                    open_interest, volume,
                    underlying_price
             FROM spx.option_chain
-            WHERE snapshot_ts = %s AND expiration_date = %s
+            WHERE snapshot_ts = %s AND expiration_date = %s AND UPPER(underlying) = %s
             """,
-            (snapshot_ts, expiration_date),
+            (snapshot_ts, expiration_date, str(underlying).upper()),
         )
         out: list[dict[str, Any]] = []
         for r in cur.fetchall():
@@ -385,13 +386,14 @@ def compute_candidates_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: da
         target_dte_days=int(cfg.target_dte_days),
         dte_tolerance_days=int(cfg.dte_tolerance_days),
         tz_local=str(cfg.tz_local),
+        underlying=str(cfg.underlying),
     )
     if not picked:
         return 0
 
     exp_date = picked.expiration_date
 
-    chain = _fetch_chain_rows(conn, snapshot_ts, exp_date)
+    chain = _fetch_chain_rows(conn, snapshot_ts, exp_date, cfg.underlying)
     if not chain:
         return 0
 
@@ -527,7 +529,7 @@ def compute_candidates_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: da
     return upserted
 
 
-def _debit_at_ts(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_date, long_symbol: str, short_symbol: str) -> float | None:
+def _debit_at_ts(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_date, long_symbol: str, short_symbol: str, underlying: str) -> float | None:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -535,9 +537,10 @@ def _debit_at_ts(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_
             FROM spx.option_chain
             WHERE snapshot_ts = %s
               AND expiration_date = %s
+              AND UPPER(underlying) = %s
               AND option_symbol = ANY(%s)
             """,
-            (snapshot_ts, expiration_date, [long_symbol, short_symbol]),
+            (snapshot_ts, expiration_date, str(underlying).upper(), [long_symbol, short_symbol]),
         )
         got: dict[str, dict[str, Any]] = {}
         for r in cur.fetchall():
@@ -562,7 +565,7 @@ def _debit_at_ts(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_
     return float(m_long - m_short)
 
 
-def _pick_future_snapshot_ts(conn: psycopg.Connection, *, expiration_date, ts_target: datetime, ts_max: datetime) -> datetime | None:
+def _pick_future_snapshot_ts(conn: psycopg.Connection, *, expiration_date, ts_target: datetime, ts_max: datetime, underlying: str) -> datetime | None:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -571,10 +574,11 @@ def _pick_future_snapshot_ts(conn: psycopg.Connection, *, expiration_date, ts_ta
             WHERE expiration_date = %s
               AND snapshot_ts >= %s
               AND snapshot_ts <= %s
+              AND UPPER(underlying) = %s
             ORDER BY snapshot_ts ASC
             LIMIT 1
             """,
-            (expiration_date, ts_target, ts_max),
+            (expiration_date, ts_target, ts_max, str(underlying).upper()),
         )
         r = cur.fetchone()
         return r[0] if r else None
@@ -602,7 +606,7 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
     for h in cfg.horizons_minutes:
         target = snapshot_ts + timedelta(minutes=int(h))
         max_ts = target + timedelta(minutes=int(cfg.max_future_lookahead_minutes))
-        tH = _pick_future_snapshot_ts(conn, expiration_date=expiration_date, ts_target=target, ts_max=max_ts)
+        tH = _pick_future_snapshot_ts(conn, expiration_date=expiration_date, ts_target=target, ts_max=max_ts, underlying=cfg.underlying)
 
         for anchor_type, spread_type, long_sym, short_sym, debit_t in cands:
             debit_t_val = _as_float(debit_t)
@@ -615,6 +619,7 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
                     expiration_date=expiration_date,
                     long_symbol=str(long_sym),
                     short_symbol=str(short_sym),
+                    underlying=cfg.underlying,
                 )
                 if debit_tH is None:
                     missing = True
@@ -645,14 +650,14 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
     return upserted
 
 
-def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: str, candidate_min_age_minutes: int, limit: int) -> list[tuple[datetime, Any]]:
+def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: str, candidate_min_age_minutes: int, limit: int, underlying: str) -> list[tuple[datetime, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT f.snapshot_ts, f.expiration_date
             FROM spx.chain_features_term f
             WHERE f.term_bucket = %s
-              AND f.snapshot_ts <= (SELECT max(snapshot_ts) FROM spx.option_chain) - (%s * INTERVAL '1 minute')
+              AND f.snapshot_ts <= (SELECT max(snapshot_ts) FROM spx.option_chain WHERE UPPER(underlying) = %s) - (%s * INTERVAL '1 minute')
               AND NOT EXISTS (
                 SELECT 1
                 FROM spx.debit_spread_candidates_term c
@@ -662,12 +667,12 @@ def _feature_rows_missing_candidates(conn: psycopg.Connection, *, term_bucket: s
             ORDER BY f.snapshot_ts DESC
             LIMIT %s
             """,
-            (term_bucket, int(candidate_min_age_minutes), int(limit)),
+            (term_bucket, str(underlying).upper(), int(candidate_min_age_minutes), int(limit)),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
 
-def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, horizons_minutes: tuple[int, ...], max_horizon_minutes: int, limit: int) -> list[tuple[datetime, Any]]:
+def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, horizons_minutes: tuple[int, ...], max_horizon_minutes: int, limit: int, underlying: str) -> list[tuple[datetime, Any]]:
     hs = [int(x) for x in (horizons_minutes or ()) if int(x) > 0]
     if not hs:
         hs = [int(max_horizon_minutes)]
@@ -677,7 +682,7 @@ def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, 
             SELECT c.snapshot_ts, c.expiration_date
             FROM spx.debit_spread_candidates_term c
             WHERE c.term_bucket = %s
-              AND c.snapshot_ts <= (SELECT max(snapshot_ts) FROM spx.option_chain) - (%s * INTERVAL '1 minute')
+              AND c.snapshot_ts <= (SELECT max(snapshot_ts) FROM spx.option_chain WHERE UPPER(underlying) = %s) - (%s * INTERVAL '1 minute')
               AND EXISTS (
                 SELECT 1
                 FROM unnest(%s::int[]) AS h(hm)
@@ -694,7 +699,7 @@ def _feature_rows_missing_labels(conn: psycopg.Connection, *, term_bucket: str, 
             ORDER BY c.snapshot_ts DESC
             LIMIT %s
             """,
-            (term_bucket, int(max_horizon_minutes), hs, int(limit)),
+            (term_bucket, str(underlying).upper(), int(max_horizon_minutes), hs, int(limit)),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
 
@@ -712,6 +717,7 @@ def run_daemon(cfg: DebitSpreadTermConfig) -> None:
                     term_bucket=cfg.term_bucket,
                     candidate_min_age_minutes=cfg.candidate_min_age_minutes,
                     limit=cfg.batch_limit,
+                    underlying=cfg.underlying,
                 ):
                     n = compute_candidates_for_snapshot(conn, snapshot_ts=ts, cfg=cfg)
                     if n:
@@ -723,6 +729,7 @@ def run_daemon(cfg: DebitSpreadTermConfig) -> None:
                     horizons_minutes=cfg.horizons_minutes,
                     max_horizon_minutes=max(cfg.horizons_minutes),
                     limit=cfg.batch_limit,
+                    underlying=cfg.underlying,
                 ):
                     n = compute_labels_for_snapshot(conn, snapshot_ts=ts, expiration_date=exp, cfg=cfg)
                     if n:
@@ -752,6 +759,7 @@ def load_config_from_env() -> DebitSpreadTermConfig:
     return DebitSpreadTermConfig(
         db_dsn=db,
         tz_local=tz_local,
+        underlying=(os.getenv("PIPELINE_UNDERLYING", "").strip() or os.getenv("TICKER", "SPX").strip() or "SPX").upper(),
         target_dte_days=target,
         dte_tolerance_days=tol,
         expiration_mode=expiration_mode,

@@ -5583,9 +5583,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       opsBoxLoading('Pipe', true);
       try {
         const window = document.getElementById('opsWindow')?.value || '15m';
+        const ticker = getSelectedOpsTicker();
         const [summary, pipeline] = await Promise.all([
           jget(`/api/metrics/processing/summary?window=${encodeURIComponent(window)}`),
-          jget(`/api/metrics/processing/pipeline?window=${encodeURIComponent(window)}`),
+          jget(`/api/metrics/processing/pipeline?window=${encodeURIComponent(window)}&ticker=${encodeURIComponent(ticker)}`),
         ]);
 
         const mode = document.getElementById('opsMode')?.value || 'operator';

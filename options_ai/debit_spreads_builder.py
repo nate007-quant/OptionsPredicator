@@ -17,6 +17,7 @@ from options_ai.utils.task_state import utc_now_iso, write_task_state
 class DebitSpreadConfig:
     db_dsn: str
     tz_local: str = "America/Chicago"
+    underlying: str = "SPX"
 
     horizons_minutes: tuple[int, ...] = (30,)  # default 30m
     max_future_lookahead_minutes: int = 120
@@ -193,7 +194,7 @@ def _mid_from_row(r: dict[str, Any]) -> float | None:
     return None
 
 
-def _fetch_chain_rows(conn: psycopg.Connection, snapshot_ts: datetime, expiration_date: datetime.date) -> list[dict[str, Any]]:
+def _fetch_chain_rows(conn: psycopg.Connection, snapshot_ts: datetime, expiration_date: datetime.date, underlying: str) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -203,9 +204,9 @@ def _fetch_chain_rows(conn: psycopg.Connection, snapshot_ts: datetime, expiratio
                    open_interest, volume,
                    underlying_price
             FROM spx.option_chain
-            WHERE snapshot_ts = %s AND expiration_date = %s
+            WHERE snapshot_ts = %s AND expiration_date = %s AND UPPER(underlying) = %s
             """,
-            (snapshot_ts, expiration_date),
+            (snapshot_ts, expiration_date, str(underlying).upper()),
         )
         out: list[dict[str, Any]] = []
         for r in cur.fetchall():
@@ -343,7 +344,7 @@ def compute_candidates_for_snapshot(
 ) -> int:
     exp_date = _local_trade_date(snapshot_ts, tz_local)
 
-    chain = _fetch_chain_rows(conn, snapshot_ts, exp_date)
+    chain = _fetch_chain_rows(conn, snapshot_ts, exp_date, cfg.underlying)
     if not chain:
         return 0
 
@@ -486,15 +487,15 @@ def compute_candidates_for_snapshot(
     return upserted
 
 
-def _debit_at_ts(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_date: datetime.date, long_symbol: str, short_symbol: str) -> float | None:
+def _debit_at_ts(conn: psycopg.Connection, *, snapshot_ts: datetime, expiration_date: datetime.date, long_symbol: str, short_symbol: str, underlying: str) -> float | None:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT option_symbol, bid, ask, mid
             FROM spx.option_chain
-            WHERE snapshot_ts = %s AND expiration_date = %s AND option_symbol = ANY(%s)
+            WHERE snapshot_ts = %s AND expiration_date = %s AND UPPER(underlying) = %s AND option_symbol = ANY(%s)
             """,
-            (snapshot_ts, expiration_date, [long_symbol, short_symbol]),
+            (snapshot_ts, expiration_date, str(underlying).upper(), [long_symbol, short_symbol]),
         )
         got: dict[str, dict[str, Any]] = {}
         for r in cur.fetchall():
@@ -561,7 +562,7 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
             debit_tH = None
             missing = tH is None
             if (not missing) and long_sym and short_sym:
-                debit_tH = _debit_at_ts(conn, snapshot_ts=tH, expiration_date=exp_date, long_symbol=str(long_sym), short_symbol=str(short_sym))
+                debit_tH = _debit_at_ts(conn, snapshot_ts=tH, expiration_date=exp_date, long_symbol=str(long_sym), short_symbol=str(short_sym), underlying=cfg.underlying)
                 if debit_tH is None:
                     missing = True
 
@@ -680,6 +681,7 @@ def load_config_from_env() -> DebitSpreadConfig:
     return DebitSpreadConfig(
         db_dsn=db,
         tz_local=tz_local,
+        underlying=(os.getenv("PIPELINE_UNDERLYING", "").strip() or os.getenv("TICKER", "SPX").strip() or "SPX").upper(),
         horizons_minutes=horizons,
         max_future_lookahead_minutes=int(os.getenv("MAX_FUTURE_LOOKAHEAD_MINUTES", "120")),
         max_debit_points=float(os.getenv("MAX_DEBIT_POINTS", "5.0")),

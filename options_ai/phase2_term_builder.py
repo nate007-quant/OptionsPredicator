@@ -20,6 +20,7 @@ TZ_LOCAL_DEFAULT = "America/Chicago"
 class Phase2TermConfig:
     db_dsn: str
     tz_local: str = TZ_LOCAL_DEFAULT
+    underlying: str = "SPX"
 
     target_dte_days: int = 7
     dte_tolerance_days: int = 2
@@ -423,14 +424,14 @@ def ensure_schema(conn: psycopg.Connection) -> None:
             cur.execute("SELECT pg_advisory_unlock(902103120173)")
 
 
-def _fetch_chain_rows(cur: psycopg.Cursor, snapshot_ts: datetime, expiration_date: Any) -> list[dict[str, Any]]:
+def _fetch_chain_rows(cur: psycopg.Cursor, snapshot_ts: datetime, expiration_date: Any, underlying: str) -> list[dict[str, Any]]:
     cur.execute(
         """
         SELECT side, strike, iv, delta, mid, bid, ask, underlying_price, volume, open_interest
         FROM spx.option_chain
-        WHERE snapshot_ts = %s AND expiration_date = %s
+        WHERE snapshot_ts = %s AND expiration_date = %s AND UPPER(underlying) = %s
         """,
-        (snapshot_ts, expiration_date),
+        (snapshot_ts, expiration_date, str(underlying).upper()),
     )
     out = []
     for r in cur.fetchall():
@@ -556,6 +557,7 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
         target_dte_days=int(cfg.target_dte_days),
         dte_tolerance_days=int(cfg.dte_tolerance_days),
         tz_local=str(cfg.tz_local),
+        underlying=str(cfg.underlying),
     )
     if not picked:
         return None
@@ -563,7 +565,7 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
     exp_date = picked.expiration_date
 
     with conn.cursor() as cur:
-        chain = _fetch_chain_rows(cur, snapshot_ts, exp_date)
+        chain = _fetch_chain_rows(cur, snapshot_ts, exp_date, cfg.underlying)
         if not chain:
             return None
 
@@ -877,7 +879,7 @@ def _candidate_snapshot_ts(conn: psycopg.Connection, *, cfg: Phase2TermConfig, l
     max_h = max((int(x) for x in cfg.horizons_minutes), default=0)
 
     with conn.cursor() as cur:
-        cur.execute("SELECT max(snapshot_ts) FROM spx.option_chain")
+        cur.execute("SELECT max(snapshot_ts) FROM spx.option_chain WHERE UPPER(underlying) = %s", (str(cfg.underlying).upper(),))
         r = cur.fetchone()
         max_ts = r[0] if r else None
 
@@ -885,10 +887,11 @@ def _candidate_snapshot_ts(conn: psycopg.Connection, *, cfg: Phase2TermConfig, l
             """
             SELECT DISTINCT snapshot_ts
             FROM spx.option_chain
+            WHERE UPPER(underlying) = %s
             ORDER BY snapshot_ts DESC
             LIMIT %s
             """,
-            (n_recent,),
+            (str(cfg.underlying).upper(), n_recent),
         )
         recent = [x[0] for x in cur.fetchall()]
 
@@ -900,10 +903,11 @@ def _candidate_snapshot_ts(conn: psycopg.Connection, *, cfg: Phase2TermConfig, l
                 SELECT DISTINCT snapshot_ts
                 FROM spx.option_chain
                 WHERE snapshot_ts <= %s
+                  AND UPPER(underlying) = %s
                 ORDER BY snapshot_ts DESC
                 LIMIT %s
                 """,
-                (cutoff, n_hist),
+                (cutoff, str(cfg.underlying).upper(), n_hist),
             )
             hist = [x[0] for x in cur.fetchall()]
 
@@ -987,6 +991,7 @@ def load_config_from_env() -> Phase2TermConfig:
     return Phase2TermConfig(
         db_dsn=db,
         tz_local=os.getenv("TZ_LOCAL", TZ_LOCAL_DEFAULT).strip() or TZ_LOCAL_DEFAULT,
+        underlying=(os.getenv("PIPELINE_UNDERLYING", "").strip() or os.getenv("TICKER", "SPX").strip() or "SPX").upper(),
         target_dte_days=target,
         dte_tolerance_days=tol,
         expiration_mode=expiration_mode,

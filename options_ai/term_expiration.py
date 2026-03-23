@@ -22,6 +22,7 @@ def pick_expiration_for_target_dte(
     target_dte_days: int,
     dte_tolerance_days: int,
     tz_local: str,
+    underlying: str = "SPX",
 ) -> PickedExpiration | None:
     """Pick one expiration for a snapshot_ts closest to target DTE.
 
@@ -39,6 +40,7 @@ def pick_expiration_for_target_dte(
               FROM spx.option_chain
               WHERE snapshot_ts = %s
                 AND expiration_date IS NOT NULL
+                AND UPPER(underlying) = %s
             )
             SELECT
               expiration_date,
@@ -51,6 +53,7 @@ def pick_expiration_for_target_dte(
             """,
             (
                 snapshot_ts,
+                str(underlying).upper(),
                 snapshot_ts,
                 tz_local,
                 snapshot_ts,
@@ -90,6 +93,7 @@ def pick_current_week_friday_expiration(
     *,
     snapshot_ts: datetime,
     tz_local: str,
+    underlying: str = "SPX",
 ) -> PickedExpiration | None:
     """Pick expiration that exactly matches current week's Friday (local).
 
@@ -106,10 +110,11 @@ def pick_current_week_friday_expiration(
             FROM spx.option_chain
             WHERE snapshot_ts = %s
               AND expiration_date = %s
+              AND UPPER(underlying) = %s
             GROUP BY expiration_date
             LIMIT 1
             """,
-            (snapshot_ts, tz_local, snapshot_ts, friday),
+            (snapshot_ts, tz_local, snapshot_ts, friday, str(underlying).upper()),
         )
         r = cur.fetchone()
         if not r:
@@ -129,16 +134,18 @@ def pick_expiration(
     target_dte_days: int,
     dte_tolerance_days: int,
     tz_local: str,
+    underlying: str = "SPX",
 ) -> PickedExpiration | None:
     mode = str(expiration_mode or "target_dte").strip().lower()
     if mode == "current_week_friday":
-        return pick_current_week_friday_expiration(conn, snapshot_ts=snapshot_ts, tz_local=tz_local)
+        return pick_current_week_friday_expiration(conn, snapshot_ts=snapshot_ts, tz_local=tz_local, underlying=underlying)
     return pick_expiration_for_target_dte(
         conn,
         snapshot_ts=snapshot_ts,
         target_dte_days=target_dte_days,
         dte_tolerance_days=dte_tolerance_days,
         tz_local=tz_local,
+        underlying=underlying,
     )
 
 

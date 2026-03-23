@@ -65,6 +65,7 @@ Set these in `.env` (see `.env.example`):
 - `SPX_CHAIN_DATABASE_URL=postgresql://spx:spxpass@localhost:5432/spxdb`
 - `FILENAME_TZ=America/Chicago`
 - `MARKET_DATA_ROOT=/mnt/MarketData` (dashboard Processing ticker list)
+- `PIPELINE_UNDERLYING=SPX` (Timescale builder scope for features/labels/candidates/scores)
 
 Multi-symbol import (same ingestion format):
 - Put snapshots under symbol subfolders, e.g. `/mnt/MarketData/SPX/`, `/mnt/MarketData/NDX/`

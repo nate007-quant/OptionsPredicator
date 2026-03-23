@@ -28,6 +28,7 @@ TZ_LOCAL_DEFAULT = "America/Chicago"
 class Phase2Config:
     db_dsn: str
     tz_local: str = TZ_LOCAL_DEFAULT
+    underlying: str = "SPX"
 
     horizons_minutes: tuple[int, ...] = (15, 30, 45, 60, 90)
     max_future_lookahead_minutes: int = 120
@@ -413,15 +414,16 @@ def ensure_phase2_schema(conn: psycopg.Connection) -> None:
         conn.commit()
 
 
-def _fetch_chain_rows_for_snapshot(cur: psycopg.Cursor, snapshot_ts: datetime, expiration_date: datetime.date) -> list[dict[str, Any]]:
+def _fetch_chain_rows_for_snapshot(cur: psycopg.Cursor, snapshot_ts: datetime, expiration_date: datetime.date, underlying: str) -> list[dict[str, Any]]:
     cur.execute(
         """
         SELECT side, strike, iv, delta, mid, bid, ask, underlying_price, volume, open_interest
         FROM spx.option_chain
         WHERE snapshot_ts = %s
           AND expiration_date = %s
+          AND UPPER(underlying) = %s
         """,
-        (snapshot_ts, expiration_date),
+        (snapshot_ts, expiration_date, str(underlying).upper()),
     )
     rows = []
     for r in cur.fetchall():
@@ -549,7 +551,7 @@ def compute_features_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: date
     exp_date = _local_trade_date(snapshot_ts, tz_local)
 
     with conn.cursor() as cur:
-        chain = _fetch_chain_rows_for_snapshot(cur, snapshot_ts, exp_date)
+        chain = _fetch_chain_rows_for_snapshot(cur, snapshot_ts, exp_date, cfg.underlying)
         if not chain:
             return None
 
@@ -849,7 +851,7 @@ def compute_labels_for_snapshot(conn: psycopg.Connection, *, snapshot_ts: dateti
         return upserted
 
 
-def _candidate_snapshot_ts(conn: psycopg.Connection, *, limit: int) -> list[datetime]:
+def _candidate_snapshot_ts(conn: psycopg.Connection, *, limit: int, underlying: str) -> list[datetime]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -857,6 +859,7 @@ def _candidate_snapshot_ts(conn: psycopg.Connection, *, limit: int) -> list[date
             FROM (
                 SELECT DISTINCT snapshot_ts
                 FROM spx.option_chain
+                WHERE UPPER(underlying) = %s
                 ORDER BY snapshot_ts DESC
                 LIMIT %s
             ) oc
@@ -864,7 +867,7 @@ def _candidate_snapshot_ts(conn: psycopg.Connection, *, limit: int) -> list[date
             WHERE f.snapshot_ts IS NULL
             ORDER BY oc.snapshot_ts ASC
             """,
-            (int(limit),),
+            (str(underlying).upper(), int(limit)),
         )
         return [r[0] for r in cur.fetchall()]
 
@@ -904,7 +907,7 @@ def run_phase2_daemon(cfg: Phase2Config) -> None:
         did = False
         try:
             with psycopg.connect(cfg.db_dsn) as conn:
-                for ts in _candidate_snapshot_ts(conn, limit=cfg.batch_limit):
+                for ts in _candidate_snapshot_ts(conn, limit=cfg.batch_limit, underlying=cfg.underlying):
                     write_task_state(task_path, {"stage": "phase2_features", "snapshot_ts": ts.isoformat().replace("+00:00", "Z"), "started_at": utc_now_iso()})
                     r = compute_features_for_snapshot(conn, snapshot_ts=ts, tz_local=cfg.tz_local, min_contracts=cfg.min_contracts, cfg=cfg)
                     if r:
@@ -958,6 +961,7 @@ def load_phase2_config_from_env() -> Phase2Config:
     return Phase2Config(
         db_dsn=db,
         tz_local=os.getenv("TZ_LOCAL", TZ_LOCAL_DEFAULT).strip() or TZ_LOCAL_DEFAULT,
+        underlying=(os.getenv("PIPELINE_UNDERLYING", "").strip() or os.getenv("TICKER", "SPX").strip() or "SPX").upper(),
         horizons_minutes=horizons,
         max_future_lookahead_minutes=int(os.getenv("MAX_FUTURE_LOOKAHEAD_MINUTES", "120")),
         label_eps_atm_iv=float(os.getenv("LABEL_EPS_ATM_IV", "0.0025")),
