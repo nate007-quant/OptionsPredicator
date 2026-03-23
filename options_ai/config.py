@@ -217,7 +217,7 @@ def load_config() -> Config:
 
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
     database_url = os.getenv("DATABASE_URL", "").strip()
-    ticker = os.getenv("TICKER", "SPX").strip().upper()
+    ticker = (os.getenv("TICKER", "SPX").strip().upper() or "SPX")
     data_root = os.getenv("DATA_ROOT", "/mnt/options_ai").strip()
 
     # Execution (v1)
@@ -238,8 +238,6 @@ def load_config() -> Config:
     oauth_refresh_margin_seconds = int(os.getenv("OAUTH_REFRESH_MARGIN_SECONDS", "60"))
     oauth_cache_path = os.getenv("OAUTH_CACHE_PATH", f"{data_root}/state/oauth_token.json").strip()
 
-    if ticker != "SPX":
-        raise RuntimeError(f"v1 supports SPX only (TICKER={ticker!r})")
 
     if not database_url:
         raise RuntimeError("DATABASE_URL is required")

@@ -33,3 +33,10 @@ def test_apply_overrides_maps_fields(monkeypatch: pytest.MonkeyPatch):
     assert eff.reprocess_mode == "full"
     assert abs(eff.watch_poll_seconds - 0.5) < 1e-9
     assert eff.outcome_delay_minutes == 20
+
+
+def test_load_config_allows_non_spx_ticker(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:////tmp/test.db")
+    monkeypatch.setenv("TICKER", "NDX")
+    cfg = load_config()
+    assert cfg.ticker == "NDX"

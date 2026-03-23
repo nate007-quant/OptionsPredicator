@@ -11,9 +11,10 @@ CHART_EXTRACTION_SYSTEM = (
 )
 
 
-def chart_extraction_user_prompt() -> str:
+def chart_extraction_user_prompt(*, ticker: str = "SPX") -> str:
+    t = str(ticker or "SPX").strip().upper() or "SPX"
     return (
-        "Describe the SPX chart image. Only visible facts (price direction, candles/bars, support/resistance lines if visible, volume if shown). "
+        f"Describe the {t} chart image. Only visible facts (price direction, candles/bars, support/resistance lines if visible, volume if shown). "
         "No prediction, no speculation, no options discussion. 4–6 sentences."
     )
 
@@ -107,6 +108,27 @@ Reasoning: 2–3 sentences max.
 PREDICTION_SYSTEM = PREDICTION_SYSTEM_REMOTE
 
 
+def prediction_system_remote(*, ticker: str = "SPX") -> str:
+    t = str(ticker or "SPX").strip().upper() or "SPX"
+    if t == "SPX":
+        return PREDICTION_SYSTEM_REMOTE
+    out = PREDICTION_SYSTEM_REMOTE
+    out = out.replace("SPX-only", f"{t}-focused")
+    out = out.replace(" for SPX.", f" for {t}.")
+    out = out.replace(" SPX ", f" {t} ")
+    return out
+
+
+def prediction_system_local(*, ticker: str = "SPX") -> str:
+    t = str(ticker or "SPX").strip().upper() or "SPX"
+    if t == "SPX":
+        return PREDICTION_SYSTEM_LOCAL
+    out = PREDICTION_SYSTEM_LOCAL
+    out = out.replace("SPX-only", f"{t}-focused")
+    out = out.replace(" SPX ", f" {t} ")
+    return out
+
+
 def prediction_user_prompt(
     *,
     snapshot_summary: dict[str, Any],
@@ -115,6 +137,7 @@ def prediction_user_prompt(
     recent_predictions: list[dict[str, Any]],
     performance_summary: dict[str, Any] | None,
     min_confidence: float,
+    ticker: str = "SPX",
 ) -> str:
     payload = {
         "snapshot_summary": snapshot_summary,
@@ -134,8 +157,9 @@ def prediction_user_prompt(
             },
         },
     }
+    t = str(ticker or "SPX").strip().upper() or "SPX"
     return (
-        "Generate the next-15-minute directional prediction for SPX. "
+        f"Generate the next-15-minute directional prediction for {t}. "
         "Return JSON only. Required schema: {predicted_direction, predicted_magnitude, confidence, strategy_suggested, signals_used, reasoning}. "
         "Use the provided inputs strictly.\n\nINPUTS:\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)

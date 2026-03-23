@@ -1,1 +1,1 @@
-"""OptionsPredicator - SPX-only, file-driven options AI prediction daemon."""
+"""OptionsPredicator - file-driven options AI prediction daemon."""

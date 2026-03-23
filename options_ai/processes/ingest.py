@@ -225,11 +225,9 @@ def _compact_signals_for_prompt(signals: dict[str, Any]) -> dict[str, Any]:
 def parse_snapshot_filename(name: str) -> ParsedFilename:
     m = FILENAME_RE.match(name)
     if not m:
-        raise ValueError("filename does not match required SPX snapshot pattern")
+        raise ValueError("filename does not match required snapshot pattern")
 
     ticker = m.group("ticker").upper()
-    if ticker != "SPX":
-        raise ValueError(f"ticker must be SPX (got {ticker!r})")
 
     spot_price = float(m.group("spot"))
     if spot_price <= 0:
@@ -329,8 +327,8 @@ def validate_snapshot_json(snapshot: dict[str, Any], parsed: ParsedFilename) -> 
     for u in under_arr:
         if _normalize_underlying(str(u)) != u0:
             raise ValueError("underlying values must be identical across rows")
-    if u0 != "SPX":
-        raise ValueError("underlying must resolve to SPX")
+    if u0 != parsed.ticker:
+        raise ValueError(f"underlying must resolve to filename ticker ({parsed.ticker})")
 
     # side values
     for s in snapshot["side"]:
@@ -405,7 +403,7 @@ def build_snapshot_summary(parsed: ParsedFilename, rows: list[OptionRow], snapsh
 
 
 def _chart_path_if_exists(paths: Any, parsed: ParsedFilename) -> str | None:
-    # spec example: SPX_chart_YYYYMMDD_HHMMSS.png
+    # spec example: <TICKER>_chart_YYYYMMDD_HHMMSS.png
     name = f"{parsed.ticker}_chart_{parsed.observed_date_compact}_{parsed.observed_time_compact}.png"
     p = Path(paths.incoming_charts_dir) / name
     return str(p) if p.exists() else None
@@ -772,7 +770,7 @@ def ingest_snapshot_file(
                 desc, rep, model_used, provider, reason = try_models(
                     [c],
                     fn_name="chart_extraction",
-                    fn=lambda client: run_chart_extraction_if_available(codex=client, chart_png_path=chart_path, chart_max_output_tokens=cfg.chart_max_output_tokens),
+                    fn=lambda client: run_chart_extraction_if_available(codex=client, chart_png_path=chart_path, chart_max_output_tokens=cfg.chart_max_output_tokens, ticker=parsed.ticker),
                     local_max_retries=int(cfg.local_model_max_retries or 0),
                 )
                 chart_description = desc
@@ -899,10 +897,10 @@ def ingest_snapshot_file(
 
         perf_summary = _compact_performance_summary(perf_summary_raw)
 
-        from options_ai.ai.prompts import PREDICTION_SYSTEM_LOCAL, PREDICTION_SYSTEM_REMOTE
-        system_prompt = PREDICTION_SYSTEM_REMOTE
+        from options_ai.ai.prompts import prediction_system_local, prediction_system_remote
+        system_prompt = prediction_system_remote(ticker=parsed.ticker)
         if c.provider == "local" and bool(cfg.use_compact_system_prompt_local):
-            system_prompt = PREDICTION_SYSTEM_LOCAL
+            system_prompt = prediction_system_local(ticker=parsed.ticker)
 
         cached = load_model_cache(
             paths,
@@ -942,6 +940,7 @@ def ingest_snapshot_file(
                     performance_summary=perf_summary,
                     min_confidence=cfg.min_confidence,
                     prediction_max_output_tokens=cfg.prediction_max_output_tokens,
+                    ticker=parsed.ticker,
                 ),
                 local_max_retries=int(cfg.local_model_max_retries or 0),
             )

@@ -7,11 +7,13 @@ import pytest
 from options_ai.processes.ingest import parse_snapshot_filename, validate_snapshot_json
 
 
-def _min_snapshot(exp_epoch: int) -> dict:
+def _min_snapshot(exp_epoch: int, ticker: str = "SPX") -> dict:
+    t = str(ticker).upper()
+    osym = "SPXW" if t == "SPX" else t
     return {
         "s": "ok",
-        "optionSymbol": ["SPXW_000000C", "SPXW_000000P"],
-        "underlying": ["SPX", "SPX"],
+        "optionSymbol": [f"{osym}_000000C", f"{osym}_000000P"],
+        "underlying": [t, t],
         "expiration": [exp_epoch, exp_epoch],
         "side": ["call", "put"],
         "strike": [6900, 6900],
@@ -43,6 +45,28 @@ def test_side_validation_fails():
     exp_epoch = int(datetime(2026, 2, 20, tzinfo=timezone.utc).timestamp())
     snap = _min_snapshot(exp_epoch)
     snap["side"][0] = "CALL"
+
+    with pytest.raises(ValueError):
+        validate_snapshot_json(snap, parsed)
+
+
+def test_filename_parsing_and_json_validation_passes_non_spx():
+    name = "NDX-21000.0-2026-02-20-20260220-145520.json"
+    parsed = parse_snapshot_filename(name)
+    assert parsed.ticker == "NDX"
+    assert parsed.expiration_date == "2026-02-20"
+
+    exp_epoch = int(datetime(2026, 2, 20, tzinfo=timezone.utc).timestamp())
+    snap = _min_snapshot(exp_epoch, ticker="NDX")
+    validate_snapshot_json(snap, parsed)
+
+
+def test_underlying_must_match_filename_ticker():
+    name = "RUT-2200.0-2026-02-20-20260220-145520.json"
+    parsed = parse_snapshot_filename(name)
+
+    exp_epoch = int(datetime(2026, 2, 20, tzinfo=timezone.utc).timestamp())
+    snap = _min_snapshot(exp_epoch, ticker="SPX")
 
     with pytest.raises(ValueError):
         validate_snapshot_json(snap, parsed)

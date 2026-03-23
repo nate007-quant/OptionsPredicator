@@ -41,6 +41,7 @@ def run_chart_extraction_if_available(
     codex: CodexClient,
     chart_png_path: str | None,
     chart_max_output_tokens: int | None = None,
+    ticker: str = "SPX",
 ) -> tuple[str | None, dict[str, Any] | None]:
     if not chart_png_path:
         return None, None
@@ -48,7 +49,7 @@ def run_chart_extraction_if_available(
     desc, report = codex.extract_chart_description(
         chart_png_path,
         system_prompt=CHART_EXTRACTION_SYSTEM,
-        user_prompt=chart_extraction_user_prompt(),
+        user_prompt=chart_extraction_user_prompt(ticker=ticker),
         max_output_tokens=chart_max_output_tokens,
     )
     # Ensure output_chars present for usage telemetry
@@ -71,6 +72,7 @@ def run_prediction(
     performance_summary: dict[str, Any] | None,
     min_confidence: float,
     prediction_max_output_tokens: int | None = None,
+    ticker: str = "SPX",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     user_prompt = prediction_user_prompt(
         snapshot_summary=snapshot_summary,
@@ -79,6 +81,7 @@ def run_prediction(
         recent_predictions=recent_predictions,
         performance_summary=performance_summary,
         min_confidence=min_confidence,
+        ticker=ticker,
     )
 
     report: dict[str, Any] = {"prompt_chars": len(user_prompt)}
