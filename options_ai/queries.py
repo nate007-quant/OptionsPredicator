@@ -312,16 +312,19 @@ def fetch_eligible_to_score(db_path: str, cutoff_ts_iso: str) -> list[dict[str, 
 
     with connect(db_path) as conn:
         try:
+            # Postgres-safe time arithmetic (legacy SQLite datetime(...) is not supported).
             cur = conn.execute(
                 "SELECT id, timestamp, ticker, predicted_direction, predicted_magnitude, spot_price, observed_ts_utc, outcome_ts_utc "
                 "FROM predictions "
-                "WHERE result IS NULL AND COALESCE(outcome_ts_utc, datetime(timestamp, '+15 minutes')) <= ?",
+                "WHERE result IS NULL "
+                "AND COALESCE(outcome_ts_utc::timestamptz, (timestamp::timestamptz + interval '15 minutes')) <= ?::timestamptz",
                 (cutoff_ts_iso,),
             )
         except Exception:
+            # Fallback path for partially migrated schemas.
             cur = conn.execute(
                 "SELECT id, timestamp, ticker, predicted_direction, predicted_magnitude, spot_price "
-                "FROM predictions WHERE result IS NULL AND timestamp <= ?",
+                "FROM predictions WHERE result IS NULL AND timestamp::timestamptz <= ?::timestamptz",
                 (cutoff_ts_iso,),
             )
         return [dict(r) for r in cur.fetchall()]
