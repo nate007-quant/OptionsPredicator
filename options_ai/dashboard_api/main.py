@@ -776,11 +776,11 @@ def create_app() -> FastAPI:
                 pass
 
         with _connect(db_path) as con:
-            cur = con.execute("SELECT COUNT(*) AS n FROM predictions")
+            cur = con.execute("SELECT COUNT(*) AS n FROM predictions WHERE UPPER(ticker)=UPPER(?)", (selected_ticker,))
             total_predictions = int(cur.fetchone()["n"])
-            cur = con.execute("SELECT COUNT(*) AS n FROM predictions WHERE result IS NOT NULL")
+            cur = con.execute("SELECT COUNT(*) AS n FROM predictions WHERE UPPER(ticker)=UPPER(?) AND result IS NOT NULL", (selected_ticker,))
             total_scored = int(cur.fetchone()["n"])
-            cur = con.execute("SELECT COUNT(*) AS n FROM predictions WHERE result IS NULL")
+            cur = con.execute("SELECT COUNT(*) AS n FROM predictions WHERE UPPER(ticker)=UPPER(?) AND result IS NULL", (selected_ticker,))
             unscored = int(cur.fetchone()["n"])
 
         # Scoring health: newest snapshot_index key + oldest unscored prediction
@@ -790,7 +790,10 @@ def create_app() -> FastAPI:
             seen_path = data_root / "state" / "seen_files.json"
             if seen_path.exists():
                 st = _json.loads(seen_path.read_text(encoding="utf-8"))
-                keys = list((st.get("snapshot_index") or {}).keys())
+                by_ticker = (st.get("snapshot_index_by_ticker") or {}) if isinstance(st, dict) else {}
+                keys = list((by_ticker.get(selected_ticker) or {}).keys())
+                if not keys:
+                    keys = list((st.get("snapshot_index") or {}).keys())
                 newest_snapshot = max(keys) if keys else None
         except Exception:
             newest_snapshot = None
@@ -798,7 +801,8 @@ def create_app() -> FastAPI:
         oldest_unscored = None
         try:
             cur = con.execute(
-                "SELECT MIN(COALESCE(observed_ts_utc, timestamp)) AS ts FROM predictions WHERE result IS NULL"
+                "SELECT MIN(COALESCE(observed_ts_utc, timestamp)) AS ts FROM predictions WHERE UPPER(ticker)=UPPER(?) AND result IS NULL",
+                (selected_ticker,),
             )
             oldest_unscored = cur.fetchone()["ts"]
         except Exception:

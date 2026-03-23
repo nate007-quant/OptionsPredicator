@@ -17,6 +17,7 @@ from options_ai.queries import fetch_total_predictions
 from options_ai.runtime_overrides import apply_overrides, load_overrides_file
 from options_ai.utils.cache import sha256_file
 from options_ai.utils.logger import get_logger, log_bootstrap, log_daemon_event
+from options_ai.utils.paths import build_paths, ensure_runtime_dirs
 
 
 @dataclass
@@ -73,7 +74,7 @@ def _save_json_atomic(path: Path, obj: Any) -> None:
 
 
 def _load_seen_state(state_path: Path) -> dict[str, Any]:
-    return _load_json(state_path, {"snapshot_index": {}})
+    return _load_json(state_path, {"snapshot_index": {}, "snapshot_index_by_ticker": {}})
 
 
 def _sha256_file(path: Path) -> str:
@@ -85,6 +86,69 @@ def _list_candidate_snapshots(dir_path: Path) -> list[Path]:
         return []
     return sorted([p for p in dir_path.glob("*.json") if p.is_file() and not p.name.endswith(".tmp")])
 
+
+
+
+def _normalize_ticker_name(v: str | None, default: str = "SPX") -> str:
+    t = str(v or "").strip().upper()
+    if not t:
+        return str(default or "SPX").upper()
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    if any(ch not in allowed for ch in t):
+        return str(default or "SPX").upper()
+    return t
+
+
+def _load_processing_tickers(state_dir: Path, default_ticker: str) -> list[str]:
+    p = state_dir / "processing_tickers.json"
+    out: list[str] = []
+    try:
+        obj = _load_json(p, {})
+        raw = obj.get("tickers") if isinstance(obj, dict) else None
+        if isinstance(raw, list):
+            for x in raw:
+                out.append(_normalize_ticker_name(x, default_ticker))
+    except Exception:
+        pass
+    out.append(_normalize_ticker_name(default_ticker, default_ticker))
+    return sorted(set(out))
+
+
+def _incoming_dir_for_ticker(cfg: Config, paths: Any, ticker: str) -> Path:
+    market_root = Path(os.getenv("MARKET_DATA_ROOT", "/mnt/MarketData")).expanduser()
+    p = market_root / ticker
+    if p.exists():
+        return p
+    return Path(paths.data_root) / "incoming" / ticker
+
+
+def _candidate_entries(cfg: Config, paths: Any) -> list[tuple[Path, Any, bool]]:
+    tickers = _load_processing_tickers(Path(paths.state_dir), cfg.ticker)
+    entries: list[tuple[Path, Any, bool]] = []
+    seen: set[str] = set()
+
+    for t in tickers:
+        tpaths = build_paths(str(paths.data_root), t)
+        ensure_runtime_dirs(tpaths)
+
+        dirs: list[tuple[Path, bool]] = []
+        if cfg.replay_mode:
+            dirs = [(Path(tpaths.historical_dir), False)]
+        else:
+            dirs = [(_incoming_dir_for_ticker(cfg, paths, t), True)]
+            if (cfg.reprocess_mode or "none").lower() != "none":
+                dirs.append((Path(tpaths.processed_snapshots_dir), False))
+
+        for d, is_incoming in dirs:
+            for p in _list_candidate_snapshots(d):
+                k = str(p.resolve()) if p.exists() else str(p)
+                if k in seen:
+                    continue
+                seen.add(k)
+                entries.append((p, tpaths, is_incoming))
+
+    entries.sort(key=lambda x: str(x[0]))
+    return entries
 
 def _run_bootstrap_if_needed(cfg: Config, paths: Any, db_path: str, state: dict[str, Any], router: ModelRouter) -> None:
     if cfg.replay_mode:
@@ -236,21 +300,10 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
 
             score_due_predictions(cfg=cfg_effective, paths=paths, db_path=db_path, state=state)
 
-            dirs: list[Path] = []
-            if cfg_effective.replay_mode:
-                dirs = [Path(paths.historical_dir)]
-            else:
-                dirs = [Path(paths.incoming_snapshots_dir)]
-                if (cfg_effective.reprocess_mode or "none").lower() != "none":
-                    dirs.append(Path(paths.processed_snapshots_dir))
-
-            candidates: list[Path] = []
-            for d in dirs:
-                candidates.extend(_list_candidate_snapshots(d))
-
+            entries = _candidate_entries(cfg_effective, paths)
             processed_any = False
 
-            for p in sorted(set(candidates)):
+            for p, ticker_paths, is_incoming in entries:
                 # Mid-loop override refresh so PAUSE_PROCESSING takes effect quickly (no need to wait for full queue drain)
                 try:
                     overrides2 = load_overrides_file(overrides_path)
@@ -272,8 +325,6 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                 next_ts = backoff.get(str(p))
                 if next_ts is not None and now < next_ts:
                     continue
-
-                is_incoming = Path(paths.incoming_snapshots_dir) in p.parents
 
                 if is_incoming:
                     st = p.stat()
@@ -297,6 +348,7 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                         "snapshot_hash": file_hash,
                         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         "stage": "ingest",
+                        "ticker": str(getattr(ticker_paths, "ticker", cfg_effective.ticker)).upper(),
                         "pid": os.getpid(),
                     },
                 )
@@ -304,7 +356,7 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                 try:
                     ingest_res: IngestResult = ingest_snapshot_file(
                         cfg=cfg_effective,
-                        paths=paths,
+                        paths=ticker_paths,
                         db_path=db_path,
                         snapshot_path=p,
                         snapshot_hash=file_hash,
@@ -320,7 +372,7 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                     # If we skipped due to duplicates and file is in incoming, move to processed for cleanliness.
                     if is_incoming and (not ingest_res.processed) and (ingest_res.skipped_reason or "").startswith("duplicate"):
                         try:
-                            dest = Path(paths.processed_snapshots_dir) / p.name
+                            dest = Path(ticker_paths.processed_snapshots_dir) / p.name
                             dest.parent.mkdir(parents=True, exist_ok=True)
                             if dest.exists():
                                 p.unlink(missing_ok=True)
@@ -336,6 +388,7 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                             "snapshot_hash": file_hash,
                             "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                             "stage": "done",
+                            "ticker": str(getattr(ticker_paths, "ticker", cfg_effective.ticker)).upper(),
                             "pid": os.getpid(),
                             "processed": bool(ingest_res.processed),
                             "prediction_id": ingest_res.prediction_id,
@@ -361,7 +414,7 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                             backoff_seconds=delay,
                         )
                     else:
-                        log_daemon_event(paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
+                        log_daemon_event(ticker_paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
 
                     _write_current_task(
                         paths,
@@ -370,6 +423,7 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                             "snapshot_hash": file_hash,
                             "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                             "stage": "error",
+                            "ticker": str(getattr(ticker_paths, "ticker", cfg_effective.ticker)).upper(),
                             "pid": os.getpid(),
                             "error": str(e),
                         },

@@ -18,28 +18,35 @@ def _parse_ts(ts_iso: str) -> datetime:
 
 
 def _ensure_snapshot_index(state: dict[str, Any], paths: Any) -> None:
-    """Ensure state['snapshot_index'] exists; if missing/empty, attempt a light rebuild.
+    """Ensure state snapshot indices exist; rebuild from disk if missing/empty.
 
-    Defensive: prefer JSON observed timestamp when present; fallback to filename.
+    Maintains both legacy `snapshot_index` and ticker-aware `snapshot_index_by_ticker`.
     """
 
     state.setdefault("snapshot_index", {})
-    if state["snapshot_index"]:
+    state.setdefault("snapshot_index_by_ticker", {})
+    if state["snapshot_index"] and state["snapshot_index_by_ticker"]:
         return
 
+    root = Path(paths.data_root)
     dirs = [
-        Path(paths.processed_snapshots_dir),
-        Path(paths.incoming_snapshots_dir),
-        Path(paths.historical_dir),
+        root / "processed",
+        root / "incoming",
+        root / "historical",
     ]
 
     from options_ai.processes.ingest import parse_snapshot_filename
 
     idx: dict[str, Any] = {}
-    for d in dirs:
-        if not d.exists():
+    by_ticker: dict[str, dict[str, Any]] = {}
+
+    for base in dirs:
+        if not base.exists():
             continue
-        for p in d.glob("*.json"):
+        # Walk known per-ticker trees.
+        for p in base.rglob("*.json"):
+            if not p.is_file():
+                continue
             try:
                 parsed = parse_snapshot_filename(p.name)
 
@@ -53,7 +60,6 @@ def _ensure_snapshot_index(state: dict[str, Any], paths: Any) -> None:
 
                 obs_dt = obs_dt or parsed.observed_dt_utc
 
-                # last-resort: if filename timestamp is stale and JSON has no observed time, use file mtime
                 if obs_dt == parsed.observed_dt_utc:
                     try:
                         now_utc = datetime.now(timezone.utc)
@@ -62,16 +68,25 @@ def _ensure_snapshot_index(state: dict[str, Any], paths: Any) -> None:
                             obs_dt = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
                     except Exception:
                         pass
+
                 obs_iso = obs_dt.replace(microsecond=0).isoformat()
-                idx[obs_iso] = {"spot": parsed.spot_price, "file": p.name}
+                payload = {"spot": parsed.spot_price, "file": p.name, "ticker": parsed.ticker}
+                idx[obs_iso] = payload
+                by_ticker.setdefault(parsed.ticker, {})[obs_iso] = payload
             except Exception:
                 continue
 
     state["snapshot_index"] = idx
+    state["snapshot_index_by_ticker"] = by_ticker
 
 
-def _find_outcome_price(state: dict[str, Any], target_dt: datetime) -> tuple[float | None, str | None]:
-    idx = state.get("snapshot_index") or {}
+def _find_outcome_price(state: dict[str, Any], target_dt: datetime, *, ticker: str | None = None) -> tuple[float | None, str | None]:
+    by_ticker = state.get("snapshot_index_by_ticker") or {}
+    t = str(ticker or "").upper().strip()
+    if t and isinstance(by_ticker, dict):
+        idx = by_ticker.get(t) or {}
+    else:
+        idx = state.get("snapshot_index") or {}
     if not idx:
         return None, None
 
@@ -111,16 +126,20 @@ def score_due_predictions(*, cfg: Config, paths: Any, db_path: str, state: dict[
             pred_ts = _parse_ts(p["timestamp"]).replace(microsecond=0)
             target_ts = pred_ts + timedelta(minutes=int(cfg.outcome_delay_minutes))
 
-            price_outcome, matched_obs = _find_outcome_price(state, target_ts)
+            pred_ticker = str(p.get("ticker") or cfg.ticker).upper()
+            price_outcome, matched_obs = _find_outcome_price(state, target_ts, ticker=pred_ticker)
             if price_outcome is None:
                 newest = None
                 try:
-                    keys = list((state.get("snapshot_index") or {}).keys())
+                    bt = (state.get("snapshot_index_by_ticker") or {}) if isinstance(state, dict) else {}
+                    keys = list((bt.get(pred_ticker) or {}).keys())
+                    if not keys:
+                        keys = list((state.get("snapshot_index") or {}).keys())
                     if keys:
                         newest = max(keys)
                 except Exception:
                     newest = None
-                log_scoring(paths, level="INFO", event="missing_outcome_price", message="outcome not available yet", pred_id=int(p.get("id")), target_outcome_ts=target_ts.isoformat(), newest_snapshot_ts=newest)
+                log_scoring(paths, level="INFO", event="missing_outcome_price", message="outcome not available yet", pred_id=int(p.get("id")), ticker=pred_ticker, target_outcome_ts=target_ts.isoformat(), newest_snapshot_ts=newest)
                 continue
 
             price_pred = float(p.get("spot_price") or 0.0)
@@ -140,7 +159,7 @@ def score_due_predictions(*, cfg: Config, paths: Any, db_path: str, state: dict[
                 actual_move=float(s.actual_move),
                 result=s.result,
                 pnl_simulated=float(pnl),
-                outcome_notes=f"outcome_from_snapshot_ts={matched_obs}",
+                outcome_notes=f"ticker={pred_ticker};outcome_from_snapshot_ts={matched_obs}",
             )
             scored += 1
         except Exception as e:

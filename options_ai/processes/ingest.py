@@ -1245,10 +1245,18 @@ def ingest_snapshot_file(
 
     # Update state snapshot index (for scoring)
     state.setdefault("snapshot_index", {})
+    state.setdefault("snapshot_index_by_ticker", {})
     obs_iso = observed_ts_utc
     state["snapshot_index"][obs_iso] = {
         "spot": float(spot),
         "file": snapshot_path.name,
+        "ticker": parsed.ticker,
+    }
+    ticker_index = state["snapshot_index_by_ticker"].setdefault(parsed.ticker, {})
+    ticker_index[obs_iso] = {
+        "spot": float(spot),
+        "file": snapshot_path.name,
+        "ticker": parsed.ticker,
     }
 
     # Append daily prediction log
@@ -1271,7 +1279,7 @@ def ingest_snapshot_file(
     # Move processed files only for live (non-replay) incoming directory
     if move_files:
         try:
-            dest = Path(paths.processed_snapshots_dir) / snapshot_path.name
+            dest = Path(paths.data_root) / "processed" / parsed.ticker / "snapshots" / snapshot_path.name
             dest.parent.mkdir(parents=True, exist_ok=True)
             snapshot_path.replace(dest)
         except Exception as e:
@@ -1280,7 +1288,7 @@ def ingest_snapshot_file(
         if chart_path:
             try:
                 chart_src = Path(chart_path)
-                chart_dest = Path(paths.processed_charts_dir) / chart_src.name
+                chart_dest = Path(paths.data_root) / "processed" / parsed.ticker / "charts" / chart_src.name
                 chart_dest.parent.mkdir(parents=True, exist_ok=True)
                 chart_src.replace(chart_dest)
             except Exception as e:
