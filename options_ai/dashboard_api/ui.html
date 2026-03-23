@@ -1081,6 +1081,18 @@
               <button id="opsAddTickerBtn">Add Ticker</button>
               <button id="opsSaveTickersBtn">Save Selected</button>
             </div>
+            <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+              <label>Mode
+                <select id="opsProcMode">
+                  <option value="single_loop" selected>single_loop</option>
+                  <option value="parallel">parallel</option>
+                </select>
+              </label>
+              <label>Workers
+                <input id="opsProcWorkers" type="number" min="1" max="32" value="2" style="width:86px;" />
+              </label>
+              <button id="opsSaveProcModeBtn">Save Mode</button>
+            </div>
             <div class="hint" id="opsTickerUniverseMeta">configured: —</div>
           </div>
         </div>
@@ -5582,6 +5594,23 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       return loadOpsTickerOptions();
     }
 
+    async function loadProcessingModeSettings() {
+      let d = { mode: 'single_loop', max_workers: 2 };
+      try { d = await jget('/api/processing/mode'); } catch {}
+      const m = document.getElementById('opsProcMode');
+      const w = document.getElementById('opsProcWorkers');
+      if (m) m.value = String(d.mode || 'single_loop');
+      if (w) w.value = String(d.max_workers || 2);
+      return d;
+    }
+
+    async function saveProcessingModeSettings() {
+      const mode = String(document.getElementById('opsProcMode')?.value || 'single_loop');
+      const max_workers = Number(document.getElementById('opsProcWorkers')?.value || 2);
+      await jpost('/api/processing/mode', { mode, max_workers });
+      return loadProcessingModeSettings();
+    }
+
     async function loadOpsTickerOptions() {
       let payload = { tickers: ['SPX'], configured_tickers: ['SPX'], default_ticker: 'SPX', root: '/mnt/MarketData' };
       try {
@@ -7223,6 +7252,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       await safe('health', () => refreshHealth());
       await safe('config', () => refreshConfig());
       await safe('processing_tickers', () => loadOpsTickerOptions());
+      await safe('processing_mode', () => loadProcessingModeSettings());
       exApplyTooltips();
 
       // Server-first model: load Parameter Groups from API; fallback to local cache on failure.
@@ -7315,6 +7345,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           });
         }
       });
+      document.getElementById('opsSaveProcModeBtn')?.addEventListener('click', () => safe('processing_mode_save', async () => {
+        await saveProcessingModeSettings();
+        await refreshProcessing();
+      }));
       document.getElementById('opsSchedEnabled')?.addEventListener('change', (ev) => safe('scheduler_toggle', () => setSchedulerEnabled(!!ev.target.checked)));
       document.getElementById('opsSchedStartZero')?.addEventListener('change', (ev) => safe('scheduler_cfg', () => setSchedulerConfig({include_start_zero_dte: !!ev.target.checked})));
       document.getElementById('opsSchedStartTerm')?.addEventListener('change', (ev) => safe('scheduler_cfg', () => setSchedulerConfig({include_start_term: !!ev.target.checked})));

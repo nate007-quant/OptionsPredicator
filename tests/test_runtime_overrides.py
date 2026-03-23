@@ -40,3 +40,17 @@ def test_load_config_allows_non_spx_ticker(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("TICKER", "NDX")
     cfg = load_config()
     assert cfg.ticker == "NDX"
+
+
+def test_validate_multi_ticker_mode_and_workers():
+    ok = validate_and_normalize_overrides({"MULTI_TICKER_MODE": "parallel", "MULTI_TICKER_MAX_WORKERS": 4})
+    assert ok["MULTI_TICKER_MODE"] == "parallel"
+    assert ok["MULTI_TICKER_MAX_WORKERS"] == 4
+
+
+def test_apply_overrides_multi_ticker_fields(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:////tmp/test.db")
+    cfg = load_config()
+    eff = apply_overrides(cfg, {"MULTI_TICKER_MODE": "parallel", "MULTI_TICKER_MAX_WORKERS": 3})
+    assert eff.multi_ticker_mode == "parallel"
+    assert eff.multi_ticker_max_workers == 3

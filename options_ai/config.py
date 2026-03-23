@@ -131,6 +131,8 @@ class Config:
     file_stable_seconds: int = 2
     watch_poll_seconds: float = 1.0
     pause_processing: bool = False
+    multi_ticker_mode: str = "single_loop"  # single_loop|parallel
+    multi_ticker_max_workers: int = 2
     replay_mode: bool = False
 
     # bootstrap (v1.5+)
@@ -338,6 +340,8 @@ def load_config() -> Config:
         file_stable_seconds=int(os.getenv("FILE_STABLE_SECONDS", "2")),
         watch_poll_seconds=float(os.getenv("WATCH_POLL_SECONDS", "1")),
         pause_processing=_get_bool("PAUSE_PROCESSING", False),
+        multi_ticker_mode=(os.getenv("MULTI_TICKER_MODE", "single_loop").strip().lower() or "single_loop"),
+        multi_ticker_max_workers=max(1, int(os.getenv("MULTI_TICKER_MAX_WORKERS", "2"))),
         replay_mode=_get_bool("REPLAY_MODE", False),
         bootstrap_enable=_get_bool("BOOTSTRAP_ENABLE", True),
         bootstrap_max_model_calls_per_min=int(os.getenv("BOOTSTRAP_MAX_MODEL_CALLS_PER_MIN", "0")),

@@ -66,6 +66,8 @@ Set these in `.env` (see `.env.example`):
 - `FILENAME_TZ=America/Chicago`
 - `MARKET_DATA_ROOT=/mnt/MarketData` (dashboard Processing ticker list)
 - `PIPELINE_UNDERLYING=SPX` (Timescale builder scope for features/labels/candidates/scores)
+- `MULTI_TICKER_MODE=single_loop|parallel` (single loop is lower CPU/RAM; parallel increases throughput)
+- `MULTI_TICKER_MAX_WORKERS=2` (used in parallel mode)
 
 Multi-symbol import (same ingestion format):
 - Put snapshots under symbol subfolders, e.g. `/mnt/MarketData/SPX/`, `/mnt/MarketData/NDX/`

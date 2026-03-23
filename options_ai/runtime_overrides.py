@@ -20,6 +20,8 @@ ALLOWLIST: dict[str, Any] = {
     "WATCH_POLL_SECONDS": {"type": "float", "min": 0.05, "max": 60.0},
     "FILE_STABLE_SECONDS": {"type": "int", "min": 0, "max": 60},
     "OUTCOME_DELAY": {"type": "int", "min": 1, "max": 240},
+    "MULTI_TICKER_MODE": {"type": "enum", "values": ["single_loop", "parallel"]},
+    "MULTI_TICKER_MAX_WORKERS": {"type": "int", "min": 1, "max": 32},
 
     # Routing toggles
     "MODEL_FORCE_LOCAL": {"type": "bool"},
@@ -172,6 +174,10 @@ def apply_overrides(base_cfg: Config, overrides: dict[str, Any]) -> Config:
         fields["file_stable_seconds"] = int(overrides["FILE_STABLE_SECONDS"])
     if "OUTCOME_DELAY" in overrides:
         fields["outcome_delay_minutes"] = int(overrides["OUTCOME_DELAY"])
+    if "MULTI_TICKER_MODE" in overrides:
+        fields["multi_ticker_mode"] = str(overrides["MULTI_TICKER_MODE"]).strip().lower()
+    if "MULTI_TICKER_MAX_WORKERS" in overrides:
+        fields["multi_ticker_max_workers"] = max(1, int(overrides["MULTI_TICKER_MAX_WORKERS"]))
 
     if "MODEL_FORCE_LOCAL" in overrides:
         fields["model_force_local"] = bool(overrides["MODEL_FORCE_LOCAL"])

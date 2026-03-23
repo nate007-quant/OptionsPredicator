@@ -714,6 +714,36 @@ def create_app() -> FastAPI:
         _save_processing_tickers_state(st)
         return marketdata_tickers()
 
+
+    @app.get('/api/processing/mode')
+    def processing_mode_get() -> dict[str, Any]:
+        overrides = load_overrides_file(overrides_path)
+        effective = apply_overrides(cfg, overrides)
+        return {
+            'mode': str(getattr(effective, 'multi_ticker_mode', 'single_loop') or 'single_loop'),
+            'max_workers': int(getattr(effective, 'multi_ticker_max_workers', 2) or 1),
+            'overrides': {
+                'MULTI_TICKER_MODE': overrides.get('MULTI_TICKER_MODE'),
+                'MULTI_TICKER_MAX_WORKERS': overrides.get('MULTI_TICKER_MAX_WORKERS'),
+            },
+        }
+
+    @app.post('/api/processing/mode')
+    def processing_mode_set(body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail='json body required')
+        mode = str(body.get('mode') or 'single_loop').strip().lower()
+        workers = int(body.get('max_workers') or 2)
+        incoming = {
+            'MULTI_TICKER_MODE': mode,
+            'MULTI_TICKER_MAX_WORKERS': workers,
+        }
+        normalized = validate_and_normalize_overrides(incoming)
+        current = load_overrides_file(overrides_path)
+        current.update({k: v for k, v in normalized.items() if v is not None})
+        write_overrides_file_atomic(overrides_path, current)
+        return processing_mode_get()
+
     @app.get("/api/status/processing")
     def status_processing(
         page: int = Query(1, ge=1),
@@ -820,6 +850,8 @@ def create_app() -> FastAPI:
             "snapshot_index_newest_ts": _to_central_iso(newest_snapshot) if newest_snapshot else None,
             "oldest_unscored_ts": _to_central_iso(oldest_unscored) if oldest_unscored else None,
             "tz": "America/Chicago",
+            "processing_mode": str(getattr(apply_overrides(cfg, load_overrides_file(overrides_path)), "multi_ticker_mode", "single_loop") or "single_loop"),
+            "processing_workers": int(getattr(apply_overrides(cfg, load_overrides_file(overrides_path)), "multi_ticker_max_workers", 2) or 1),
         }
 
 

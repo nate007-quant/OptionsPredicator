@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -271,6 +272,77 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
 
     cfg_effective = base_cfg
 
+    def _merge_local_state(local_state: dict[str, Any]) -> None:
+        state.setdefault("snapshot_index", {})
+        state.setdefault("snapshot_index_by_ticker", {})
+
+        for k, v in (local_state.get("snapshot_index") or {}).items():
+            state["snapshot_index"][k] = v
+
+        by_t = local_state.get("snapshot_index_by_ticker") or {}
+        if isinstance(by_t, dict):
+            for t, idx in by_t.items():
+                if not isinstance(idx, dict):
+                    continue
+                dst = state["snapshot_index_by_ticker"].setdefault(str(t).upper(), {})
+                for k, v in idx.items():
+                    dst[k] = v
+
+    def _process_entry(entry: tuple[Path, Any, bool], cfg_live: Config) -> dict[str, Any]:
+        p, ticker_paths, is_incoming = entry
+        file_hash = _sha256_file(p)
+        ticker = str(getattr(ticker_paths, "ticker", cfg_live.ticker)).upper()
+
+        _write_current_task(
+            paths,
+            {
+                "file": p.name,
+                "snapshot_hash": file_hash,
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "stage": "ingest",
+                "ticker": ticker,
+                "pid": os.getpid(),
+            },
+        )
+
+        local_state: dict[str, Any] = {"snapshot_index": {}, "snapshot_index_by_ticker": {}}
+        ingest_res: IngestResult = ingest_snapshot_file(
+            cfg=cfg_live,
+            paths=ticker_paths,
+            db_path=db_path,
+            snapshot_path=p,
+            snapshot_hash=file_hash,
+            router=router,
+            state=local_state,
+            bootstrap_mode=False,
+            move_files=is_incoming and (not cfg_live.replay_mode),
+        )
+
+        _write_current_task(
+            paths,
+            {
+                "file": p.name,
+                "snapshot_hash": file_hash,
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "stage": "done",
+                "ticker": ticker,
+                "pid": os.getpid(),
+                "processed": bool(ingest_res.processed),
+                "prediction_id": ingest_res.prediction_id,
+                "skipped_reason": ingest_res.skipped_reason,
+            },
+        )
+
+        return {
+            "ok": True,
+            "path": p,
+            "ticker_paths": ticker_paths,
+            "is_incoming": bool(is_incoming),
+            "file_hash": file_hash,
+            "ingest_res": ingest_res,
+            "local_state": local_state,
+        }
+
     while True:
         try:
             overrides = load_overrides_file(overrides_path)
@@ -301,27 +373,11 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
             score_due_predictions(cfg=cfg_effective, paths=paths, db_path=db_path, state=state)
 
             entries = _candidate_entries(cfg_effective, paths)
-            processed_any = False
+            ready_entries: list[tuple[Path, Any, bool]] = []
 
+            # Pre-filter for stable files/backoff in single thread
             for p, ticker_paths, is_incoming in entries:
-                # Mid-loop override refresh so PAUSE_PROCESSING takes effect quickly (no need to wait for full queue drain)
-                try:
-                    overrides2 = load_overrides_file(overrides_path)
-                    if overrides2 != last_overrides:
-                        new_effective2 = apply_overrides(base_cfg, overrides2)
-                        if _should_rebuild_router(cfg_effective, new_effective2):
-                            router = ModelRouter(new_effective2, bootstrap_rate_limiter=limiter)
-                        cfg_effective = new_effective2
-                        last_overrides = overrides2
-                    if bool(cfg_effective.pause_processing):
-                        lg = get_logger()
-                        if lg:
-                            lg.info(component="Watcher", event="pause_processing_break", message="processing paused; stopping current queue scan", file_key="system")
-                        break
-                except Exception:
-                    pass
                 now = time.time()
-
                 next_ts = backoff.get(str(p))
                 if next_ts is not None and now < next_ts:
                     continue
@@ -338,96 +394,118 @@ def run_daemon(cfg: Config, paths: Any, db_path: str) -> None:
                     if now - prev.last_change_ts < cfg_effective.file_stable_seconds:
                         continue
 
-                file_hash = _sha256_file(p)
+                ready_entries.append((p, ticker_paths, is_incoming))
 
-                # Current task state (optional observability)
-                _write_current_task(
-                    paths,
-                    {
-                        "file": p.name,
-                        "snapshot_hash": file_hash,
-                        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "stage": "ingest",
-                        "ticker": str(getattr(ticker_paths, "ticker", cfg_effective.ticker)).upper(),
-                        "pid": os.getpid(),
-                    },
-                )
+            processed_any = False
+            mode = str(getattr(cfg_effective, "multi_ticker_mode", "single_loop") or "single_loop").strip().lower()
+            max_workers = max(1, int(getattr(cfg_effective, "multi_ticker_max_workers", 2) or 1))
+            use_parallel = mode == "parallel" and max_workers > 1 and len(ready_entries) > 1
 
-                try:
-                    ingest_res: IngestResult = ingest_snapshot_file(
-                        cfg=cfg_effective,
-                        paths=ticker_paths,
-                        db_path=db_path,
-                        snapshot_path=p,
-                        snapshot_hash=file_hash,
-                        router=router,
-                        state=state,
-                        bootstrap_mode=False,
-                        move_files=is_incoming and (not cfg_effective.replay_mode),
-                    )
-                    processed_any = processed_any or ingest_res.processed
-
-                    _save_json_atomic(state_path, state)
-
-                    # If we skipped due to duplicates and file is in incoming, move to processed for cleanliness.
-                    if is_incoming and (not ingest_res.processed) and (ingest_res.skipped_reason or "").startswith("duplicate"):
+            if use_parallel:
+                with ThreadPoolExecutor(max_workers=min(max_workers, len(ready_entries))) as ex:
+                    futures = {ex.submit(_process_entry, e, cfg_effective): e for e in ready_entries}
+                    for fut in as_completed(futures):
+                        p, ticker_paths, is_incoming = futures[fut]
                         try:
-                            dest = Path(ticker_paths.processed_snapshots_dir) / p.name
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            if dest.exists():
-                                p.unlink(missing_ok=True)
+                            out = fut.result()
+                            ingest_res = out["ingest_res"]
+                            _merge_local_state(out["local_state"])
+                            _save_json_atomic(state_path, state)
+
+                            processed_any = processed_any or bool(ingest_res.processed)
+
+                            if is_incoming and (not ingest_res.processed) and (ingest_res.skipped_reason or "").startswith("duplicate"):
+                                try:
+                                    dest = Path(ticker_paths.processed_snapshots_dir) / p.name
+                                    dest.parent.mkdir(parents=True, exist_ok=True)
+                                    if dest.exists():
+                                        p.unlink(missing_ok=True)
+                                    else:
+                                        p.replace(dest)
+                                except Exception:
+                                    pass
+                        except Exception as e:
+                            delay = backoff.get(str(p) + ":delay", cfg_effective.watch_poll_seconds)
+                            delay = min(max(delay * 2, cfg_effective.watch_poll_seconds), 60.0)
+                            backoff[str(p) + ":delay"] = delay
+                            backoff[str(p)] = time.time() + delay
+                            lg = get_logger()
+                            if lg:
+                                lg.exception(
+                                    level="ERROR",
+                                    component="Watcher",
+                                    event="snapshot_process_error",
+                                    message="snapshot process error",
+                                    file_key="errors",
+                                    exc=e,
+                                    file=str(p),
+                                    backoff_seconds=delay,
+                                )
                             else:
-                                p.replace(dest)
-                        except Exception:
-                            pass
+                                log_daemon_event(ticker_paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
+                            _write_current_task(
+                                paths,
+                                {
+                                    "file": p.name,
+                                    "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                    "stage": "error",
+                                    "ticker": str(getattr(ticker_paths, "ticker", cfg_effective.ticker)).upper(),
+                                    "pid": os.getpid(),
+                                    "error": str(e),
+                                },
+                            )
+            else:
+                for entry in ready_entries:
+                    p, ticker_paths, is_incoming = entry
+                    try:
+                        out = _process_entry(entry, cfg_effective)
+                        ingest_res = out["ingest_res"]
+                        _merge_local_state(out["local_state"])
+                        _save_json_atomic(state_path, state)
 
-                    _write_current_task(
-                        paths,
-                        {
-                            "file": p.name,
-                            "snapshot_hash": file_hash,
-                            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "stage": "done",
-                            "ticker": str(getattr(ticker_paths, "ticker", cfg_effective.ticker)).upper(),
-                            "pid": os.getpid(),
-                            "processed": bool(ingest_res.processed),
-                            "prediction_id": ingest_res.prediction_id,
-                            "skipped_reason": ingest_res.skipped_reason,
-                        },
-                    )
+                        processed_any = processed_any or bool(ingest_res.processed)
 
-                except Exception as e:
-                    delay = backoff.get(str(p) + ":delay", cfg_effective.watch_poll_seconds)
-                    delay = min(max(delay * 2, cfg_effective.watch_poll_seconds), 60.0)
-                    backoff[str(p) + ":delay"] = delay
-                    backoff[str(p)] = time.time() + delay
-                    lg = get_logger()
-                    if lg:
-                        lg.exception(
-                            level="ERROR",
-                            component="Watcher",
-                            event="snapshot_process_error",
-                            message="snapshot process error",
-                            file_key="errors",
-                            exc=e,
-                            file=str(p),
-                            backoff_seconds=delay,
+                        if is_incoming and (not ingest_res.processed) and (ingest_res.skipped_reason or "").startswith("duplicate"):
+                            try:
+                                dest = Path(ticker_paths.processed_snapshots_dir) / p.name
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                if dest.exists():
+                                    p.unlink(missing_ok=True)
+                                else:
+                                    p.replace(dest)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        delay = backoff.get(str(p) + ":delay", cfg_effective.watch_poll_seconds)
+                        delay = min(max(delay * 2, cfg_effective.watch_poll_seconds), 60.0)
+                        backoff[str(p) + ":delay"] = delay
+                        backoff[str(p)] = time.time() + delay
+                        lg = get_logger()
+                        if lg:
+                            lg.exception(
+                                level="ERROR",
+                                component="Watcher",
+                                event="snapshot_process_error",
+                                message="snapshot process error",
+                                file_key="errors",
+                                exc=e,
+                                file=str(p),
+                                backoff_seconds=delay,
+                            )
+                        else:
+                            log_daemon_event(ticker_paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
+
+                        _write_current_task(
+                            paths,
+                            {
+                                "file": p.name,
+                                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                "stage": "error",
+                                "ticker": str(getattr(ticker_paths, "ticker", cfg_effective.ticker)).upper(),
+                                "pid": os.getpid(),
+                                "error": str(e),
+                            },
                         )
-                    else:
-                        log_daemon_event(ticker_paths.logs_daemon_dir, "error", "snapshot_process_error", file=str(p), error=str(e), backoff_seconds=delay)
-
-                    _write_current_task(
-                        paths,
-                        {
-                            "file": p.name,
-                            "snapshot_hash": file_hash,
-                            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "stage": "error",
-                            "ticker": str(getattr(ticker_paths, "ticker", cfg_effective.ticker)).upper(),
-                            "pid": os.getpid(),
-                            "error": str(e),
-                        },
-                    )
 
             try:
                 maybe_generate_today(cfg_effective, db_path)
