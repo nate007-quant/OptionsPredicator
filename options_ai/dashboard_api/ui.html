@@ -1512,7 +1512,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
                       <th>day</th><th>entry</th><th>exit</th><th>reason</th>
                       <th>anchor</th><th>type</th><th>debit_in</th><th>debit_out</th>
                       <th>chg</th><th>pnl$</th><th>roi</th>
-                      <th>p(bigwin)</th><th>pred(30m)</th>
+                      <th>p(bigwin)</th><th>pred(30m)</th><th>regime_conf</th><th>prox_to_wall</th>
                     </tr>
                   </thead>
                   <tbody id="btTrades"></tbody>
@@ -3769,8 +3769,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           <td>${esc(p.end_day||'')}</td>
           <td>${esc(p.horizon_minutes==null?'':String(p.horizon_minutes))}</td>
           <td>${esc(p.expiration_mode||'')}</td>
-          <td>${esc(p.min_p_bigwin==null?'':String(p.min_p_bigwin))}</td>
-          <td>${esc(p.min_pred_change==null?'':String(p.min_pred_change))}</td>
+          <td>${esc(p.min_p_bigwin==null?'0':String(p.min_p_bigwin))}</td>
+          <td>${esc(p.min_pred_change==null?'0':String(p.min_pred_change))}</td>
         `;
         tb.appendChild(tr);
       });
@@ -4576,6 +4576,14 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         ['entry_retrace_fallback', 'retrace_fallback'],
         ['min_p_bigwin', 'min_p'],
         ['min_pred_change', 'min_pred'],
+        ['min_pred_return', 'min_ret'],
+        ['regime_enabled', 'regime'],
+        ['regime_min_confidence', 'reg_conf_min'],
+        ['proximity_min_points', 'prox_min'],
+        ['proximity_max_points', 'prox_max'],
+        ['take_profit_pct', 'tp%'],
+        ['stop_loss_pct', 'sl%'],
+        ['max_trades_per_day', 'max/day'],
       ];
       const parts = [];
       for (const [k, label] of pick) {
@@ -5213,9 +5221,29 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (tb) {
         tb.innerHTML = '';
 
+        const runMode = String((data?.config?.strategy_mode || '')).toLowerCase();
+        const scoreExpected = (runMode === 'anchor_based' || runMode === 'flow_regime');
+
         for (const t of (data.trades || [])) {
           const tr = document.createElement('tr');
           const pnl = t.pnl_dollars;
+          const pBig = (t.p_bigwin==null) ? (scoreExpected ? '—' : 'n/a') : ((100*Number(t.p_bigwin)).toFixed(1)+'%');
+          const pred = (t.pred_change==null) ? (scoreExpected ? '—' : 'n/a') : fmtNum(t.pred_change,2);
+          const regConf = (t.regime_confidence==null) ? '—' : Number(t.regime_confidence).toFixed(2);
+          let prox = null;
+          try {
+            const spot = Number(t.spot);
+            const ds = [];
+            if (Number.isFinite(spot)) {
+              const pw = Number(t.put_wall);
+              const cw = Number(t.call_wall);
+              if (Number.isFinite(pw)) ds.push(Math.abs(spot - pw));
+              if (Number.isFinite(cw)) ds.push(Math.abs(cw - spot));
+              if (ds.length) prox = Math.min(...ds);
+            }
+          } catch {}
+          const proxTxt = (prox==null) ? '—' : fmtNum(prox, 2);
+
           tr.innerHTML = `
             <td>${t.day_local||''}</td>
             <td>${t.entry_ts||''}</td>
@@ -5228,8 +5256,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
             <td>${t.change_points==null?'—':fmtNum(t.change_points,2)}</td>
             <td>${pnl==null?'—':fmtNum(pnl,2)}</td>
             <td>${t.roi==null?'—':(100*Number(t.roi)).toFixed(1)+'%'}</td>
-            <td>${t.p_bigwin==null?'—':(100*Number(t.p_bigwin)).toFixed(1)+'%'}</td>
-            <td>${t.pred_change==null?'—':fmtNum(t.pred_change,2)}</td>
+            <td>${pBig}</td>
+            <td>${pred}</td>
+            <td>${regConf}</td>
+            <td>${proxTxt}</td>
           `;
           tb.appendChild(tr);
         }
