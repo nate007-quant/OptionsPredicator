@@ -320,6 +320,13 @@ def create_app() -> FastAPI:
         t = str(v or '').strip().upper()
         if not t:
             return 'SPX'
+        # Allow folder/user naming variants like Ticker_SPX, ticker-ndx, etc.
+        for prefix in ('TICKER_', 'TICKER-', 'TICKER.'):
+            if t.startswith(prefix):
+                t = t[len(prefix):].strip().upper()
+                break
+        if not t:
+            return 'SPX'
         allowed = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
         if any(ch not in allowed for ch in t):
             raise HTTPException(status_code=400, detail='invalid ticker')
@@ -382,8 +389,8 @@ def create_app() -> FastAPI:
         return sorted(names)
 
     def _list_known_market_tickers() -> list[str]:
-        names = set(_list_market_data_tickers())
-        names.update(_configured_processing_tickers())
+        # Processing ticker universe is manual/configured list only.
+        names = set(_configured_processing_tickers())
         names.add(_normalize_ticker_name(cfg.ticker))
         return sorted(names)
 
@@ -661,16 +668,13 @@ def create_app() -> FastAPI:
 
     @app.get('/api/marketdata/tickers')
     def marketdata_tickers() -> dict[str, Any]:
-        discovered = _list_market_data_tickers()
         configured = _configured_processing_tickers()
-        tickers = _list_known_market_tickers()
         return {
             'root': str(market_data_root),
-            'tickers': tickers,
+            'tickers': configured,
             'configured_tickers': configured,
-            'discovered_tickers': discovered,
             'default_ticker': _normalize_ticker_name(cfg.ticker),
-            'count': len(tickers),
+            'count': len(configured),
             'tz': 'America/Chicago',
         }
 
