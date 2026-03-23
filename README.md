@@ -60,14 +60,15 @@ This repo also includes an **early-stage ingester** that watches a drop director
 
 Set these in `.env` (see `.env.example`):
 
-- `INPUT_DIR=/mnt/SPX`
+- `INPUT_DIR=/mnt/MarketData/SPX`
 - `ARCHIVE_ROOT=/mnt/options_ai` (writable)
 - `SPX_CHAIN_DATABASE_URL=postgresql://spx:spxpass@localhost:5432/spxdb`
 - `FILENAME_TZ=America/Chicago`
+- `MARKET_DATA_ROOT=/mnt/MarketData` (dashboard Processing ticker list)
 
 Multi-symbol import (same ingestion format):
-- Put snapshots under symbol subfolders, e.g. `/mnt/options_ai/incoming/SPX/`, `/mnt/options_ai/incoming/NDX/`
-- Set `INPUT_DIR=/mnt/options_ai/incoming`
+- Put snapshots under symbol subfolders, e.g. `/mnt/MarketData/SPX/`, `/mnt/MarketData/NDX/`
+- Set `INPUT_DIR=/mnt/MarketData`
 - Set `CHAIN_INPUT_RECURSIVE=true`
 
 ### Run

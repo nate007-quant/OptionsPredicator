@@ -595,7 +595,7 @@ def run_chain_ingest_daemon(cfg: ChainIngestConfig) -> None:
 
 
 def load_chain_ingest_config_from_env() -> ChainIngestConfig:
-    input_dir = Path(os.getenv("INPUT_DIR", "/mnt/SPX")).expanduser()
+    input_dir = Path(os.getenv("INPUT_DIR", "/mnt/MarketData/SPX")).expanduser()
     archive_root = Path(os.getenv("ARCHIVE_ROOT", "/mnt/options_ai")).expanduser()
     database_url = os.getenv("SPX_CHAIN_DATABASE_URL", os.getenv("DATABASE_URL", "")).strip()
     filename_tz = os.getenv("FILENAME_TZ", "America/Chicago").strip()

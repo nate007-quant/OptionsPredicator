@@ -1036,9 +1036,15 @@
                     <option value="7d">7d</option>
                   </select>
                 </label>
+                <label>Ticker
+                  <select id="opsTicker">
+                    <option value="SPX" selected>SPX</option>
+                  </select>
+                </label>
               </div>
             </div>
             <div class="hint ex-last-mini" id="opsFreshnessMeta" style="margin-top:8px;">—</div>
+            <div class="hint ex-last-mini" id="opsTickerMeta" style="margin-top:4px;">ticker: SPX</div>
             <div class="ops-stale-banner" id="opsStaleBanner">Telemetry stale. Data may be delayed.</div>
             <div class="ops-exec-summary card" id="opsExecutiveSummary">
               <div class="card-b">
@@ -1051,6 +1057,20 @@
           </div>
         </div>
 
+
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-h"><h2>Selected Ticker Queue</h2><div class="hint">MarketData ingest view</div></div>
+          <div class="card-b">
+            <div class="row" style="margin-bottom:8px;">
+              <span class="pill" id="opsTickerQueueCount">queue: —</span>
+              <span class="pill" id="opsTickerProcCount">processing: —</span>
+              <span class="pill" id="opsTickerPredCount">predictions: —</span>
+              <span class="pill" id="opsTickerScoredCount">scored: —</span>
+              <span class="pill" id="opsTickerUnscoredCount">unscored: —</span>
+            </div>
+            <div class="hint" id="opsTickerDirs">incoming: — | processed: —</div>
+          </div>
+        </div>
 
         <div class="ops-main" style="margin-top: var(--space-4);">
           <div class="card">
@@ -5500,6 +5520,65 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       exRenderLastStampEl(el);
     }
 
+    function getSelectedOpsTicker() {
+      const sel = document.getElementById('opsTicker');
+      return String(sel?.value || 'SPX').toUpperCase();
+    }
+
+    async function loadOpsTickerOptions() {
+      let payload = { tickers: ['SPX'], default_ticker: 'SPX', root: '/mnt/MarketData' };
+      try {
+        payload = await jget('/api/marketdata/tickers');
+      } catch (e) {
+        // Keep UI usable even if endpoint is unavailable.
+      }
+
+      const sel = document.getElementById('opsTicker');
+      if (!sel) return payload;
+      const tickers = Array.isArray(payload.tickers) && payload.tickers.length ? payload.tickers : ['SPX'];
+      const saved = String(localStorage.getItem('opsTicker') || '').toUpperCase();
+      const fallback = String(payload.default_ticker || 'SPX').toUpperCase();
+      const current = String(sel.value || '').toUpperCase();
+      const preferred = [saved, current, fallback].find(v => v && tickers.includes(v)) || tickers[0];
+
+      sel.innerHTML = '';
+      for (const t of tickers) {
+        const opt = document.createElement('option');
+        opt.value = String(t);
+        opt.textContent = String(t);
+        if (String(t).toUpperCase() === preferred) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      try { localStorage.setItem('opsTicker', preferred); } catch {}
+
+      const meta = document.getElementById('opsTickerMeta');
+      if (meta) meta.textContent = `ticker: ${preferred} | market root: ${payload.root || '/mnt/MarketData'}`;
+      return payload;
+    }
+
+    async function refreshProcessingTickerQueue() {
+      const ticker = getSelectedOpsTicker();
+      const d = await jget(`/api/status/processing?ticker=${encodeURIComponent(ticker)}`);
+      const q = d.queue || {};
+      const p = d.processing || {};
+      const c = d.counters || {};
+      const qEl = document.getElementById('opsTickerQueueCount');
+      const pEl = document.getElementById('opsTickerProcCount');
+      const predEl = document.getElementById('opsTickerPredCount');
+      const scoredEl = document.getElementById('opsTickerScoredCount');
+      const unscoredEl = document.getElementById('opsTickerUnscoredCount');
+      const dirsEl = document.getElementById('opsTickerDirs');
+      const meta = document.getElementById('opsTickerMeta');
+      if (qEl) qEl.textContent = `queue: ${q.total_count ?? q.count ?? 0}`;
+      if (pEl) pEl.textContent = `processing: ${p.count ?? 0}`;
+      if (predEl) predEl.textContent = `predictions: ${c.total_predictions ?? 0}`;
+      if (scoredEl) scoredEl.textContent = `scored: ${c.total_scored ?? 0}`;
+      if (unscoredEl) unscoredEl.textContent = `unscored: ${c.unscored ?? 0}`;
+      if (dirsEl) dirsEl.textContent = `incoming: ${d.incoming_dir || '—'} | processed: ${d.processed_dir || '—'}`;
+      if (meta) meta.textContent = `ticker: ${d.ticker || ticker} | market root: ${d.market_data_root || '—'}`;
+      return d;
+    }
+
     async function refreshProcessingPipeline() {
       opsBoxLoading('Pipe', true);
       try {
@@ -5654,6 +5733,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
     async function refreshProcessing() {
       await Promise.allSettled([
+        refreshProcessingTickerQueue(),
         refreshProcessingPipeline(),
         refreshProcessingServices(),
         refreshProcessingStorage(),
@@ -7082,6 +7162,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       await safe('health', () => refreshHealth());
       await safe('config', () => refreshConfig());
+      await safe('processing_tickers', () => loadOpsTickerOptions());
       exApplyTooltips();
 
       // Server-first model: load Parameter Groups from API; fallback to local cache on failure.
@@ -7152,6 +7233,11 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       // processing controls
       document.getElementById('opsWindow')?.addEventListener('change', () => safe('processing', () => refreshProcessing()));
       document.getElementById('opsMode')?.addEventListener('change', () => safe('processing', () => refreshProcessingPipeline()));
+      document.getElementById('opsTicker')?.addEventListener('change', (ev) => {
+        const v = String(ev?.target?.value || 'SPX').toUpperCase();
+        try { localStorage.setItem('opsTicker', v); } catch {}
+        safe('processing_ticker', () => refreshProcessingTickerQueue());
+      });
       document.getElementById('opsSchedEnabled')?.addEventListener('change', (ev) => safe('scheduler_toggle', () => setSchedulerEnabled(!!ev.target.checked)));
       document.getElementById('opsSchedStartZero')?.addEventListener('change', (ev) => safe('scheduler_cfg', () => setSchedulerConfig({include_start_zero_dte: !!ev.target.checked})));
       document.getElementById('opsSchedStartTerm')?.addEventListener('change', (ev) => safe('scheduler_cfg', () => setSchedulerConfig({include_start_term: !!ev.target.checked})));

@@ -313,6 +313,50 @@ def create_app() -> FastAPI:
     logs_root = data_root / "logs"
     overrides_path = data_root / "state" / "runtime_overrides.json"
 
+    market_data_root = Path(os.getenv("MARKET_DATA_ROOT", "/mnt/MarketData")).expanduser()
+
+    def _normalize_ticker_name(v: str | None) -> str:
+        t = str(v or '').strip().upper()
+        if not t:
+            return 'SPX'
+        allowed = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+        if any(ch not in allowed for ch in t):
+            raise HTTPException(status_code=400, detail='invalid ticker')
+        return t
+
+    def _list_market_data_tickers() -> list[str]:
+        names: set[str] = set()
+        try:
+            if market_data_root.exists():
+                for d in market_data_root.iterdir():
+                    if d.is_dir():
+                        try:
+                            names.add(_normalize_ticker_name(d.name))
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        try:
+            legacy_root = data_root / 'incoming'
+            if legacy_root.exists():
+                for d in legacy_root.iterdir():
+                    if d.is_dir():
+                        try:
+                            names.add(_normalize_ticker_name(d.name))
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        names.add(_normalize_ticker_name(cfg.ticker))
+        return sorted(names)
+
+    def _resolve_market_ticker(preferred: str | None) -> str:
+        t = _normalize_ticker_name(preferred or cfg.ticker)
+        known = set(_list_market_data_tickers())
+        return t if (not known or t in known) else _normalize_ticker_name(cfg.ticker)
+
     db_path = os.getenv("OPTIONS_AI_DB_PATH")
     if not db_path:
         db_path = _db_path_from_database_url(cfg.database_url)
@@ -580,14 +624,29 @@ def create_app() -> FastAPI:
             "service": "options_ai_dashboard_api",
         }
 
+    @app.get('/api/marketdata/tickers')
+    def marketdata_tickers() -> dict[str, Any]:
+        tickers = _list_market_data_tickers()
+        return {
+            'root': str(market_data_root),
+            'tickers': tickers,
+            'default_ticker': _normalize_ticker_name(cfg.ticker),
+            'count': len(tickers),
+            'tz': 'America/Chicago',
+        }
+
     @app.get("/api/status/processing")
     def status_processing(
         page: int = Query(1, ge=1),
         page_size: int = Query(50, ge=10, le=200),
         order: str = Query("oldest", pattern="^(oldest|newest)$"),
+        ticker: str | None = Query(None, pattern=r"^[A-Za-z0-9._-]{1,32}$"),
     ) -> dict[str, Any]:
-        incoming_dir = data_root / "incoming" / "SPX"
-        processed_dir = data_root / "processed" / "SPX" / "snapshots"
+        selected_ticker = _resolve_market_ticker(ticker)
+        preferred_dir = market_data_root / selected_ticker
+        legacy_dir = data_root / "incoming" / selected_ticker
+        incoming_dir = preferred_dir if preferred_dir.exists() else legacy_dir
+        processed_dir = data_root / "processed" / selected_ticker / "snapshots"
         queue_items = []
         total_count = 0
         if incoming_dir.exists():
@@ -667,6 +726,9 @@ def create_app() -> FastAPI:
             oldest_unscored = None
 
         return {
+            "ticker": selected_ticker,
+            "tickers": _list_market_data_tickers(),
+            "market_data_root": str(market_data_root),
             "incoming_dir": str(incoming_dir),
             "processed_dir": str(processed_dir),
             "queue": {"total_count": int(total_count), "page": int(page), "page_size": int(page_size), "order": order, "count": len(queue_items), "items": queue_items},
