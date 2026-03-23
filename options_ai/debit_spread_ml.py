@@ -23,6 +23,7 @@ SPREAD_TYPES = ("CALL", "PUT")
 @dataclass(frozen=True)
 class DebitMLConfig:
     db_dsn: str
+    underlying: str = "SPX"
 
     horizon_minutes: int = 30
 
@@ -257,7 +258,7 @@ def _apply_impute(X_raw: np.ndarray, mask: np.ndarray, impute: np.ndarray) -> np
     return X
 
 
-def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limit: int, train_start_ts: str | None = None, train_end_ts: str | None = None) -> list[dict[str, Any]]:
+def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limit: int, train_start_ts: str | None = None, train_end_ts: str | None = None, cfg_underlying: str = "SPX") -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         where = [
             "l.horizon_minutes = %s",
@@ -296,9 +297,15 @@ def _fetch_training_rows(conn: psycopg.Connection, *, horizon_minutes: int, limi
             JOIN spx.chain_features_0dte f
               ON f.snapshot_ts = c.snapshot_ts
             WHERE {' AND '.join(where)}
+              AND EXISTS (
+                SELECT 1 FROM spx.option_chain oc
+                WHERE oc.snapshot_ts = l.snapshot_ts
+                  AND UPPER(oc.underlying) = %s
+              )
             ORDER BY l.snapshot_ts DESC
             LIMIT %s
         """
+        params.append(str(cfg_underlying).upper())
         params.append(int(limit))
         cur.execute(q, tuple(params))
         rows = []
@@ -366,7 +373,7 @@ class _TrainedModel:
 
 
 def _model_path(cfg: DebitMLConfig) -> Path:
-    return Path(cfg.models_dir) / f"{cfg.model_version}_h{int(cfg.horizon_minutes)}.joblib"
+    return Path(cfg.models_dir) / f"{cfg.model_version}_{str(cfg.underlying).upper()}_h{int(cfg.horizon_minutes)}.joblib"
 
 
 def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool = False) -> _TrainedModel | None:
@@ -394,7 +401,7 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
         except Exception:
             pass
 
-    rows = _fetch_training_rows(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(cfg.max_train_rows), train_start_ts=cfg.train_start_ts, train_end_ts=cfg.train_end_ts)
+    rows = _fetch_training_rows(conn, horizon_minutes=int(cfg.horizon_minutes), limit=int(cfg.max_train_rows), train_start_ts=cfg.train_start_ts, train_end_ts=cfg.train_end_ts, cfg_underlying=str(cfg.underlying))
     rows = list(rows)
 
     if len(rows) < int(cfg.min_train_rows):
@@ -505,10 +512,10 @@ def train_if_needed(conn: psycopg.Connection, cfg: DebitMLConfig, *, force: bool
 
 
 
-def _latest_candidate_snapshot_ts(conn: psycopg.Connection) -> datetime | None:
+def _latest_candidate_snapshot_ts(conn: psycopg.Connection, *, underlying: str = "SPX") -> datetime | None:
     """Return the latest snapshot_ts present in debit_spread_candidates_0dte."""
     with conn.cursor() as cur:
-        cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_candidates_0dte")
+        cur.execute("""SELECT max(c.snapshot_ts) FROM spx.debit_spread_candidates_0dte c WHERE EXISTS (SELECT 1 FROM spx.option_chain oc WHERE oc.snapshot_ts=c.snapshot_ts AND UPPER(oc.underlying)=%s)""", (str(underlying).upper(),))
         r = cur.fetchone()
         return r[0] if r else None
 
@@ -516,7 +523,7 @@ def _latest_candidate_snapshot_ts(conn: psycopg.Connection) -> datetime | None:
 def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedModel) -> int:
     """Score tradable candidates for the latest snapshot and upsert into scores table."""
 
-    latest = _latest_candidate_snapshot_ts(conn)
+    latest = _latest_candidate_snapshot_ts(conn, underlying=cfg.underlying)
     if latest is None:
         return 0
 
@@ -541,8 +548,13 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
             WHERE c.snapshot_ts = %s
               AND c.tradable = true
               AND f.low_quality = false
+              AND EXISTS (
+                SELECT 1 FROM spx.option_chain oc
+                WHERE oc.snapshot_ts = c.snapshot_ts
+                  AND UPPER(oc.underlying) = %s
+              )
             """,
-            (latest,),
+            (latest, str(cfg.underlying).upper()),
         )
         rows = cur.fetchall()
 
@@ -648,7 +660,7 @@ def score_latest_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _Tra
     return upserted
 
 
-def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int, model_version: str, limit: int) -> list[datetime]:
+def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int, model_version: str, limit: int, underlying: str = "SPX") -> list[datetime]:
     """Return recent snapshot_ts values that need scores for the active model version."""
     with conn.cursor() as cur:
         cur.execute(
@@ -659,6 +671,11 @@ def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int,
               ON f.snapshot_ts = c.snapshot_ts
             WHERE c.tradable = true
               AND f.low_quality = false
+              AND EXISTS (
+                SELECT 1 FROM spx.option_chain oc
+                WHERE oc.snapshot_ts = c.snapshot_ts
+                  AND UPPER(oc.underlying) = %s
+              )
               AND NOT EXISTS (
                 SELECT 1
                 FROM spx.debit_spread_scores_0dte s
@@ -669,7 +686,7 @@ def _snapshots_missing_scores(conn: psycopg.Connection, *, horizon_minutes: int,
             ORDER BY c.snapshot_ts DESC
             LIMIT %s
             """,
-            (int(horizon_minutes), str(model_version), int(limit)),
+            (str(underlying).upper(), int(horizon_minutes), str(model_version), int(limit)),
         )
         return [r[0] for r in cur.fetchall()]
 
@@ -698,8 +715,13 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
             WHERE c.snapshot_ts = %s
               AND c.tradable = true
               AND f.low_quality = false
+              AND EXISTS (
+                SELECT 1 FROM spx.option_chain oc
+                WHERE oc.snapshot_ts = c.snapshot_ts
+                  AND UPPER(oc.underlying) = %s
+              )
             """,
-            (snapshot_ts,),
+            (snapshot_ts, str(cfg.underlying).upper()),
         )
         rows = cur.fetchall()
 
@@ -802,7 +824,7 @@ def _score_snapshot(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedMo
 def score_recent_backfill(conn: psycopg.Connection, cfg: DebitMLConfig, tm: _TrainedModel, *, limit: int = 200) -> int:
     """Backfill scores for recent snapshots that are missing scores."""
     total = 0
-    for ts in _snapshots_missing_scores(conn, horizon_minutes=int(cfg.horizon_minutes), model_version=str(cfg.model_version), limit=int(limit)):
+    for ts in _snapshots_missing_scores(conn, horizon_minutes=int(cfg.horizon_minutes), model_version=str(cfg.model_version), limit=int(limit), underlying=cfg.underlying):
         total += _score_snapshot(conn, cfg, tm, snapshot_ts=ts)
     return total
 
@@ -829,7 +851,7 @@ def run_daemon(cfg: DebitMLConfig) -> None:
 
                     # Avoid tight upsert loops: only rescore the latest snapshot when it advances
                     # (or when the model was retrained, in which case we refresh once).
-                    latest = _latest_candidate_snapshot_ts(conn)
+                    latest = _latest_candidate_snapshot_ts(conn, underlying=cfg.underlying)
                     if latest is not None:
                         should_score_latest = (
                             latest != last_scored_snapshot_ts
@@ -863,6 +885,7 @@ def load_config_from_env() -> DebitMLConfig:
 
     return DebitMLConfig(
         db_dsn=dsn,
+        underlying=(os.getenv("PIPELINE_UNDERLYING", "").strip() or os.getenv("TICKER", "SPX").strip() or "SPX").upper(),
         horizon_minutes=int(os.getenv("DEBIT_ML_HORIZON_MINUTES", "30")),
         target_mode=os.getenv("DEBIT_ML_TARGET_MODE", "return"),
         bigwin_label_mode=os.getenv("DEBIT_BIGWIN_LABEL_MODE", "return_threshold"),

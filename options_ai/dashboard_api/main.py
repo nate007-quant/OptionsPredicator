@@ -802,14 +802,45 @@ def create_app() -> FastAPI:
                         if table == 'spx.option_chain':
                             cur.execute("SELECT max(snapshot_ts) FROM spx.option_chain WHERE UPPER(underlying) = %s", (selected_ticker,))
                         else:
-                            cur.execute(f"SELECT max(snapshot_ts) FROM {table}")
+                            cur.execute(
+                                f"""
+                                SELECT max(t.snapshot_ts)
+                                FROM {table} t
+                                WHERE EXISTS (
+                                  SELECT 1
+                                  FROM spx.option_chain oc
+                                  WHERE oc.snapshot_ts = t.snapshot_ts
+                                    AND UPPER(oc.underlying) = %s
+                                )
+                                """,
+                                (selected_ticker,),
+                            )
                         r = cur.fetchone()
                         return r[0] if r else None
 
                     def max_ts_le(table: str, le: Any) -> Any:
                         if le is None:
                             return max_ts(table)
-                        cur.execute(f"SELECT max(snapshot_ts) FROM {table} WHERE snapshot_ts <= %s", (le,))
+                        if table == 'spx.option_chain':
+                            cur.execute(
+                                "SELECT max(snapshot_ts) FROM spx.option_chain WHERE snapshot_ts <= %s AND UPPER(underlying) = %s",
+                                (le, selected_ticker),
+                            )
+                        else:
+                            cur.execute(
+                                f"""
+                                SELECT max(t.snapshot_ts)
+                                FROM {table} t
+                                WHERE t.snapshot_ts <= %s
+                                  AND EXISTS (
+                                    SELECT 1
+                                    FROM spx.option_chain oc
+                                    WHERE oc.snapshot_ts = t.snapshot_ts
+                                      AND UPPER(oc.underlying) = %s
+                                  )
+                                """,
+                                (le, selected_ticker),
+                            )
                         r = cur.fetchone()
                         return r[0] if r else None
 
@@ -842,10 +873,38 @@ def create_app() -> FastAPI:
                     }
 
                     # horizon breakdowns
-                    cur.execute("SELECT horizon_minutes, max(snapshot_ts) FROM spx.chain_labels_0dte WHERE snapshot_ts <= %s GROUP BY horizon_minutes ORDER BY horizon_minutes", (latest_chain,))
+                    cur.execute(
+                        """
+                        SELECT l.horizon_minutes, max(l.snapshot_ts)
+                        FROM spx.chain_labels_0dte l
+                        WHERE l.snapshot_ts <= %s
+                          AND EXISTS (
+                            SELECT 1 FROM spx.option_chain oc
+                            WHERE oc.snapshot_ts = l.snapshot_ts
+                              AND UPPER(oc.underlying) = %s
+                          )
+                        GROUP BY l.horizon_minutes
+                        ORDER BY l.horizon_minutes
+                        """,
+                        (latest_chain, selected_ticker),
+                    )
                     out['labels_by_horizon'] = {int(r[0]): r[1] for r in cur.fetchall() if r and r[0] is not None}
 
-                    cur.execute("SELECT horizon_minutes, max(snapshot_ts) FROM spx.debit_spread_scores_0dte WHERE snapshot_ts <= %s GROUP BY horizon_minutes ORDER BY horizon_minutes", (latest_chain,))
+                    cur.execute(
+                        """
+                        SELECT s.horizon_minutes, max(s.snapshot_ts)
+                        FROM spx.debit_spread_scores_0dte s
+                        WHERE s.snapshot_ts <= %s
+                          AND EXISTS (
+                            SELECT 1 FROM spx.option_chain oc
+                            WHERE oc.snapshot_ts = s.snapshot_ts
+                              AND UPPER(oc.underlying) = %s
+                          )
+                        GROUP BY s.horizon_minutes
+                        ORDER BY s.horizon_minutes
+                        """,
+                        (latest_chain, selected_ticker),
+                    )
                     out['scores_by_horizon'] = {int(r[0]): r[1] for r in cur.fetchall() if r and r[0] is not None}
 
                     # recent window counts (approx backlog)
@@ -878,7 +937,12 @@ def create_app() -> FastAPI:
                         """
                         WITH f AS (
                           SELECT snapshot_ts
-                          FROM spx.chain_features_0dte
+                          FROM spx.chain_features_0dte f0
+                          WHERE EXISTS (
+                            SELECT 1 FROM spx.option_chain oc
+                            WHERE oc.snapshot_ts = f0.snapshot_ts
+                              AND UPPER(oc.underlying) = %s
+                          )
                           ORDER BY snapshot_ts DESC
                           LIMIT %s
                         )
@@ -891,7 +955,7 @@ def create_app() -> FastAPI:
                         ) l
                           ON l.snapshot_ts = f.snapshot_ts
                         """,
-                        (int(window),),
+                        (selected_ticker, int(window)),
                     )
                     r = cur.fetchone()
                     out['counts_recent']['labels_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
@@ -901,7 +965,12 @@ def create_app() -> FastAPI:
                         """
                         WITH f AS (
                           SELECT snapshot_ts
-                          FROM spx.chain_features_0dte
+                          FROM spx.chain_features_0dte f0
+                          WHERE EXISTS (
+                            SELECT 1 FROM spx.option_chain oc
+                            WHERE oc.snapshot_ts = f0.snapshot_ts
+                              AND UPPER(oc.underlying) = %s
+                          )
                           ORDER BY snapshot_ts DESC
                           LIMIT %s
                         )
@@ -914,7 +983,7 @@ def create_app() -> FastAPI:
                         ) c
                           ON c.snapshot_ts = f.snapshot_ts
                         """,
-                        (int(window),),
+                        (selected_ticker, int(window)),
                     )
                     r = cur.fetchone()
                     out['counts_recent']['debit_candidates_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
@@ -923,9 +992,14 @@ def create_app() -> FastAPI:
                     cur.execute(
                         """
                         WITH c AS (
-                          SELECT DISTINCT snapshot_ts
-                          FROM spx.debit_spread_candidates_0dte
-                          ORDER BY snapshot_ts DESC
+                          SELECT DISTINCT c0.snapshot_ts
+                          FROM spx.debit_spread_candidates_0dte c0
+                          WHERE EXISTS (
+                            SELECT 1 FROM spx.option_chain oc
+                            WHERE oc.snapshot_ts = c0.snapshot_ts
+                              AND UPPER(oc.underlying) = %s
+                          )
+                          ORDER BY c0.snapshot_ts DESC
                           LIMIT %s
                         )
                         SELECT
@@ -937,7 +1011,7 @@ def create_app() -> FastAPI:
                         ) s
                           ON s.snapshot_ts = c.snapshot_ts
                         """,
-                        (int(window),),
+                        (selected_ticker, int(window)),
                     )
                     r = cur.fetchone()
                     out['counts_recent']['debit_scores_missing_any'] = {'window': int(window), 'n': int(r[0] or 0), 'missing': int(r[1] or 0)}
@@ -2168,10 +2242,7 @@ def create_app() -> FastAPI:
         dsn = _pg_dsn()
         if not dsn:
             return None
-        underlying = str((params or {}).get('underlying') or 'SPX').strip().upper()
-        if underlying != 'SPX':
-            # current live source tables are SPX-only; preserve forward-compatible param flow.
-            return None
+        underlying = str((params or {}).get('underlying') or os.getenv('PIPELINE_UNDERLYING') or os.getenv('TICKER') or 'SPX').strip().upper()
         # Respect per-line entry windows (same intent semantics as strategy params/backtest design).
         if not _is_now_in_entry_window_ct(params or {}):
             return None
@@ -2223,6 +2294,11 @@ def create_app() -> FastAPI:
                          AND s.spread_type = c.spread_type
                         WHERE c.snapshot_ts = %s
                           AND c.tradable = true
+                          AND EXISTS (
+                            SELECT 1 FROM spx.option_chain oc
+                            WHERE oc.snapshot_ts = c.snapshot_ts
+                              AND UPPER(oc.underlying) = %s
+                          )
                           AND f.low_quality = false
                           AND s.p_bigwin IS NOT NULL
                           AND s.pred_change IS NOT NULL
@@ -2232,7 +2308,7 @@ def create_app() -> FastAPI:
                         ORDER BY s.p_bigwin DESC NULLS LAST, s.pred_change DESC NULLS LAST, c.debit_points ASC NULLS LAST
                         LIMIT 1
                         """,
-                        (int(hz), snapshot_ts, float(min_p), float(min_pred), allowed, allowed),
+                        (int(hz), snapshot_ts, underlying, float(min_p), float(min_pred), allowed, allowed),
                     )
                     r = cur.fetchone()
                     if not r:
@@ -2264,10 +2340,15 @@ def create_app() -> FastAPI:
                     FROM spx.debit_spread_scores_term s
                     WHERE s.snapshot_ts = %s
                       AND s.term_bucket = %s
+                      AND EXISTS (
+                        SELECT 1 FROM spx.option_chain oc
+                        WHERE oc.snapshot_ts = s.snapshot_ts
+                          AND UPPER(oc.underlying) = %s
+                      )
                       AND (%s::date IS NULL OR s.expiration_date = %s::date)
                     ORDER BY 1 ASC
                     """,
-                    (snapshot_ts, term_bucket, exp_date, exp_date),
+                    (snapshot_ts, term_bucket, underlying, exp_date, exp_date),
                 )
                 hs = [int(rh[0]) for rh in cur.fetchall() if rh and rh[0] is not None]
                 hz_eff = min(hs, key=lambda h: abs(int(h) - int(hz))) if hs else int(hz)
@@ -2301,6 +2382,11 @@ def create_app() -> FastAPI:
                      AND s.spread_type = c.spread_type
                     WHERE c.snapshot_ts = %s
                       AND c.term_bucket = %s
+                      AND EXISTS (
+                        SELECT 1 FROM spx.option_chain oc
+                        WHERE oc.snapshot_ts = c.snapshot_ts
+                          AND UPPER(oc.underlying) = %s
+                      )
                       AND c.target_dte_days = %s
                       AND c.dte_tolerance_days = %s
                       AND (%s::date IS NULL OR c.expiration_date = %s::date)
@@ -2314,7 +2400,7 @@ def create_app() -> FastAPI:
                     ORDER BY s.p_bigwin DESC NULLS LAST, s.pred_change DESC NULLS LAST, c.debit_points ASC NULLS LAST
                     LIMIT 1
                     """,
-                    (int(hz_eff), snapshot_ts, term_bucket, int(target_dte), int(dte_tol), exp_date, exp_date, float(min_p), float(min_pred), allowed, allowed),
+                    (int(hz_eff), snapshot_ts, term_bucket, underlying, int(target_dte), int(dte_tol), exp_date, exp_date, float(min_p), float(min_pred), allowed, allowed),
                 )
                 r = cur.fetchone()
                 if not r:
@@ -5789,17 +5875,43 @@ def create_app() -> FastAPI:
         a = str(v or "operator").strip()
         return a[:80] if a else "operator"
 
+    def _pipeline_underlying() -> str:
+        return str(os.getenv('PIPELINE_UNDERLYING', '').strip() or os.getenv('TICKER', 'SPX').strip() or 'SPX').upper()
+
     def _pipeline_health() -> dict[str, Any]:
         dsn = _pg_dsn()
         if not dsn:
             return {"ok": False, "error": "SPX_CHAIN_DATABASE_URL not configured"}
+        u = _pipeline_underlying()
         try:
             with _pg_connect(dsn) as conn, conn.cursor() as cur:
-                cur.execute("SELECT max(snapshot_ts) FROM spx.chain_features_0dte")
+                cur.execute(
+                    """
+                    SELECT max(f.snapshot_ts)
+                    FROM spx.chain_features_0dte f
+                    WHERE EXISTS (
+                      SELECT 1 FROM spx.option_chain oc
+                      WHERE oc.snapshot_ts = f.snapshot_ts
+                        AND UPPER(oc.underlying) = %s
+                    )
+                    """,
+                    (u,),
+                )
                 feat = cur.fetchone()[0]
-                cur.execute("SELECT max(snapshot_ts) FROM spx.debit_spread_scores_0dte")
+                cur.execute(
+                    """
+                    SELECT max(s.snapshot_ts)
+                    FROM spx.debit_spread_scores_0dte s
+                    WHERE EXISTS (
+                      SELECT 1 FROM spx.option_chain oc
+                      WHERE oc.snapshot_ts = s.snapshot_ts
+                        AND UPPER(oc.underlying) = %s
+                    )
+                    """,
+                    (u,),
+                )
                 scr = cur.fetchone()[0]
-                return {"ok": True, "latest_feature_ts": _to_central_iso(feat), "latest_score_ts": _to_central_iso(scr)}
+                return {"ok": True, "underlying": u, "latest_feature_ts": _to_central_iso(feat), "latest_score_ts": _to_central_iso(scr)}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -5817,10 +5929,15 @@ def create_app() -> FastAPI:
                       ON c.snapshot_ts=l.snapshot_ts AND c.anchor_type=l.anchor_type AND c.spread_type=l.spread_type
                     JOIN spx.chain_features_0dte f ON f.snapshot_ts=l.snapshot_ts
                     WHERE l.horizon_minutes=%s AND l.is_missing_future=false AND l.change IS NOT NULL AND c.tradable=true AND f.low_quality=false
+                      AND EXISTS (
+                        SELECT 1 FROM spx.option_chain oc
+                        WHERE oc.snapshot_ts = l.snapshot_ts
+                          AND UPPER(oc.underlying) = %s
+                      )
                       AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts >= NULLIF(%s::text,'')::timestamptz)
                       AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts <= NULLIF(%s::text,'')::timestamptz)
                     """,
-                    (int(horizon_minutes), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
+                    (int(horizon_minutes), _pipeline_underlying(), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
                 )
                 return int(cur.fetchone()[0])
         except Exception:
@@ -5848,10 +5965,15 @@ def create_app() -> FastAPI:
                       AND l.change IS NOT NULL
                       AND c.tradable=true
                       AND f.low_quality=false
+                      AND EXISTS (
+                        SELECT 1 FROM spx.option_chain oc
+                        WHERE oc.snapshot_ts = l.snapshot_ts
+                          AND UPPER(oc.underlying) = %s
+                      )
                       AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts >= NULLIF(%s::text,'')::timestamptz)
                       AND (NULLIF(%s::text,'') IS NULL OR l.snapshot_ts <= NULLIF(%s::text,'')::timestamptz)
                     """,
-                    (int(horizon_minutes), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
+                    (int(horizon_minutes), _pipeline_underlying(), str(train_start_ts or ''), str(train_start_ts or ''), str(train_end_ts or ''), str(train_end_ts or '')),
                 )
                 r = cur.fetchone()
                 if not r:
@@ -5882,10 +6004,15 @@ def create_app() -> FastAPI:
                       avg(pred_return) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS avg_pred_return_24h,
                       avg(p_bigwin) FILTER (WHERE snapshot_ts >= now() - interval '24 hours') AS avg_p_bigwin_24h,
                       max(snapshot_ts) AS latest_score_ts
-                    FROM spx.debit_spread_scores_0dte
+                    FROM spx.debit_spread_scores_0dte s
                     WHERE horizon_minutes=%s AND model_version=%s
+                      AND EXISTS (
+                        SELECT 1 FROM spx.option_chain oc
+                        WHERE oc.snapshot_ts = s.snapshot_ts
+                          AND UPPER(oc.underlying) = %s
+                      )
                     """,
-                    (int(horizon_minutes), str(model_version)),
+                    (int(horizon_minutes), str(model_version), _pipeline_underlying()),
                 )
                 r = cur.fetchone()
                 score_rows_24h, scored_snapshots_24h, avg_pred_return_24h, avg_p_bigwin_24h, latest_score_ts = r
@@ -5894,9 +6021,14 @@ def create_app() -> FastAPI:
                     """
                     WITH trad AS (
                       SELECT DISTINCT snapshot_ts, anchor_type, spread_type
-                      FROM spx.debit_spread_candidates_0dte
+                      FROM spx.debit_spread_candidates_0dte c
                       WHERE tradable=true
                         AND snapshot_ts >= now() - interval '7 days'
+                        AND EXISTS (
+                          SELECT 1 FROM spx.option_chain oc
+                          WHERE oc.snapshot_ts = c.snapshot_ts
+                            AND UPPER(oc.underlying) = %s
+                        )
                     )
                     SELECT
                       count(*) AS tradable_keys_7d,
@@ -5909,7 +6041,7 @@ def create_app() -> FastAPI:
                      AND s.horizon_minutes=%s
                      AND s.model_version=%s
                     """,
-                    (int(horizon_minutes), str(model_version)),
+                    ( _pipeline_underlying(), int(horizon_minutes), str(model_version)),
                 )
                 t = cur.fetchone()
                 tradable_keys_7d, scored_keys_7d = (t[0] or 0), (t[1] or 0)
