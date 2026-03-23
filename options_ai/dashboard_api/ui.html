@@ -1072,6 +1072,19 @@
           </div>
         </div>
 
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-h"><h2>Processing Tickers</h2><div class="hint">Choose active symbols + add new MarketData symbol folders</div></div>
+          <div class="card-b">
+            <div class="row" id="opsTickerUniverse" style="gap:10px; flex-wrap:wrap; margin-bottom:8px;"></div>
+            <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+              <input id="opsNewTicker" type="text" placeholder="Add ticker (e.g. NDX)" style="max-width:220px;" />
+              <button id="opsAddTickerBtn">Add Ticker</button>
+              <button id="opsSaveTickersBtn">Save Selected</button>
+            </div>
+            <div class="hint" id="opsTickerUniverseMeta">configured: —</div>
+          </div>
+        </div>
+
         <div class="ops-main" style="margin-top: var(--space-4);">
           <div class="card">
             <div class="card-h"><h2>Pipeline Flow</h2><div class="hint" id="opsBottleneck">Bottleneck: —</div></div>
@@ -5525,8 +5538,52 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       return String(sel?.value || 'SPX').toUpperCase();
     }
 
+    function renderTickerUniverse(payload) {
+      const wrap = document.getElementById('opsTickerUniverse');
+      const meta = document.getElementById('opsTickerUniverseMeta');
+      if (!wrap) return;
+      const all = Array.isArray(payload?.tickers) && payload.tickers.length ? payload.tickers : ['SPX'];
+      const configured = new Set((payload?.configured_tickers || ['SPX']).map(v => String(v).toUpperCase()));
+      wrap.innerHTML = '';
+      for (const t of all) {
+        const id = `opsTick_${String(t).replace(/[^A-Za-z0-9_]/g,'_')}`;
+        const lbl = document.createElement('label');
+        lbl.style.display = 'inline-flex';
+        lbl.style.gap = '6px';
+        lbl.style.alignItems = 'center';
+        lbl.innerHTML = `<input type="checkbox" id="${id}" data-ticker="${String(t)}" ${configured.has(String(t).toUpperCase()) ? 'checked' : ''} /> ${String(t)}`;
+        wrap.appendChild(lbl);
+      }
+      if (meta) meta.textContent = `configured: ${Array.from(configured).sort().join(', ')} | market root: ${payload?.root || '—'}`;
+    }
+
+    function getConfiguredTickersFromUI() {
+      const wrap = document.getElementById('opsTickerUniverse');
+      if (!wrap) return ['SPX'];
+      const out = [];
+      wrap.querySelectorAll('input[type="checkbox"][data-ticker]').forEach((el) => {
+        if (el.checked) out.push(String(el.dataset.ticker || '').toUpperCase());
+      });
+      return out.length ? out : ['SPX'];
+    }
+
+    async function saveProcessingTickers() {
+      const tickers = getConfiguredTickersFromUI();
+      await jpost('/api/marketdata/tickers', { tickers });
+      return loadOpsTickerOptions();
+    }
+
+    async function addProcessingTicker() {
+      const inp = document.getElementById('opsNewTicker');
+      const t = String(inp?.value || '').trim().toUpperCase();
+      if (!t) return;
+      await jpost('/api/marketdata/tickers/add', { ticker: t, create_dir: true });
+      if (inp) inp.value = '';
+      return loadOpsTickerOptions();
+    }
+
     async function loadOpsTickerOptions() {
-      let payload = { tickers: ['SPX'], default_ticker: 'SPX', root: '/mnt/MarketData' };
+      let payload = { tickers: ['SPX'], configured_tickers: ['SPX'], default_ticker: 'SPX', root: '/mnt/MarketData' };
       try {
         payload = await jget('/api/marketdata/tickers');
       } catch (e) {
@@ -5550,6 +5607,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         sel.appendChild(opt);
       }
       try { localStorage.setItem('opsTicker', preferred); } catch {}
+
+      renderTickerUniverse(payload);
 
       const meta = document.getElementById('opsTickerMeta');
       if (meta) meta.textContent = `ticker: ${preferred} | market root: ${payload.root || '/mnt/MarketData'}`;
@@ -7238,6 +7297,23 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         const v = String(ev?.target?.value || 'SPX').toUpperCase();
         try { localStorage.setItem('opsTicker', v); } catch {}
         safe('processing_ticker', () => refreshProcessingTickerQueue());
+      });
+      document.getElementById('opsSaveTickersBtn')?.addEventListener('click', () => safe('processing_tickers_save', async () => {
+        await saveProcessingTickers();
+        await refreshProcessing();
+      }));
+      document.getElementById('opsAddTickerBtn')?.addEventListener('click', () => safe('processing_tickers_add', async () => {
+        await addProcessingTicker();
+        await refreshProcessing();
+      }));
+      document.getElementById('opsNewTicker')?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          safe('processing_tickers_add_enter', async () => {
+            await addProcessingTicker();
+            await refreshProcessing();
+          });
+        }
       });
       document.getElementById('opsSchedEnabled')?.addEventListener('change', (ev) => safe('scheduler_toggle', () => setSchedulerEnabled(!!ev.target.checked)));
       document.getElementById('opsSchedStartZero')?.addEventListener('change', (ev) => safe('scheduler_cfg', () => setSchedulerConfig({include_start_zero_dte: !!ev.target.checked})));

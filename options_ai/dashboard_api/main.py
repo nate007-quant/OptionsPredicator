@@ -314,6 +314,7 @@ def create_app() -> FastAPI:
     overrides_path = data_root / "state" / "runtime_overrides.json"
 
     market_data_root = Path(os.getenv("MARKET_DATA_ROOT", "/mnt/MarketData")).expanduser()
+    processing_tickers_path = data_root / "state" / "processing_tickers.json"
 
     def _normalize_ticker_name(v: str | None) -> str:
         t = str(v or '').strip().upper()
@@ -323,6 +324,35 @@ def create_app() -> FastAPI:
         if any(ch not in allowed for ch in t):
             raise HTTPException(status_code=400, detail='invalid ticker')
         return t
+
+    def _load_processing_tickers_state() -> dict[str, Any]:
+        try:
+            if processing_tickers_path.exists():
+                obj = _json.loads(processing_tickers_path.read_text(encoding='utf-8'))
+                if isinstance(obj, dict):
+                    return obj
+        except Exception:
+            pass
+        return {}
+
+    def _save_processing_tickers_state(obj: dict[str, Any]) -> None:
+        processing_tickers_path.parent.mkdir(parents=True, exist_ok=True)
+        processing_tickers_path.write_text(_json.dumps(obj, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    def _configured_processing_tickers() -> list[str]:
+        st = _load_processing_tickers_state()
+        raw = st.get('tickers') if isinstance(st, dict) else None
+        out: list[str] = []
+        if isinstance(raw, list):
+            for x in raw:
+                try:
+                    out.append(_normalize_ticker_name(str(x)))
+                except Exception:
+                    continue
+        if not out:
+            out = [_normalize_ticker_name(cfg.ticker)]
+        out = sorted(set(out))
+        return out
 
     def _list_market_data_tickers() -> list[str]:
         names: set[str] = set()
@@ -349,12 +379,17 @@ def create_app() -> FastAPI:
         except Exception:
             pass
 
+        return sorted(names)
+
+    def _list_known_market_tickers() -> list[str]:
+        names = set(_list_market_data_tickers())
+        names.update(_configured_processing_tickers())
         names.add(_normalize_ticker_name(cfg.ticker))
         return sorted(names)
 
     def _resolve_market_ticker(preferred: str | None) -> str:
         t = _normalize_ticker_name(preferred or cfg.ticker)
-        known = set(_list_market_data_tickers())
+        known = set(_list_known_market_tickers())
         return t if (not known or t in known) else _normalize_ticker_name(cfg.ticker)
 
     db_path = os.getenv("OPTIONS_AI_DB_PATH")
@@ -626,14 +661,58 @@ def create_app() -> FastAPI:
 
     @app.get('/api/marketdata/tickers')
     def marketdata_tickers() -> dict[str, Any]:
-        tickers = _list_market_data_tickers()
+        discovered = _list_market_data_tickers()
+        configured = _configured_processing_tickers()
+        tickers = _list_known_market_tickers()
         return {
             'root': str(market_data_root),
             'tickers': tickers,
+            'configured_tickers': configured,
+            'discovered_tickers': discovered,
             'default_ticker': _normalize_ticker_name(cfg.ticker),
             'count': len(tickers),
             'tz': 'America/Chicago',
         }
+
+    @app.post('/api/marketdata/tickers')
+    def marketdata_tickers_update(body: dict[str, Any]) -> dict[str, Any]:
+        raw = body.get('tickers') if isinstance(body, dict) else None
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail='tickers list required')
+        out: list[str] = []
+        for x in raw:
+            try:
+                out.append(_normalize_ticker_name(str(x)))
+            except Exception:
+                continue
+        out = sorted(set(out))
+        if not out:
+            out = [_normalize_ticker_name(cfg.ticker)]
+        st = _load_processing_tickers_state()
+        st['tickers'] = out
+        st['updated_at_utc'] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+        _save_processing_tickers_state(st)
+        return marketdata_tickers()
+
+    @app.post('/api/marketdata/tickers/add')
+    def marketdata_tickers_add(body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail='json body required')
+        ticker = _normalize_ticker_name(body.get('ticker'))
+        create_dir = bool(body.get('create_dir', True))
+        if create_dir:
+            try:
+                (market_data_root / ticker).mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f'failed to create market data dir: {e}')
+
+        cur = set(_configured_processing_tickers())
+        cur.add(ticker)
+        st = _load_processing_tickers_state()
+        st['tickers'] = sorted(cur)
+        st['updated_at_utc'] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+        _save_processing_tickers_state(st)
+        return marketdata_tickers()
 
     @app.get("/api/status/processing")
     def status_processing(
@@ -727,7 +806,7 @@ def create_app() -> FastAPI:
 
         return {
             "ticker": selected_ticker,
-            "tickers": _list_market_data_tickers(),
+            "tickers": _list_known_market_tickers(),
             "market_data_root": str(market_data_root),
             "incoming_dir": str(incoming_dir),
             "processed_dir": str(processed_dir),
