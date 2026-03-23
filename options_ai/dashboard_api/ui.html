@@ -1073,13 +1073,12 @@
         </div>
 
         <div class="card" style="margin-top: var(--space-4);">
-          <div class="card-h"><h2>Processing Tickers</h2><div class="hint">Choose active symbols + add new MarketData symbol folders</div></div>
+          <div class="card-h"><h2>Processing Tickers</h2><div class="hint">Active symbols only</div></div>
           <div class="card-b">
-            <div class="row" id="opsTickerUniverse" style="gap:10px; flex-wrap:wrap; margin-bottom:8px;"></div>
+            <div class="row" id="opsTickerUniverse" style="gap:8px; flex-wrap:wrap; margin-bottom:8px;"></div>
             <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:8px;">
               <input id="opsNewTicker" type="text" placeholder="Add ticker (e.g. NDX)" style="max-width:220px;" />
-              <button id="opsAddTickerBtn">Add Ticker</button>
-              <button id="opsSaveTickersBtn">Save Selected</button>
+              <button id="opsAddTickerBtn">Add</button>
             </div>
             <div class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:8px;">
               <label>Mode
@@ -5554,34 +5553,54 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const wrap = document.getElementById('opsTickerUniverse');
       const meta = document.getElementById('opsTickerUniverseMeta');
       if (!wrap) return;
-      const all = Array.isArray(payload?.tickers) && payload.tickers.length ? payload.tickers : ['SPX'];
-      const configured = new Set((payload?.configured_tickers || ['SPX']).map(v => String(v).toUpperCase()));
+      const configured = Array.isArray(payload?.configured_tickers) && payload.configured_tickers.length
+        ? payload.configured_tickers.map(v => String(v).toUpperCase())
+        : ['SPX'];
       wrap.innerHTML = '';
-      for (const t of all) {
-        const id = `opsTick_${String(t).replace(/[^A-Za-z0-9_]/g,'_')}`;
-        const lbl = document.createElement('label');
-        lbl.style.display = 'inline-flex';
-        lbl.style.gap = '6px';
-        lbl.style.alignItems = 'center';
-        lbl.innerHTML = `<input type="checkbox" id="${id}" data-ticker="${String(t)}" ${configured.has(String(t).toUpperCase()) ? 'checked' : ''} /> ${String(t)}`;
-        wrap.appendChild(lbl);
+      for (const t of configured) {
+        const chip = document.createElement('div');
+        chip.style.display = 'inline-flex';
+        chip.style.alignItems = 'center';
+        chip.style.gap = '6px';
+        chip.style.padding = '4px 8px';
+        chip.style.border = '1px solid var(--border)';
+        chip.style.borderRadius = '999px';
+        chip.style.background = 'var(--panel)';
+
+        const name = document.createElement('span');
+        name.textContent = String(t);
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = '×';
+        del.title = `Remove ${String(t)} from processing`;
+        del.style.width = '20px';
+        del.style.height = '20px';
+        del.style.lineHeight = '18px';
+        del.style.padding = '0';
+        del.style.borderRadius = '999px';
+        del.style.border = '1px solid var(--border)';
+        del.style.background = 'transparent';
+        del.style.cursor = 'pointer';
+        del.addEventListener('click', () => safe('processing_ticker_remove', async () => {
+          await removeProcessingTicker(String(t));
+          await refreshProcessing();
+        }));
+
+        chip.appendChild(name);
+        chip.appendChild(del);
+        wrap.appendChild(chip);
       }
-      if (meta) meta.textContent = `configured: ${Array.from(configured).sort().join(', ')} | market root: ${payload?.root || '—'}`;
+      if (meta) meta.textContent = `active: ${configured.join(', ')} | market root: ${payload?.root || '—'}`;
     }
 
-    function getConfiguredTickersFromUI() {
-      const wrap = document.getElementById('opsTickerUniverse');
-      if (!wrap) return ['SPX'];
-      const out = [];
-      wrap.querySelectorAll('input[type="checkbox"][data-ticker]').forEach((el) => {
-        if (el.checked) out.push(String(el.dataset.ticker || '').toUpperCase());
-      });
-      return out.length ? out : ['SPX'];
-    }
-
-    async function saveProcessingTickers() {
-      const tickers = getConfiguredTickersFromUI();
-      await jpost('/api/marketdata/tickers', { tickers });
+    async function removeProcessingTicker(ticker) {
+      const cur = await jget('/api/marketdata/tickers');
+      const configured = Array.isArray(cur?.configured_tickers) && cur.configured_tickers.length
+        ? cur.configured_tickers.map(v => String(v).toUpperCase())
+        : ['SPX'];
+      const next = configured.filter(t => t !== String(ticker || '').toUpperCase());
+      await jpost('/api/marketdata/tickers', { tickers: next.length ? next : ['SPX'] });
       return loadOpsTickerOptions();
     }
 
@@ -7328,10 +7347,6 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         try { localStorage.setItem('opsTicker', v); } catch {}
         safe('processing_ticker', () => refreshProcessingTickerQueue());
       });
-      document.getElementById('opsSaveTickersBtn')?.addEventListener('click', () => safe('processing_tickers_save', async () => {
-        await saveProcessingTickers();
-        await refreshProcessing();
-      }));
       document.getElementById('opsAddTickerBtn')?.addEventListener('click', () => safe('processing_tickers_add', async () => {
         await addProcessingTicker();
         await refreshProcessing();
