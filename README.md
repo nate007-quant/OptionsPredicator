@@ -65,6 +65,11 @@ Set these in `.env` (see `.env.example`):
 - `SPX_CHAIN_DATABASE_URL=postgresql://spx:spxpass@localhost:5432/spxdb`
 - `FILENAME_TZ=America/Chicago`
 
+Multi-symbol import (same ingestion format):
+- Put snapshots under symbol subfolders, e.g. `/mnt/options_ai/incoming/SPX/`, `/mnt/options_ai/incoming/NDX/`
+- Set `INPUT_DIR=/mnt/options_ai/incoming`
+- Set `CHAIN_INPUT_RECURSIVE=true`
+
 ### Run
 
 ```bash

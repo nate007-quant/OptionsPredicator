@@ -141,3 +141,34 @@ def test_missing_underlying_price_and_missing_numeric_filename_spot_errors() -> 
     n = validate_chain_json(snap)
     with pytest.raises(ValueError):
         build_rows(snap, n=n, parsed=parsed)
+
+
+def test_list_json_files_recursive_scans_symbol_subdirs(tmp_path) -> None:
+    from options_ai.spx_chain_ingester import _list_json_files
+
+    (tmp_path / "SPX").mkdir()
+    (tmp_path / "NDX").mkdir()
+    (tmp_path / "SPX" / "SPX-1.0-2025-03-28-20250303-100058.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "NDX" / "NDX-2.0-2025-03-28-20250303-100058.json").write_text("{}", encoding="utf-8")
+
+    flat = _list_json_files(tmp_path, recursive=False)
+    rec = _list_json_files(tmp_path, recursive=True)
+
+    assert flat == []
+    assert [p.name for p in rec] == [
+        "NDX-2.0-2025-03-28-20250303-100058.json",
+        "SPX-1.0-2025-03-28-20250303-100058.json",
+    ]
+
+
+def test_load_chain_ingest_config_recursive_env(monkeypatch, tmp_path) -> None:
+    from options_ai.spx_chain_ingester import load_chain_ingest_config_from_env
+
+    monkeypatch.setenv("INPUT_DIR", str(tmp_path))
+    monkeypatch.setenv("ARCHIVE_ROOT", str(tmp_path / "archive_root"))
+    monkeypatch.setenv("SPX_CHAIN_DATABASE_URL", "postgresql://u:p@localhost:5432/db")
+    monkeypatch.setenv("CHAIN_INPUT_RECURSIVE", "true")
+
+    cfg = load_chain_ingest_config_from_env()
+    assert cfg.input_dir == tmp_path
+    assert cfg.scan_recursive is True

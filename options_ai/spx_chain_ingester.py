@@ -62,6 +62,7 @@ class ChainIngestConfig:
 
     poll_seconds: float = 0.5
     file_stable_seconds: float = 1.0
+    scan_recursive: bool = False
 
     # If we cannot rename/remove files in input_dir, keep a processed log.
     processed_log_path: Path | None = None
@@ -444,10 +445,10 @@ def _load_processed_set(path: Path) -> set[str]:
         return set()
 
 
-def _append_processed(path: Path, filename: str) -> None:
+def _append_processed(path: Path, key: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
-        f.write(filename)
+        f.write(key)
         f.write("\n")
 
 
@@ -493,7 +494,7 @@ def ensure_timescale_schema(database_url: str) -> None:
         conn.execute(SCHEMA_SQL)
 
 
-def ingest_one_file(cfg: ChainIngestConfig, path: Path) -> None:
+def ingest_one_file(cfg: ChainIngestConfig, path: Path, *, processed_key: str | None = None) -> None:
     if psycopg is None:
         raise RuntimeError("psycopg is required for Timescale/Postgres ingestion")
 
@@ -519,21 +520,31 @@ def ingest_one_file(cfg: ChainIngestConfig, path: Path) -> None:
 
     # If we had to copy (no permission to move/delete), record it.
     if (not moved) and cfg.processed_log_path is not None:
-        _append_processed(cfg.processed_log_path, path.name)
+        _append_processed(cfg.processed_log_path, processed_key or path.name)
 
 
-def quarantine_file(cfg: ChainIngestConfig, path: Path, err: str) -> None:
+def quarantine_file(cfg: ChainIngestConfig, path: Path, err: str, *, processed_key: str | None = None) -> None:
     _write_error(cfg, path.name, err)
     dest = _bad_dest(cfg, path.name)
     moved = _safe_move_or_copy(path, dest)
     if (not moved) and cfg.processed_log_path is not None:
-        _append_processed(cfg.processed_log_path, path.name)
+        _append_processed(cfg.processed_log_path, processed_key or path.name)
 
 
-def _list_json_files(input_dir: Path) -> list[Path]:
+def _list_json_files(input_dir: Path, *, recursive: bool = False) -> list[Path]:
     if not input_dir.exists():
         return []
-    return sorted([p for p in input_dir.glob("*.json") if p.is_file()])
+    it = input_dir.rglob("*.json") if recursive else input_dir.glob("*.json")
+    return sorted([p for p in it if p.is_file()])
+
+
+def _processed_key(cfg: ChainIngestConfig, p: Path) -> str:
+    if cfg.scan_recursive:
+        try:
+            return p.relative_to(cfg.input_dir).as_posix()
+        except Exception:
+            return str(p)
+    return p.name
 
 
 def run_chain_ingest_daemon(cfg: ChainIngestConfig) -> None:
@@ -548,11 +559,12 @@ def run_chain_ingest_daemon(cfg: ChainIngestConfig) -> None:
     seen_sizes: dict[str, tuple[int, float]] = {}
 
     while True:
-        files = _list_json_files(cfg.input_dir)
+        files = _list_json_files(cfg.input_dir, recursive=cfg.scan_recursive)
         did_any = False
 
         for p in files:
-            if p.name in processed:
+            key = _processed_key(cfg, p)
+            if key in processed or p.name in processed:
                 continue
 
             try:
@@ -560,10 +572,10 @@ def run_chain_ingest_daemon(cfg: ChainIngestConfig) -> None:
             except FileNotFoundError:
                 continue
 
-            prev = seen_sizes.get(p.name)
+            prev = seen_sizes.get(key)
             now = time.time()
             if prev is None or prev[0] != st.st_size:
-                seen_sizes[p.name] = (st.st_size, now)
+                seen_sizes[key] = (st.st_size, now)
                 continue
 
             if now - prev[1] < cfg.file_stable_seconds:
@@ -571,13 +583,13 @@ def run_chain_ingest_daemon(cfg: ChainIngestConfig) -> None:
 
             # stable; process
             try:
-                ingest_one_file(cfg, p)
+                ingest_one_file(cfg, p, processed_key=key)
                 did_any = True
-                processed.add(p.name)
+                processed.add(key)
             except Exception as e:
-                quarantine_file(cfg, p, err=str(e))
+                quarantine_file(cfg, p, err=str(e), processed_key=key)
                 did_any = True
-                processed.add(p.name)
+                processed.add(key)
 
         time.sleep(cfg.poll_seconds if not did_any else 1.0)
 
@@ -587,6 +599,7 @@ def load_chain_ingest_config_from_env() -> ChainIngestConfig:
     archive_root = Path(os.getenv("ARCHIVE_ROOT", "/mnt/options_ai")).expanduser()
     database_url = os.getenv("SPX_CHAIN_DATABASE_URL", os.getenv("DATABASE_URL", "")).strip()
     filename_tz = os.getenv("FILENAME_TZ", "America/Chicago").strip()
+    scan_recursive = os.getenv("CHAIN_INPUT_RECURSIVE", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
 
     if not database_url:
         raise RuntimeError("SPX_CHAIN_DATABASE_URL is required")
@@ -600,5 +613,6 @@ def load_chain_ingest_config_from_env() -> ChainIngestConfig:
         filename_tz=filename_tz,
         poll_seconds=float(os.getenv("CHAIN_WATCH_POLL_SECONDS", "0.5")),
         file_stable_seconds=float(os.getenv("CHAIN_FILE_STABLE_SECONDS", "1.0")),
+        scan_recursive=scan_recursive,
         processed_log_path=processed_log_path,
     )
