@@ -5261,93 +5261,91 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
           throw new Error(`backtest http ${resp.status}: ${t}`);
         }
         data = await resp.json();
+
+        const badge = document.getElementById('btRegimeBadge');
+        if (badge) {
+          const on = (data?.config?.regime_enabled !== undefined) ? !!data.config.regime_enabled : !!payload.regime_enabled;
+          const minc = Number((data?.config?.regime_min_confidence ?? payload.regime_min_confidence) ?? 0.55);
+          const trades = Array.isArray(data?.trades) ? data.trades : [];
+          const byReg = {};
+          for (const t of trades) {
+            const k = (t?.regime_label || 'n/a');
+            byReg[k] = (byReg[k] || 0) + 1;
+          }
+          const tops = Object.entries(byReg).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([k,v])=>`${k}:${v}`).join(', ');
+          badge.textContent = on ? `Regime: ON (min ${minc.toFixed(2)})${tops ? ' • '+tops : ''}` : 'Regime: OFF';
+          badge.style.borderColor = on ? 'var(--ok,#2e7d32)' : 'var(--line)';
+          badge.style.color = on ? 'var(--ok,#2e7d32)' : 'var(--muted)';
+        }
+
+        renderBtSummaryGraphics(data.summary || {});
+        renderBtEquity(data.equity_curve || []);
+
+        const tb = document.getElementById('btTrades');
+        if (tb) {
+          tb.innerHTML = '';
+          const runMode = String((data?.config?.strategy_mode || '')).toLowerCase();
+          const scoreExpected = (runMode === 'anchor_based' || runMode === 'flow_regime');
+
+          for (const t of (data.trades || [])) {
+            const tr = document.createElement('tr');
+            const pnl = t.pnl_dollars;
+            const pBig = (t.p_bigwin==null) ? (scoreExpected ? '—' : 'n/a') : ((100*Number(t.p_bigwin)).toFixed(1)+'%');
+            const pred = (t.pred_change==null) ? (scoreExpected ? '—' : 'n/a') : fmtNum(t.pred_change,2);
+            const regConf = (t.regime_confidence==null) ? '—' : Number(t.regime_confidence).toFixed(2);
+            let prox = null;
+            try {
+              const spot = Number(t.spot);
+              const ds = [];
+              if (Number.isFinite(spot)) {
+                const pw = Number(t.put_wall);
+                const cw = Number(t.call_wall);
+                if (Number.isFinite(pw)) ds.push(Math.abs(spot - pw));
+                if (Number.isFinite(cw)) ds.push(Math.abs(cw - spot));
+                if (ds.length) prox = Math.min(...ds);
+              }
+            } catch {}
+            const proxTxt = (prox==null) ? '—' : fmtNum(prox, 2);
+
+            tr.innerHTML = `
+              <td>${t.day_local||''}</td>
+              <td>${t.entry_ts||''}</td>
+              <td>${t.exit_ts||''}</td>
+              <td>${t.exit_reason||''}</td>
+              <td>${t.anchor_type||''}</td>
+              <td>${t.spread_type||''}</td>
+              <td>${t.entry_debit==null?'—':fmtNum(t.entry_debit,2)}</td>
+              <td>${t.exit_debit==null?'—':fmtNum(t.exit_debit,2)}</td>
+              <td>${t.change_points==null?'—':fmtNum(t.change_points,2)}</td>
+              <td>${pnl==null?'—':fmtNum(pnl,2)}</td>
+              <td>${t.roi==null?'—':(100*Number(t.roi)).toFixed(1)+'%'}</td>
+              <td>${pBig}</td>
+              <td>${pred}</td>
+              <td>${regConf}</td>
+              <td>${proxTxt}</td>
+            `;
+            tb.appendChild(tr);
+          }
+        }
+
+        if (note) note.textContent = `done: ${((data.trades||[]).length)} trades`;
+        btStopProgress(`done · ${((data.trades||[]).length)} trades`, true);
+
+        if (data && data.run_duplicate && !data.forced_rerun) {
+          toast('Duplicate backtest params (deduped). Enable Force rerun to re-execute.', 'info');
+        }
+        if (data && data.persistence_warning) {
+          toast('Backtest finished, but run history save was delayed (DB busy).', 'warn');
+        }
+        await btRefreshRuns();
+        return data;
       } catch (e) {
         if (note) note.textContent = `error: ${String(e?.message || e)}`;
         btStopProgress('error', false);
-        if (runBtn) runBtn.disabled = false;
         throw e;
+      } finally {
+        if (runBtn) runBtn.disabled = false;
       }
-
-      const badge = document.getElementById('btRegimeBadge');
-      if (badge) {
-        const on = (data?.config?.regime_enabled !== undefined) ? !!data.config.regime_enabled : !!payload.regime_enabled;
-        const minc = Number((data?.config?.regime_min_confidence ?? payload.regime_min_confidence) ?? 0.55);
-        const trades = Array.isArray(data?.trades) ? data.trades : [];
-        const byReg = {};
-        for (const t of trades) {
-          const k = (t?.regime_label || 'n/a');
-          byReg[k] = (byReg[k] || 0) + 1;
-        }
-        const tops = Object.entries(byReg).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([k,v])=>`${k}:${v}`).join(', ');
-        badge.textContent = on ? `Regime: ON (min ${minc.toFixed(2)})${tops ? ' • '+tops : ''}` : 'Regime: OFF';
-        badge.style.borderColor = on ? 'var(--ok,#2e7d32)' : 'var(--line)';
-        badge.style.color = on ? 'var(--ok,#2e7d32)' : 'var(--muted)';
-      }
-
-      renderBtSummaryGraphics(data.summary || {});
-
-      renderBtEquity(data.equity_curve || []);
-
-      const tb = document.getElementById('btTrades');
-      if (tb) {
-        tb.innerHTML = '';
-
-        const runMode = String((data?.config?.strategy_mode || '')).toLowerCase();
-        const scoreExpected = (runMode === 'anchor_based' || runMode === 'flow_regime');
-
-        for (const t of (data.trades || [])) {
-          const tr = document.createElement('tr');
-          const pnl = t.pnl_dollars;
-          const pBig = (t.p_bigwin==null) ? (scoreExpected ? '—' : 'n/a') : ((100*Number(t.p_bigwin)).toFixed(1)+'%');
-          const pred = (t.pred_change==null) ? (scoreExpected ? '—' : 'n/a') : fmtNum(t.pred_change,2);
-          const regConf = (t.regime_confidence==null) ? '—' : Number(t.regime_confidence).toFixed(2);
-          let prox = null;
-          try {
-            const spot = Number(t.spot);
-            const ds = [];
-            if (Number.isFinite(spot)) {
-              const pw = Number(t.put_wall);
-              const cw = Number(t.call_wall);
-              if (Number.isFinite(pw)) ds.push(Math.abs(spot - pw));
-              if (Number.isFinite(cw)) ds.push(Math.abs(cw - spot));
-              if (ds.length) prox = Math.min(...ds);
-            }
-          } catch {}
-          const proxTxt = (prox==null) ? '—' : fmtNum(prox, 2);
-
-          tr.innerHTML = `
-            <td>${t.day_local||''}</td>
-            <td>${t.entry_ts||''}</td>
-            <td>${t.exit_ts||''}</td>
-            <td>${t.exit_reason||''}</td>
-            <td>${t.anchor_type||''}</td>
-            <td>${t.spread_type||''}</td>
-            <td>${t.entry_debit==null?'—':fmtNum(t.entry_debit,2)}</td>
-            <td>${t.exit_debit==null?'—':fmtNum(t.exit_debit,2)}</td>
-            <td>${t.change_points==null?'—':fmtNum(t.change_points,2)}</td>
-            <td>${pnl==null?'—':fmtNum(pnl,2)}</td>
-            <td>${t.roi==null?'—':(100*Number(t.roi)).toFixed(1)+'%'}</td>
-            <td>${pBig}</td>
-            <td>${pred}</td>
-            <td>${regConf}</td>
-            <td>${proxTxt}</td>
-          `;
-          tb.appendChild(tr);
-        }
-      }
-
-      if (note) note.textContent = `done: ${((data.trades||[]).length)} trades`;
-      btStopProgress(`done · ${((data.trades||[]).length)} trades`, true);
-
-      if (data && data.run_duplicate && !data.forced_rerun) {
-        toast('Duplicate backtest params (deduped). Enable Force rerun to re-execute.', 'info');
-      }
-      if (data && data.persistence_warning) {
-        toast('Backtest finished, but run history save was delayed (DB busy).', 'warn');
-      }
-      await btRefreshRuns();
-      if (runBtn) runBtn.disabled = false;
-      return data;
     }
 
 // Processing Operations Dashboard
