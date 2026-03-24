@@ -1489,6 +1489,13 @@ Take profit when spread value <= entry_credit * (1 - capture%). Example: 0.50 me
 
 Shows whether regime gating was enabled, confidence threshold used, and top regime labels observed in executed trades for this run." style="margin-left:8px; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted);">Regime: OFF</span>
               </div>
+              <div class="row" style="margin-top:6px; align-items:center; gap:10px;">
+                <span class="hint" id="btElapsed">elapsed: 00:00</span>
+                <div id="btProgressWrap" style="width:220px; height:8px; border-radius:999px; background:rgba(148,163,184,.25); overflow:hidden;">
+                  <div id="btProgressBar" style="height:100%; width:0%; background:linear-gradient(90deg,#60a5fa,#3b82f6);"></div>
+                </div>
+                <span class="hint" id="btProgressText">idle</span>
+              </div>
             </div>
           </div>
 
@@ -5167,6 +5174,65 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       pfRenderEquity([]);
     }
 
+    let btRunTimer = null;
+    let btRunStartedMs = 0;
+
+    function btFmtElapsed(totalSec) {
+      const s = Math.max(0, Number(totalSec || 0));
+      const hh = Math.floor(s / 3600);
+      const mm = Math.floor((s % 3600) / 60);
+      const ss = Math.floor(s % 60);
+      if (hh > 0) return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+      return `${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+    }
+
+    function btEstimateRunSeconds(payload) {
+      try {
+        const p = (payload && typeof payload === 'object') ? payload : {};
+        const s = new Date(String(p.start_day || '') + 'T00:00:00Z');
+        const e = new Date(String(p.end_day || '') + 'T00:00:00Z');
+        let days = 7;
+        if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
+          days = Math.max(1, Math.round((e - s) / 86400000) + 1);
+        }
+        const mode = String(p.strategy_mode || '').toLowerCase();
+        const modeMult = (mode === 'flow_regime') ? 1.6 : 1.0;
+        const base = Math.max(10, Math.min(600, Math.round(days * 2.4 * modeMult)));
+        return base;
+      } catch {
+        return 60;
+      }
+    }
+
+    function btStartProgress(payload) {
+      const elapsedEl = document.getElementById('btElapsed');
+      const bar = document.getElementById('btProgressBar');
+      const txt = document.getElementById('btProgressText');
+      if (btRunTimer) { try { clearInterval(btRunTimer); } catch {} }
+      btRunStartedMs = Date.now();
+      const estSec = btEstimateRunSeconds(payload);
+
+      const tick = () => {
+        const sec = Math.floor((Date.now() - btRunStartedMs) / 1000);
+        if (elapsedEl) elapsedEl.textContent = `elapsed: ${btFmtElapsed(sec)}`;
+        const pct = Math.max(2, Math.min(95, Math.round((sec / Math.max(1, estSec)) * 100)));
+        if (bar) bar.style.width = `${pct}%`;
+        if (txt) txt.textContent = `running… ~${pct}% (est)`;
+      };
+
+      tick();
+      btRunTimer = setInterval(tick, 1000);
+    }
+
+    function btStopProgress(finalText, done) {
+      const bar = document.getElementById('btProgressBar');
+      const txt = document.getElementById('btProgressText');
+      if (btRunTimer) { try { clearInterval(btRunTimer); } catch {} }
+      btRunTimer = null;
+      if (bar) bar.style.width = done ? '100%' : '0%';
+      if (txt) txt.textContent = String(finalText || (done ? 'done' : 'idle'));
+    }
+
     async function runBacktestDebitSpreads() {
       setDateDefaults();
       updateBtMode();
@@ -5178,7 +5244,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (fr && fr.checked) payload.force_run = true;
 
       const note = document.getElementById('btNote');
+      const runBtn = document.getElementById('runBacktest');
+      if (runBtn) runBtn.disabled = true;
       if (note) note.textContent = 'Status: Starting run…';
+      btStartProgress(payload);
 
       let data;
       try {
@@ -5194,6 +5263,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         data = await resp.json();
       } catch (e) {
         if (note) note.textContent = `error: ${String(e?.message || e)}`;
+        btStopProgress('error', false);
+        if (runBtn) runBtn.disabled = false;
         throw e;
       }
 
@@ -5266,6 +5337,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       }
 
       if (note) note.textContent = `done: ${((data.trades||[]).length)} trades`;
+      btStopProgress(`done · ${((data.trades||[]).length)} trades`, true);
 
       if (data && data.run_duplicate && !data.forced_rerun) {
         toast('Duplicate backtest params (deduped). Enable Force rerun to re-execute.', 'info');
@@ -5274,6 +5346,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         toast('Backtest finished, but run history save was delayed (DB busy).', 'warn');
       }
       await btRefreshRuns();
+      if (runBtn) runBtn.disabled = false;
       return data;
     }
 
