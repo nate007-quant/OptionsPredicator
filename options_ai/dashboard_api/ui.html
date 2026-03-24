@@ -2066,6 +2066,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     let btSelectedRunRefined = false;
     let btSamplerId = null;
     let btSamplerPoll = null;
+    let btBacktestRunning = false;
     let btHiddenOverrides = {};  // preserves params not represented in the form
     let btEquityChart;
     let btPresetsData;
@@ -3377,15 +3378,21 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     }
 
 
+    function btSyncRunBacktestButton(samplerStatus) {
+      const runBtn = document.getElementById('runBacktest');
+      if (!runBtn) return;
+      const s = String(samplerStatus || '').toLowerCase();
+      const samplerBusy = (s === 'running' || s === 'stopping');
+      runBtn.disabled = !!btBacktestRunning || samplerBusy;
+    }
+
     function btSetSamplerUI(st) {
       const btn = document.getElementById('runBacktestSampler');
       const counters = document.getElementById('btSamplerCounters');
-      const runBtn = document.getElementById('runBacktest');
-
       if (!st || !st.status) {
         if (btn) btn.textContent = 'Run Backtest Sampler';
         if (counters) counters.textContent = '';
-        if (runBtn) runBtn.disabled = false;
+        btSyncRunBacktestButton('stopped');
         return;
       }
 
@@ -3398,7 +3405,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         const rej = st.precheck_rejected ?? 0;
         counters.textContent = `runs: ${runs}  dup: ${dup}` + (rej ? `  rej: ${rej}` : '') + (fail ? `  fail: ${fail}` : '');
       }
-      if (runBtn) runBtn.disabled = running;
+      btSyncRunBacktestButton(st.status);
     }
 
     async function samplerPollOnce() {
@@ -5244,8 +5251,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (fr && fr.checked) payload.force_run = true;
 
       const note = document.getElementById('btNote');
-      const runBtn = document.getElementById('runBacktest');
-      if (runBtn) runBtn.disabled = true;
+      btBacktestRunning = true;
+      btSyncRunBacktestButton();
       if (note) note.textContent = 'Status: Starting run…';
       btStartProgress(payload);
 
@@ -5344,7 +5351,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         btStopProgress('error', false);
         throw e;
       } finally {
-        if (runBtn) runBtn.disabled = false;
+        btBacktestRunning = false;
+        btSyncRunBacktestButton();
       }
     }
 
@@ -7172,6 +7180,13 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     document.getElementById('runBacktest')?.addEventListener('click', () => safe('backtest', () => runBacktestDebitSpreads()));
     document.getElementById('runBacktestSampler')?.addEventListener('click', () => safe('sampler', () => samplerStartOrStop()));
     document.getElementById('btRefineSelected')?.addEventListener('click', () => safe('sampler', () => refineFromSelectedRun()));
+
+    // Safety watchdog: keep Run Backtest button state in sync even after transient UI errors.
+    setInterval(() => {
+      try {
+        if (!btBacktestRunning) btSyncRunBacktestButton('stopped');
+      } catch {}
+    }, 5000);
     document.getElementById('btPresetSaveAs')?.addEventListener('click', () => safe('bt_preset_saveas', () => btPresetSaveAs()));
     document.getElementById('btPresetSave')?.addEventListener('click', () => safe('bt_preset_save', () => btPresetSave()));
     document.getElementById('btPresetDelete')?.addEventListener('click', () => safe('bt_preset_delete', () => btPresetDelete()));
