@@ -5344,7 +5344,10 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         if (data && data.persistence_warning) {
           toast('Backtest finished, but run history save was delayed (DB busy).', 'warn');
         }
-        await btRefreshRuns();
+        // Unlock immediately after main run completes; refresh runs in background.
+        btBacktestRunning = false;
+        btSyncRunBacktestButton();
+        setTimeout(() => { safe('bt_runs', () => btRefreshRuns()); }, 0);
         return data;
       } catch (e) {
         if (note) note.textContent = `error: ${String(e?.message || e)}`;
