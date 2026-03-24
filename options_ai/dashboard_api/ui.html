@@ -6180,15 +6180,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       const txt = document.getElementById('exWorkerBannerText');
       if (!box || !txt) return null;
       try {
-        const d = await jget('/api/services');
-        const items = Array.isArray(d.items) ? d.items : [];
-        const need = ['options_ai_execution', 'options_ai_execution_monitor'];
-        const st = {};
-        for (const id of need) {
-          const it = items.find(x => String(x.id||'')===id || String(x.name||'')===id);
-          st[id] = it ? String(it.status||'unknown') : 'missing';
-        }
-        const down = Object.entries(st).filter(([,v]) => v !== 'active');
+        const d = await jget('/api/execution/worker-health');
+        const st = (d && typeof d.statuses === 'object' && d.statuses) ? d.statuses : {};
+        const down = Object.entries(st).filter(([,v]) => String(v || 'unknown') !== 'active');
         if (down.length) {
           box.style.display = '';
           box.style.borderColor = 'rgba(239,68,68,.55)';

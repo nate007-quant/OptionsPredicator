@@ -5291,6 +5291,7 @@ def create_app() -> FastAPI:
     def _collect_services() -> list[dict[str, Any]]:
         services = _load_services_registry()
         now = _now_utc()
+        app_ver = _app_version()
         out = []
         for it in services:
             show = _service_show(it['name'])
@@ -5316,7 +5317,7 @@ def create_app() -> FastAPI:
                 'status_color': color,
                 'heartbeat_age_sec': hb_age,
                 'uptime_sec': uptime_sec,
-                'version': _app_version(),
+                'version': app_ver,
                 'instance_count': 1,
                 'cpu_util_pct': usage.get('cpu_pct'),
                 'memory_util_pct': usage.get('mem_pct'),
@@ -5368,6 +5369,21 @@ def create_app() -> FastAPI:
     @app.get('/api/services')
     def services_list(window: str = Query('15m')) -> dict[str, Any]:
         return {'window': window, 'generated_at': _now_central_iso(), 'items': _collect_services()}
+
+    @app.get('/api/execution/worker-health')
+    def execution_worker_health() -> dict[str, Any]:
+        need = ['options_ai_execution', 'options_ai_execution_monitor']
+        statuses: dict[str, str] = {}
+        for sid in need:
+            show = _service_show(sid)
+            statuses[sid] = str(show.get('active_state') or 'unknown')
+        down = {k: v for k, v in statuses.items() if v != 'active'}
+        return {
+            'ok': not bool(down),
+            'statuses': statuses,
+            'down': down,
+            'generated_at': _now_central_iso(),
+        }
 
     @app.get('/api/services/{service_id}/logs')
     def services_logs(service_id: str, tail: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
