@@ -2070,6 +2070,7 @@ def create_app() -> FastAPI:
             legs = []
         if not isinstance(legs, list):
             raise HTTPException(status_code=400, detail='legs must be a list')
+        legs = _sanitize_portfolio_legs(legs)
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
             if paired_account_label:
@@ -2171,7 +2172,8 @@ def create_app() -> FastAPI:
             cur_legs_json = str(r['legs_json'] or '[]')
 
             new_name = cur_name if name is None else str(name)
-            new_legs_json = cur_legs_json if legs is None else _json.dumps(legs, separators=(',', ':'), sort_keys=True)
+            legs_in = None if legs is None else _sanitize_portfolio_legs(legs)
+            new_legs_json = cur_legs_json if legs_in is None else _json.dumps(legs_in, separators=(',', ':'), sort_keys=True)
             cur_mode = str(r['execution_mode'] or 'independent')
             new_mode = cur_mode if execution_mode is None else str(execution_mode)
             cur_exit_policy = str(r['execution_exit_policy'] or 'any_leg')
@@ -2587,6 +2589,48 @@ def create_app() -> FastAPI:
                 if not r or not r[0]:
                     return None
                 return str(r[0])
+
+    def _snapshot_mode_from_params(params: dict[str, Any]) -> str:
+        p = params or {}
+        exp_mode = str(p.get('expiration_mode') or '0dte').strip().lower()
+        return 'term' if exp_mode in {'target_dte', 'current_week_friday'} else '0dte'
+
+
+    def _sanitize_line_params(params: dict[str, Any]) -> dict[str, Any]:
+        p = dict(params or {})
+        exp_mode = str(p.get('expiration_mode') or '0dte').strip().lower()
+        if exp_mode in {'0dte', '0_dte', 'same_day'}:
+            for k in ('target_dte_days', 'dte_tolerance_days', 'term_bucket', 'weekly_horizon_mode', 'horizon_profile'):
+                p.pop(k, None)
+        return p
+
+
+    def _sanitize_portfolio_legs(legs: list[Any]) -> list[Any]:
+        out: list[Any] = []
+        for leg in (legs or []):
+            if isinstance(leg, dict):
+                lx = dict(leg)
+                lx['params'] = _sanitize_line_params((leg or {}).get('params') or {})
+                out.append(lx)
+            else:
+                out.append(leg)
+        return out
+
+
+    def _engine_latest_snapshot_ts_for_mode(mode: str) -> str | None:
+        dsn = _pg_dsn()
+        if not dsn:
+            return None
+        m = str(mode or '0dte').strip().lower()
+        table = 'spx.debit_spread_scores_term' if m == 'term' else 'spx.debit_spread_scores_0dte'
+        with _pg_connect(dsn) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT max(snapshot_ts) FROM {table}")
+                r = cur.fetchone()
+                if not r or not r[0]:
+                    return None
+                return str(r[0])
+
     def _params_have_leg_symbols(params: dict[str, Any]) -> bool:
         p = params or {}
         long_sym = str(p.get('long_symbol') or '').strip()
@@ -2757,10 +2801,8 @@ def create_app() -> FastAPI:
                 rr2 = con.execute("SELECT COALESCE(MAX(id),0) AS mx FROM predictions").fetchone()
                 marker = str(int(rr2['mx'] or 0))
 
-            # For manual emits, resolve a snapshot to enrich params with tradable leg symbols.
+            # For emits without explicit source snapshot, resolve per-line snapshots by mode.
             enrich_snapshot_ts = source_snapshot_ts
-            if not enrich_snapshot_ts:
-                enrich_snapshot_ts = _engine_latest_snapshot_ts() or ''
 
             if mode == 'merged':
                 lines: list[dict[str, Any]] = []
@@ -2769,13 +2811,14 @@ def create_app() -> FastAPI:
                 for i, leg in enumerate(legs):
                     sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
                     strategy_keys.append(sid)
-                    params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
+                    params = _sanitize_line_params(((leg or {}).get('params') or {}) if isinstance(leg, dict) else {})
 
                     p2 = dict(params)
                     cand = None
                     if not _params_have_leg_symbols(p2):
-                        if enrich_snapshot_ts:
-                            cand = _engine_pick_candidate_for_line(snapshot_ts=enrich_snapshot_ts, params=p2)
+                        snap_ts = enrich_snapshot_ts or (_engine_latest_snapshot_ts_for_mode(_snapshot_mode_from_params(p2)) or '')
+                        if snap_ts:
+                            cand = _engine_pick_candidate_for_line(snapshot_ts=snap_ts, params=p2)
                         if cand is not None:
                             p2.update({
                                 'long_symbol': cand.get('long_symbol'),
@@ -2847,10 +2890,11 @@ def create_app() -> FastAPI:
             else:
                 for i, leg in enumerate(legs):
                     sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
-                    params = ((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}
+                    params = _sanitize_line_params(((leg or {}).get('params') or {}) if isinstance(leg, dict) else {})
 
                     if not _params_have_leg_symbols(params):
-                        cand = _engine_pick_candidate_for_line(snapshot_ts=enrich_snapshot_ts, params=params) if enrich_snapshot_ts else None
+                        snap_ts = enrich_snapshot_ts or (_engine_latest_snapshot_ts_for_mode(_snapshot_mode_from_params(params)) or '')
+                        cand = _engine_pick_candidate_for_line(snapshot_ts=snap_ts, params=params) if snap_ts else None
                         if cand is not None:
                             params = dict(params)
                             params.update({
