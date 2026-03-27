@@ -50,11 +50,33 @@ def _pg_dsn() -> str | None:
     return dsn or None
 
 
+def _int_env(name: str, default: int, *, lo: int = 1, hi: int | None = None) -> int:
+    raw = str(os.getenv(name, str(default)) or str(default)).strip()
+    try:
+        v = int(raw)
+    except Exception:
+        v = int(default)
+    v = max(int(lo), v)
+    if hi is not None:
+        v = min(v, int(hi))
+    return v
+
+
 def _pg_connect(dsn: str):
     if psycopg is None:
         raise HTTPException(status_code=500, detail="psycopg not installed on server")
     try:
-        return psycopg.connect(dsn)
+        stmt_ms = _int_env('DASHBOARD_PG_STATEMENT_TIMEOUT_MS', 12000, lo=1000, hi=180000)
+        lock_ms = _int_env('DASHBOARD_PG_LOCK_TIMEOUT_MS', 1000, lo=100, hi=15000)
+        idle_ms = _int_env('DASHBOARD_PG_IDLE_IN_TX_TIMEOUT_MS', 12000, lo=1000, hi=180000)
+        opts = (
+            "-c default_transaction_read_only=on "
+            f"-c statement_timeout={stmt_ms} "
+            f"-c lock_timeout={lock_ms} "
+            f"-c idle_in_transaction_session_timeout={idle_ms} "
+            "-c application_name=options_ai_dashboard_api"
+        )
+        return psycopg.connect(dsn, autocommit=True, options=opts)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"timescale connect failed: {e}")
 
@@ -602,6 +624,30 @@ def create_app() -> FastAPI:
             _con.execute("ALTER TABLE portfolio_defs ADD COLUMN IF NOT EXISTS execution_exit_policy TEXT NOT NULL DEFAULT 'any_leg'")
             _con.execute("UPDATE portfolio_defs SET execution_exit_policy='any_leg' WHERE execution_exit_policy IS NULL OR execution_exit_policy='' OR execution_exit_policy NOT IN ('any_leg','entry_leg')")
             _con.execute("CREATE TABLE IF NOT EXISTS portfolio_ui_snapshots (portfolio_id BIGINT PRIMARY KEY, portfolio_updated_at_utc TEXT NOT NULL, saved_at_ms BIGINT NOT NULL, snapshot_json TEXT NOT NULL, updated_at_utc TEXT NOT NULL)")
+            _con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_account_controls (
+                  account_id TEXT PRIMARY KEY,
+                  enabled INTEGER NOT NULL DEFAULT 1,
+                  updated_at_utc TEXT NOT NULL
+                )
+                """
+            )
+            _con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS storage_metrics_samples (
+                  id BIGSERIAL PRIMARY KEY,
+                  sample_minute_utc TEXT NOT NULL UNIQUE,
+                  postgres_bytes INTEGER,
+                  timescale_bytes INTEGER,
+                  disk_used_bytes INTEGER,
+                  disk_free_bytes INTEGER,
+                  postgres_db_name TEXT,
+                  timescale_db_name TEXT
+                )
+                """
+            )
+            _con.execute("CREATE INDEX IF NOT EXISTS idx_storage_metrics_samples_minute ON storage_metrics_samples(sample_minute_utc DESC)")
             _con.commit()
         except Exception:
             pass
@@ -3068,7 +3114,6 @@ def create_app() -> FastAPI:
     def execution_accounts() -> dict[str, Any]:
         items = _execution_accounts_catalog()
         with _connect(db_path) as con:
-            _ensure_execution_account_controls(con)
             rows = con.execute("SELECT account_id, enabled FROM execution_account_controls").fetchall()
         ctl = {str(r['account_id']): int(r['enabled'] or 0) for r in rows}
         for it in items:
@@ -3096,7 +3141,6 @@ def create_app() -> FastAPI:
 
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with _connect(db_path) as con:
-            _ensure_execution_account_controls(con)
             con.execute(
                 """
                 INSERT INTO execution_account_controls(account_id, enabled, updated_at_utc)
@@ -5694,22 +5738,6 @@ def create_app() -> FastAPI:
         res_sec = max(60, _parse_window_seconds(resolution))
 
         with _connect(db_path) as con:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS storage_metrics_samples (
-                  id BIGSERIAL PRIMARY KEY,
-                  sample_minute_utc TEXT NOT NULL UNIQUE,
-                  postgres_bytes INTEGER,
-                  timescale_bytes INTEGER,
-                  disk_used_bytes INTEGER,
-                  disk_free_bytes INTEGER,
-                  postgres_db_name TEXT,
-                  timescale_db_name TEXT
-                )
-                """
-            )
-            con.execute("CREATE INDEX IF NOT EXISTS idx_storage_metrics_samples_minute ON storage_metrics_samples(sample_minute_utc DESC)")
-
             cutoff_clause = ""
             params: tuple[Any, ...] = ()
             if str(window).lower() != 'all':
