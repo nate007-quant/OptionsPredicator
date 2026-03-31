@@ -3839,6 +3839,17 @@ def create_app() -> FastAPI:
             df = _json.loads(r['diff_json'] or '{}')
         except Exception:
             df = {}
+        # Server-side normalize: treat terminal broker order statuses as non-open.
+        try:
+            term = {'REJECTED', 'FILLED', 'CANCELLED', 'CANCELED', 'EXPIRED', 'DONE_FOR_DAY'}
+            if isinstance(oo, dict) and isinstance(oo.get('items'), list):
+                raw_items = list(oo.get('items') or [])
+                oo['items_raw_count'] = len(raw_items)
+                oo['items'] = [it for it in raw_items if str((it or {}).get('status') or '').strip().upper() not in term]
+                oo['items_filtered_count'] = len(oo.get('items') or [])
+        except Exception:
+            pass
+
         return {
             'id': int(r['id']),
             'snapshot_ts': str(r['snapshot_ts']),
