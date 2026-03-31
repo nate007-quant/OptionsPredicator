@@ -7435,7 +7435,6 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         safe('sf_runs', () => sfRefreshRuns()),
         safe('tokens', () => refreshTokens()),
         safe('processing', () => refreshProcessing()),
-        safe('pipes', () => refreshPipelines()),
         safe('llmMetrics', () => refreshMetrics()),
         safe('ml', () => refreshML()),
         safe('logs', () => refreshLogs()),
@@ -7459,7 +7458,6 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       setInterval(() => { if (!isExecutionViewActive()) return; safe('ex_recon', () => exRefreshReconciliation()); }, 60000);
       setInterval(() => { if (!isExecutionViewActive()) return; safe('ex_actions', () => exRefreshOperatorActions()); }, 60000);
       // processing refresh handled by configurable interval
-      setInterval(() => safe('pipes', () => refreshPipelines()), 60000);
       setInterval(() => safe('tokens', () => refreshTokens()), 60000);
       setInterval(() => safe('ml', () => refreshML()), 60000);
 

@@ -5,6 +5,8 @@ import json as _json
 import logging
 import subprocess
 import threading
+import time
+import copy
 import uuid
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
@@ -79,6 +81,34 @@ def _pg_connect(dsn: str):
         return psycopg.connect(dsn, autocommit=True, options=opts)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"timescale connect failed: {e}")
+
+
+_dashboard_api_cache: dict[str, tuple[float, Any]] = {}
+_dashboard_api_cache_lock = threading.Lock()
+
+
+def _cache_get(key: str, ttl_seconds: int) -> Any | None:
+    now = time.time()
+    with _dashboard_api_cache_lock:
+        it = _dashboard_api_cache.get(str(key))
+        if not it:
+            return None
+        ts, val = it
+        if (now - float(ts)) > float(ttl_seconds):
+            _dashboard_api_cache.pop(str(key), None)
+            return None
+        return copy.deepcopy(val)
+
+
+def _cache_set(key: str, val: Any) -> None:
+    now = time.time()
+    with _dashboard_api_cache_lock:
+        _dashboard_api_cache[str(key)] = (now, copy.deepcopy(val))
+        # bounded cache size
+        if len(_dashboard_api_cache) > 256:
+            oldest = sorted(_dashboard_api_cache.items(), key=lambda kv: kv[1][0])[:64]
+            for k, _ in oldest:
+                _dashboard_api_cache.pop(k, None)
 
 
 def _anchor_policy_sets(policy_in: str | None = None) -> tuple[str, list[str] | None, list[str] | None]:
@@ -912,6 +942,12 @@ def create_app() -> FastAPI:
         This is used by the Processing tab to show how far each stage is behind the
         newest option_chain snapshot.
         """
+        ttl = _int_env('DASHBOARD_PIPELINES_CACHE_TTL_SECONDS', 20, lo=1, hi=300)
+        ck = f"status_pipelines:{int(window)}:{str(ticker or '').upper()}"
+        cached = _cache_get(ck, ttl)
+        if cached is not None:
+            return cached
+
         dsn = _pg_dsn()
         tz_local = os.getenv('TZ_LOCAL', 'America/Chicago').strip() or 'America/Chicago'
         selected_ticker = _resolve_market_ticker(ticker)
@@ -957,6 +993,7 @@ def create_app() -> FastAPI:
 
         if not dsn:
             out['timescale'] = {'ok': False, 'error': 'SPX_CHAIN_DATABASE_URL not configured'}
+            _cache_set(ck, out)
             return out
 
         # Timescale progress
@@ -1287,9 +1324,11 @@ def create_app() -> FastAPI:
             except Exception:
                 out['cursors'] = []
             out['timescale'] = {'ok': True, 'error': None}
+            _cache_set(ck, out)
             return out
         except Exception as e:
             out['timescale'] = {'ok': False, 'error': str(e)}
+            _cache_set(ck, out)
             return out
 
     @app.get("/api/metrics/daily")
@@ -4946,6 +4985,12 @@ def create_app() -> FastAPI:
 
     @app.get('/api/metrics/processing/pipeline')
     def metrics_processing_pipeline(window: str = Query('15m'), ticker: str | None = Query(None, pattern=r"^[A-Za-z0-9._-]{1,32}$")) -> dict[str, Any]:
+        ttl = _int_env('DASHBOARD_PROCESSING_PIPELINE_CACHE_TTL_SECONDS', 20, lo=1, hi=300)
+        ck = f"metrics_processing_pipeline:{str(window)}:{str(ticker or '').upper()}"
+        cached = _cache_get(ck, ttl)
+        if cached is not None:
+            return cached
+
         ws = _parse_window_seconds(window)
         cutoff_dt = _now_utc() - timedelta(seconds=ws)
         cutoff_iso = cutoff_dt.replace(microsecond=0).isoformat()
@@ -5108,7 +5153,7 @@ def create_app() -> FastAPI:
                 'likely_cause': cause,
             })
 
-        return {
+        out = {
             'window': window,
             'window_seconds': int(ws),
             'generated_at': _now_central_iso(),
@@ -5118,6 +5163,8 @@ def create_app() -> FastAPI:
             'bottleneck_status': worst[0],
             'raw': pp,
         }
+        _cache_set(ck, out)
+        return out
 
     @app.get('/api/metrics/processing/stages')
     def metrics_processing_stages(window: str = Query('15m')) -> dict[str, Any]:
@@ -5467,7 +5514,14 @@ def create_app() -> FastAPI:
 
     @app.get('/api/services')
     def services_list(window: str = Query('15m')) -> dict[str, Any]:
-        return {'window': window, 'generated_at': _now_central_iso(), 'items': _collect_services()}
+        ttl = _int_env('DASHBOARD_SERVICES_CACHE_TTL_SECONDS', 20, lo=1, hi=300)
+        ck = f"services:{str(window)}"
+        cached = _cache_get(ck, ttl)
+        if cached is not None:
+            return cached
+        out = {'window': window, 'generated_at': _now_central_iso(), 'items': _collect_services()}
+        _cache_set(ck, out)
+        return out
 
     @app.get('/api/execution/worker-health')
     def execution_worker_health() -> dict[str, Any]:
