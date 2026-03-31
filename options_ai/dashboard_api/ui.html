@@ -6538,6 +6538,11 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       }).join(' / ');
     }
 
+    function exIsTerminalOrderStatus(status) {
+      const s = String(status || '').trim().toUpperCase();
+      return new Set(['REJECTED','FILLED','CANCELLED','CANCELED','EXPIRED','DONE_FOR_DAY']).has(s);
+    }
+
     async function exRefreshOpenTrades() {
       exBoxLoading('Trades', true);
       try {
@@ -6643,7 +6648,8 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     async function exRefreshReconciliation() {
       const d = await jget('/api/execution/reconciliation/latest');
       document.getElementById('exReconResolved').textContent = d.resolved_bool ? 'YES' : 'NO';
-      const openOrders = Array.isArray((d.open_orders || {}).items) ? d.open_orders.items : [];
+      const openOrdersAll = Array.isArray((d.open_orders || {}).items) ? d.open_orders.items : [];
+      const openOrders = openOrdersAll.filter((o) => !exIsTerminalOrderStatus(o?.status));
       const oo = openOrders.length;
       const op = Array.isArray((d.open_positions || {}).items) ? d.open_positions.items.length : 0;
       document.getElementById('exReconOrders').textContent = String(oo);
