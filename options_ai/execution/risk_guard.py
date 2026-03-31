@@ -154,7 +154,25 @@ class RiskGuard:
         realized = float((row[0] if row is not None else 0.0) or 0.0)
         unrealized = float((row[1] if row is not None else 0.0) or 0.0)
         total = realized + unrealized
-        blocked = total <= -abs(self.max_daily_loss_usd)
+        blocked_loss = total <= -abs(self.max_daily_loss_usd)
+
+        # Preserve operator-set manual kill-switch state.
+        rr = con.execute(
+            """
+            SELECT block_new_entries, reason
+            FROM risk_session_state
+            WHERE environment=? AND broker_name=? AND session_day_local=?
+            ORDER BY updated_at_utc DESC, id DESC
+            LIMIT 1
+            """,
+            (self.environment, self.broker_name, sess_day),
+        ).fetchone()
+        cur_block = bool(int((rr[0] if rr is not None else 0) or 0))
+        cur_reason = str((rr[1] if rr is not None else '') or '').strip().lower()
+        manual_block = cur_block and (cur_reason in {'manual_kill_switch', 'manual_close_only'})
+
+        blocked = bool(blocked_loss or manual_block)
+        reason_out = ('daily_loss_breach' if blocked_loss else ('manual_kill_switch' if manual_block else None))
 
         con.execute(
             """
@@ -184,7 +202,7 @@ class RiskGuard:
                 unrealized,
                 float(self.max_daily_loss_usd),
                 1 if blocked else 0,
-                ("daily_loss_breach" if blocked else None),
+                reason_out,
             ),
         )
 
