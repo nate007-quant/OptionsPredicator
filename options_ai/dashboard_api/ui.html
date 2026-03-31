@@ -1949,6 +1949,11 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (view === 'paramtest' && !btRunsEverLoaded) { safe('bt_runs', () => btRefreshRuns()); }
     }
 
+    function isExecutionViewActive() {
+      const el = document.getElementById('view-execution');
+      return !!(el && el.classList.contains('active'));
+    }
+
     function routeFromHash() {
 
 
@@ -6466,16 +6471,25 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       }
 
       if (document.getElementById('exTradesAuto')?.checked) {
-        if (triggerNow) safe('ex_trades', () => exRefreshOpenTrades());
-        exAutoTimers.trades = setInterval(() => safe('ex_trades', () => exRefreshOpenTrades()), exAutoMs('exTradesSec', 60000));
+        if (triggerNow && isExecutionViewActive()) safe('ex_trades', () => exRefreshOpenTrades());
+        exAutoTimers.trades = setInterval(() => {
+          if (!isExecutionViewActive()) return;
+          safe('ex_trades', () => exRefreshOpenTrades());
+        }, exAutoMs('exTradesSec', 60000));
       }
       if (document.getElementById('exIntentsAuto')?.checked) {
-        if (triggerNow) safe('ex_intents', () => exRefreshIntents());
-        exAutoTimers.intents = setInterval(() => safe('ex_intents', () => exRefreshIntents()), exAutoMs('exIntentsSec', 60000));
+        if (triggerNow && isExecutionViewActive()) safe('ex_intents', () => exRefreshIntents());
+        exAutoTimers.intents = setInterval(() => {
+          if (!isExecutionViewActive()) return;
+          safe('ex_intents', () => exRefreshIntents());
+        }, exAutoMs('exIntentsSec', 60000));
       }
       if (document.getElementById('exHistoryAuto')?.checked) {
-        if (triggerNow) safe('ex_trade_history', () => exRefreshTradeHistory());
-        exAutoTimers.history = setInterval(() => safe('ex_trade_history', () => exRefreshTradeHistory()), exAutoMs('exHistorySec', 60000));
+        if (triggerNow && isExecutionViewActive()) safe('ex_trade_history', () => exRefreshTradeHistory());
+        exAutoTimers.history = setInterval(() => {
+          if (!isExecutionViewActive()) return;
+          safe('ex_trade_history', () => exRefreshTradeHistory());
+        }, exAutoMs('exHistorySec', 60000));
       }
     }
 
@@ -7396,6 +7410,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       btRunsSaveFilters(f0);
 
       // Start the rest in parallel so groups don't wait on heavy panels.
+      const exTabActive = isExecutionViewActive();
       Promise.allSettled([
         safe('ex_risk', () => exRefreshRiskSession()),
         safe('ex_workers', () => exRefreshWorkerBanner()),
@@ -7403,12 +7418,12 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         safe('ex_accounts', () => exRefreshAccounts()),
         safe('ex_trading_enabled', () => exRefreshTradingEnabled()),
         safe('ex_reprice', () => exLoadRepricePolicy()),
-        safe('ex_trades', () => exRefreshOpenTrades()),
-        safe('ex_trade_history', () => exRefreshTradeHistory()),
-        safe('ex_intents', () => exRefreshIntents()),
-        safe('ex_incidents', () => exRefreshIncidents()),
-        safe('ex_recon', () => exRefreshReconciliation()),
-        safe('ex_actions', () => exRefreshOperatorActions()),
+        exTabActive ? safe('ex_trades', () => exRefreshOpenTrades()) : Promise.resolve(),
+        exTabActive ? safe('ex_trade_history', () => exRefreshTradeHistory()) : Promise.resolve(),
+        exTabActive ? safe('ex_intents', () => exRefreshIntents()) : Promise.resolve(),
+        exTabActive ? safe('ex_incidents', () => exRefreshIncidents()) : Promise.resolve(),
+        exTabActive ? safe('ex_recon', () => exRefreshReconciliation()) : Promise.resolve(),
+        exTabActive ? safe('ex_actions', () => exRefreshOperatorActions()) : Promise.resolve(),
         safe('sf_latest', () => sfRefreshLatest()),
         safe('sf_weekly', () => sfRefreshWeeklyDigest()),
         safe('sf_runs', () => sfRefreshRuns()),
@@ -7434,9 +7449,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       setInterval(() => exRefreshLastStamps(), 60000);
       setInterval(() => safe('ex_accounts', () => exRefreshAccounts()), 60000);
       setInterval(() => safe('ex_trading_enabled', () => exRefreshTradingEnabled()), 60000);
-      setInterval(() => safe('ex_incidents', () => exRefreshIncidents()), 60000);
-      setInterval(() => safe('ex_recon', () => exRefreshReconciliation()), 60000);
-      setInterval(() => safe('ex_actions', () => exRefreshOperatorActions()), 60000);
+      setInterval(() => { if (!isExecutionViewActive()) return; safe('ex_incidents', () => exRefreshIncidents()); }, 60000);
+      setInterval(() => { if (!isExecutionViewActive()) return; safe('ex_recon', () => exRefreshReconciliation()); }, 60000);
+      setInterval(() => { if (!isExecutionViewActive()) return; safe('ex_actions', () => exRefreshOperatorActions()); }, 60000);
       // processing refresh handled by configurable interval
       setInterval(() => safe('pipes', () => refreshPipelines()), 60000);
       setInterval(() => safe('tokens', () => refreshTokens()), 60000);

@@ -3284,12 +3284,18 @@ def create_app() -> FastAPI:
         with _connect(db_path) as con:
             rows = con.execute(
                 """
-                SELECT id, created_at_utc, updated_at_utc, execution_intent_id, status, underlying, side,
-                       qty, entry_order_id, exit_order_id, opened_at_utc, close_reason, pnl_realized_usd,
-                       pnl_unrealized_usd, run_payload_json
-                FROM trade_runs
-                WHERE environment=? AND broker_name=? AND status IN ('opening','open','closing')
-                ORDER BY id DESC
+                SELECT tr.id, tr.created_at_utc, tr.updated_at_utc, tr.execution_intent_id, tr.status, tr.underlying, tr.side,
+                       tr.qty, tr.entry_order_id, tr.exit_order_id, tr.opened_at_utc, tr.close_reason, tr.pnl_realized_usd,
+                       tr.pnl_unrealized_usd, tr.run_payload_json,
+                       EXISTS(
+                         SELECT 1
+                         FROM order_events oe
+                         WHERE oe.trade_run_id = tr.id
+                           AND oe.event_type IN ('oco_armed','protective_exit_armed')
+                       ) AS has_protection
+                FROM trade_runs tr
+                WHERE tr.environment=? AND tr.broker_name=? AND tr.status IN ('opening','open','closing')
+                ORDER BY tr.id DESC
                 LIMIT ?
                 """,
                 (str(cfg.broker_env), str(cfg.broker_name), int(limit)),
@@ -3301,12 +3307,6 @@ def create_app() -> FastAPI:
                 payload = _json.loads(r['run_payload_json'] or '{}')
             except Exception:
                 payload = {}
-            # protection status from events
-            with _connect(db_path) as con:
-                rr = con.execute(
-                    "SELECT id FROM order_events WHERE trade_run_id=? AND event_type IN ('oco_armed','protective_exit_armed') ORDER BY id DESC LIMIT 1",
-                    (int(r['id']),),
-                ).fetchone()
             items.append({
                 'id': int(r['id']),
                 'created_at_utc': str(r['created_at_utc']),
@@ -3323,7 +3323,7 @@ def create_app() -> FastAPI:
                 'pnl_realized_usd': (float(r['pnl_realized_usd']) if r['pnl_realized_usd'] is not None else None),
                 'pnl_unrealized_usd': (float(r['pnl_unrealized_usd']) if r['pnl_unrealized_usd'] is not None else None),
                 'run_payload': payload,
-                'protection_status': ('armed' if rr is not None else 'missing'),
+                'protection_status': ('armed' if bool(r['has_protection']) else 'missing'),
             })
         return {'items': items}
 
