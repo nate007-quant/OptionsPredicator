@@ -448,7 +448,8 @@ def ingest_snapshot_file(
 
     # Load + validate JSON
     try:
-        raw = snapshot_path.read_text(encoding="utf-8")
+        # Accept UTF-8 with or without BOM from upstream generators.
+        raw = snapshot_path.read_text(encoding="utf-8-sig")
         snapshot = json.loads(raw)
         if not isinstance(snapshot, dict):
             raise ValueError("snapshot JSON root must be object")
