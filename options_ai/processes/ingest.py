@@ -4,6 +4,9 @@ import json
 import os
 import traceback
 import re
+import shutil
+import threading
+import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
@@ -67,6 +70,41 @@ class IngestResult:
     processed: bool
     prediction_id: int | None = None
     skipped_reason: str | None = None
+
+
+_INVALID_JSON_LOG_TTL_SECONDS = 120.0
+_invalid_json_last_log_ts: dict[str, float] = {}
+_invalid_json_lock = threading.Lock()
+
+
+def _should_log_invalid_json(path: Path) -> bool:
+    now = time.time()
+    key = str(path)
+    with _invalid_json_lock:
+        last = _invalid_json_last_log_ts.get(key)
+        if last is not None and (now - last) < _INVALID_JSON_LOG_TTL_SECONDS:
+            return False
+        _invalid_json_last_log_ts[key] = now
+        # bounded cleanup to avoid unbounded dict growth
+        if len(_invalid_json_last_log_ts) > 20000:
+            cutoff = now - (_INVALID_JSON_LOG_TTL_SECONDS * 4)
+            stale = [k for k, ts in _invalid_json_last_log_ts.items() if ts < cutoff]
+            for k in stale[:10000]:
+                _invalid_json_last_log_ts.pop(k, None)
+        return True
+
+
+def _move_file_best_effort(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        src.replace(dest)
+        return
+    except Exception:
+        pass
+    try:
+        shutil.move(str(src), str(dest))
+    except Exception:
+        pass
 
 
 def _compact_recent_predictions(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -439,11 +477,7 @@ def ingest_snapshot_file(
         # quarantine only for live incoming
         if move_files:
             q = Path(paths.quarantine_invalid_filenames_dir) / snapshot_path.name
-            q.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                snapshot_path.replace(q)
-            except Exception:
-                pass
+            _move_file_best_effort(snapshot_path, q)
         return IngestResult(processed=False, skipped_reason="invalid_filename")
 
     # Load + validate JSON
@@ -455,14 +489,11 @@ def ingest_snapshot_file(
             raise ValueError("snapshot JSON root must be object")
         validate_snapshot_json(snapshot, parsed)
     except Exception as e:
-        log_daemon_event(paths.logs_daemon_dir, "error", "invalid_json", file=str(snapshot_path), error=str(e))
+        if _should_log_invalid_json(snapshot_path):
+            log_daemon_event(paths.logs_daemon_dir, "error", "invalid_json", file=str(snapshot_path), error=str(e))
         if move_files:
             q = Path(paths.quarantine_invalid_json_dir) / snapshot_path.name
-            q.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                snapshot_path.replace(q)
-            except Exception:
-                pass
+            _move_file_best_effort(snapshot_path, q)
         return IngestResult(processed=False, skipped_reason="invalid_json")
     # Choose observed time: JSON is source-of-truth; filename is fallback.
     # Defensive: if both JSON time missing and filename time is stale in live mode, fall back to filesystem mtime.

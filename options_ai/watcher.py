@@ -85,7 +85,23 @@ def _sha256_file(path: Path) -> str:
 def _list_candidate_snapshots(dir_path: Path) -> list[Path]:
     if not dir_path.exists():
         return []
-    return sorted([p for p in dir_path.glob("*.json") if p.is_file() and not p.name.endswith(".tmp")])
+    out: list[Path] = []
+    # Fast, non-recursive top-level scan only. Avoid full sort on large dirs.
+    try:
+        with os.scandir(dir_path) as it:
+            for ent in it:
+                try:
+                    if not ent.is_file():
+                        continue
+                    n = ent.name
+                    if not n.endswith('.json') or n.endswith('.tmp'):
+                        continue
+                    out.append(Path(ent.path))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return out
 
 
 
