@@ -3486,7 +3486,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       if (!cached || !Array.isArray(cached) || !cached.length) return false;
       pfPortfolios = cached;
       pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
-      pfRenderWorkbench();
+      pfScheduleRenderWorkbench();
       pfRefreshMoveTargets();
       const sel = document.getElementById('pfPortfolioSelect');
       if (sel) {
@@ -3537,7 +3537,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
       // Render group portfolio table when portfolio list changes (not on health refresh).
       pfRenderPortfoliosTable(pfPortfolios, pfGroupSelected);
-      pfRenderWorkbench();
+      pfScheduleRenderWorkbench();
       pfRefreshMoveTargets();
 
       const sel = document.getElementById('pfPortfolioSelect');
@@ -3896,6 +3896,19 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     let pfSnapshotPushPayload = {};
     let pfSnapshotLastPushMs = {};
     const PF_SNAPSHOT_PUSH_MIN_MS = 4000;
+
+    let pfWorkbenchRenderVersion = 0;
+    let pfWorkbenchRenderScheduled = false;
+    const PF_WORKBENCH_RENDER_DEBOUNCE_MS = 180;
+
+    function pfScheduleRenderWorkbench() {
+      if (pfWorkbenchRenderScheduled) return;
+      pfWorkbenchRenderScheduled = true;
+      setTimeout(() => {
+        pfWorkbenchRenderScheduled = false;
+        try { pfRenderWorkbench(); } catch {}
+      }, PF_WORKBENCH_RENDER_DEBOUNCE_MS);
+    }
 
     async function pfLoadCardCacheRemote(pid, portfolioUpdatedAt) {
       try {
@@ -4496,7 +4509,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         // Force cross-group sync so released account immediately becomes available elsewhere.
         await pfReloadPortfolios();
         await exRefreshAccounts();
-        pfRenderWorkbench();
+        pfScheduleRenderWorkbench();
         toast('group unpaired from account', 'warn');
         const note = document.getElementById(`pfCardNote-${pid}`);
         if (note) note.textContent = 'account unpaired';
@@ -4516,7 +4529,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       // Force cross-group sync so all dropdowns immediately reflect 1:1 pairing changes.
       await pfReloadPortfolios({ allowLocalFallback: false });
       await exRefreshAccounts();
-      pfRenderWorkbench();
+      pfScheduleRenderWorkbench();
       toast(`account pair saved (${env}${label ? ' ' + label : ''})`, 'success');
     }
 
@@ -4616,6 +4629,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     }
 
     function pfRenderWorkbench() {
+      const renderVersion = ++pfWorkbenchRenderVersion;
       const host = document.getElementById('pfWorkbench');
       if (!host) return;
       // Clear old chart instances bound to old canvases before re-render.
@@ -4628,7 +4642,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
       host.innerHTML = '';
       const items = Array.isArray(pfPortfolios) ? pfPortfolios : [];
       if ((!Array.isArray(exAccounts) || exAccounts.length === 0) && !exAccountsLoading) {
-        safe('ex_accounts', async () => { await exRefreshAccounts(); try { pfRenderWorkbench(); } catch {} });
+        safe('ex_accounts', async () => { await exRefreshAccounts(); try { pfScheduleRenderWorkbench(); } catch {} });
       }
       if (!items.length) {
         host.innerHTML = '<div class="hint">No groups yet. Create one above.</div>';
@@ -4759,6 +4773,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
         let snapshotSeed = null;
         safe(`pf_card_remote_${pid}`, async () => {
           const remote = await pfLoadCardCacheRemote(pid, it.updated_at_utc || '');
+          if (renderVersion !== pfWorkbenchRenderVersion) return;
           if (remote) {
             snapshotSeed = remote;
             pfSaveCardCache(pid, it.updated_at_utc || '', remote.combined_summary, remote.combined_equity_curve || [], remote.legs_summaries || [], remote.progress_snapshot || null);
@@ -4787,6 +4802,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
           // fallback to local only when server snapshot missing/unavailable
           const cached = pfLoadCardCache(pid, it.updated_at_utc || '');
+          if (renderVersion !== pfWorkbenchRenderVersion) return;
           if (!cached) return;
           snapshotSeed = cached;
           if (Array.isArray(cached.combined_equity_curve)) pfRenderCardEquity(pid, cached.combined_equity_curve);
