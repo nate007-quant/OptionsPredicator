@@ -1,0 +1,25 @@
+# Daily backtest runner for paired portfolio groups.
+#
+# Runs backtests for all groups paired to an account, updates each group's
+# group_end_day to latest available data day, and stops services it started.
+
+[Unit]
+Description=Options AI Daily Group Backtests (paired groups)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nate
+Group=nate
+WorkingDirectory=/opt/OptionsPredicator
+EnvironmentFile=/opt/OptionsPredicator/.env
+Environment=PYTHONUNBUFFERED=1
+# Comma-separated units to ensure before job starts.
+Environment=DAILY_GROUP_BACKTEST_REQUIRED_SERVICES=optionspredicator-stack.service,options_ai_dashboard_api.service
+# Per-group timeout (seconds) while waiting for backtest status to complete.
+Environment=DAILY_GROUP_BACKTEST_TIMEOUT_SEC=7200
+ExecStart=/opt/OptionsPredicator/.venv/bin/python /opt/OptionsPredicator/scripts/daily_group_backtests.py
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true

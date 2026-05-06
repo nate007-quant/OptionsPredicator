@@ -1,0 +1,14 @@
+# Run daily at 20 minutes after US market close (4:00 PM ET / 3:00 PM CT).
+# Scheduled at 3:20 PM America/Chicago on weekdays.
+
+[Unit]
+Description=Run daily paired-group backtests at market close + 20m (CT)
+
+[Timer]
+Timezone=America/Chicago
+OnCalendar=Mon..Fri *-*-* 15:20:00
+Persistent=true
+Unit=options_ai_daily_group_backtests.service
+
+[Install]
+WantedBy=timers.target
