@@ -2089,6 +2089,8 @@ def create_app() -> FastAPI:
                           COALESCE(group_start_day,'') AS group_start_day, COALESCE(group_end_day,'') AS group_end_day,
                           COALESCE(paired_environment,'sandbox') AS paired_environment,
                           COALESCE(paired_account_label,'') AS paired_account_label,
+                       COALESCE(group_start_day,'') AS group_start_day,
+                       COALESCE(group_end_day,'') AS group_end_day,
                           COALESCE(signal_engine_enabled,0) AS signal_engine_enabled,
                           COALESCE(signal_last_poll_utc,'') AS signal_last_poll_utc,
                           COALESCE(signal_last_emit_utc,'') AS signal_last_emit_utc,
@@ -2689,6 +2691,20 @@ def create_app() -> FastAPI:
                 p.pop(k, None)
         return p
 
+    def _apply_group_and_live_date_policy(*, params: dict[str, Any], env: str, group_start_day: str, group_end_day: str) -> dict[str, Any]:
+        p = dict(params or {})
+        if str(env or '').strip().lower() == 'live':
+            p.pop('start_day', None)
+            p.pop('end_day', None)
+            return p
+        gs = str(group_start_day or '').strip()
+        ge = str(group_end_day or '').strip()
+        if gs:
+            p['start_day'] = gs
+        if ge:
+            p['end_day'] = ge
+        return p
+
 
     def _sanitize_portfolio_legs(legs: list[Any]) -> list[Any]:
         out: list[Any] = []
@@ -2896,7 +2912,12 @@ def create_app() -> FastAPI:
                 for i, leg in enumerate(legs):
                     sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
                     strategy_keys.append(sid)
-                    params = _sanitize_line_params(((leg or {}).get('params') or {}) if isinstance(leg, dict) else {})
+                    params = _apply_group_and_live_date_policy(
+                        params=_sanitize_line_params(((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}),
+                        env=env,
+                        group_start_day=str(r.get('group_start_day') or ''),
+                        group_end_day=str(r.get('group_end_day') or ''),
+                    )
 
                     p2 = dict(params)
                     cand = None
@@ -2975,7 +2996,12 @@ def create_app() -> FastAPI:
             else:
                 for i, leg in enumerate(legs):
                     sid = str((leg or {}).get('strategy_id') or 'debit_spreads')
-                    params = _sanitize_line_params(((leg or {}).get('params') or {}) if isinstance(leg, dict) else {})
+                    params = _apply_group_and_live_date_policy(
+                        params=_sanitize_line_params(((leg or {}).get('params') or {}) if isinstance(leg, dict) else {}),
+                        env=env,
+                        group_start_day=str(r.get('group_start_day') or ''),
+                        group_end_day=str(r.get('group_end_day') or ''),
+                    )
 
                     if not _params_have_leg_symbols(params):
                         snap_ts = enrich_snapshot_ts or (_engine_latest_snapshot_ts_for_mode(_snapshot_mode_from_params(params)) or '')
