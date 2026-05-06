@@ -5,8 +5,7 @@
 Description=Run daily paired-group backtests at market close + 20m (CT)
 
 [Timer]
-Timezone=America/Chicago
-OnCalendar=Mon..Fri *-*-* 15:20:00
+OnCalendar=Mon..Fri *-*-* 15:20:00 America/Chicago
 Persistent=true
 Unit=options_ai_daily_group_backtests.service
 
