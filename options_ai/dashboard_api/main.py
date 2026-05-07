@@ -3113,7 +3113,8 @@ def create_app() -> FastAPI:
         sid = (body or {}).get('session_id')
         if sid in (None, ''):
             raise HTTPException(status_code=400, detail='session_id required')
-        return portfolio_service.stop(session_id=int(sid))
+        force = bool((body or {}).get('force'))
+        return portfolio_service.stop(session_id=int(sid), force=force)
 
 
 

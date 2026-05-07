@@ -4397,9 +4397,9 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
     async function pfStopSingleGroup(pid) {
       const sid = pfCardSessions[String(pid)];
       if (!sid) return;
-      await jpost('/api/portfolio_backtest/stop', { session_id: sid });
+      await jpost('/api/portfolio_backtest/stop', { session_id: sid, force: true });
       const note = document.getElementById(`pfCardNote-${pid}`);
-      if (note) note.textContent = 'Status: Stop requested… Waiting for worker to finish.';
+      if (note) note.textContent = 'Status: Force stop requested. Session closed.';
     }
 
     async function pfPollSingleGroup(pid) {
@@ -5187,7 +5187,7 @@ Shows whether regime gating was enabled, confidence threshold used, and top regi
 
     async function pfStop() {
       if (!pfSessionId) return;
-      await jpost('/api/portfolio_backtest/stop', { session_id: pfSessionId });
+      await jpost('/api/portfolio_backtest/stop', { session_id: pfSessionId, force: true });
       toast('portfolio stop requested', 'info');
     }
 

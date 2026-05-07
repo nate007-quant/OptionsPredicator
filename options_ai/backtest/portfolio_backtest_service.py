@@ -373,23 +373,40 @@ class PortfolioBacktestService:
         self._spawn_worker(session_id=session_id)
         return {"session_id": session_id, "status": "running", "legs_total": len(norm_legs), "merge_mode": merge_mode, "merge_exit_policy": merge_exit_policy}
 
-    def stop(self, *, session_id: int) -> dict[str, Any]:
+    def stop(self, *, session_id: int, force: bool = False) -> dict[str, Any]:
+        sid = int(session_id)
+        now = now_utc_iso()
         with self._connect(self.db_path) as con:
             r = con.execute(
                 "SELECT id,status FROM portfolio_backtest_sessions WHERE id=?",
-                (int(session_id),),
+                (sid,),
             ).fetchone()
             if not r:
                 raise HTTPException(status_code=404, detail="session not found")
             st = str(r[1])
             if st not in {"running", "stopping"}:
-                return {"session_id": int(session_id), "status": st}
-            con.execute(
-                "UPDATE portfolio_backtest_sessions SET cancel_requested=1, status='stopping', last_activity_at_utc=? WHERE id=?",
-                (now_utc_iso(), int(session_id)),
-            )
+                return {"session_id": sid, "status": st}
+
+            if bool(force):
+                con.execute(
+                    """
+                    UPDATE portfolio_backtest_sessions
+                    SET cancel_requested=1, status='stopped', stopped_at_utc=?, last_activity_at_utc=?
+                    WHERE id=?
+                    """,
+                    (now, now, sid),
+                )
+            else:
+                con.execute(
+                    "UPDATE portfolio_backtest_sessions SET cancel_requested=1, status='stopping', last_activity_at_utc=? WHERE id=?",
+                    (now, sid),
+                )
             con.commit()
-        return {"session_id": int(session_id), "status": "stopping"}
+
+        if bool(force):
+            self._clear_live_leg(sid)
+            return {"session_id": sid, "status": "stopped", "forced": True}
+        return {"session_id": sid, "status": "stopping"}
 
     def status(self, *, session_id: int | None = None) -> dict[str, Any] | None:
         with self._connect(self.db_path) as con:
